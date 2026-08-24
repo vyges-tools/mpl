@@ -24,6 +24,7 @@ pub mod dump;
 pub mod halo;
 pub mod ioclusters;
 pub mod options;
+pub mod macroclass;
 pub mod merge;
 pub mod netlist;
 pub mod pipeline;

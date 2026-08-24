@@ -201,6 +201,16 @@ mutations() {
 "no-ports-still-has-io-clusters${SEP}src/ioclusters.rs${SEP}        out.has_io_clusters = false;${SEP}        out.has_io_clusters = true;${SEP}a_design_with_no_ports_has_no_io_clusters" \
 "pin-cluster-named-by-count${SEP}src/ioclusters.rs${SEP}format!("ios_{}", out.next_id)${SEP}format!("ios_{}", out.pin_clusters.len())${SEP}a_pin_cluster_is_named_after_its_own_id" \
 "fixed-pins-not-bundled${SEP}src/ioclusters.rs${SEP}        if any_fixed && pin.is_fixed {${SEP}        if false {${SEP}a_fixed_pin_lands_in_the_bundle_its_position_selects" \
+"size-compares-area${SEP}src/macroclass.rs${SEP}                if class[j] == -1 && sizes[i] == sizes[j] {${SEP}                if class[j] == -1 && sizes[i].width * sizes[i].height == sizes[j].width * sizes[j].height {${SEP}size_compares_width_AND_height_not_area" \
+"size-assigns-in-first-pass${SEP}src/macroclass.rs${SEP}        .map(|(i, &c)| if c == -1 { i } else { c as usize })${SEP}        .map(|(_i, &c)| if c == -1 { 0 } else { c as usize })${SEP}an_unmatched_macro_represents_itself" \
+"signature-empty-matches${SEP}src/macroclass.rs${SEP}            if class[j] == -1 && same_connection_signature(conns, ids[i], ids[j]) {${SEP}            if class[j] == -1 {${SEP}unconnected_macros_do_NOT_share_a_signature" \
+"interconn-scans-only-later${SEP}src/macroclass.rs${SEP}        for j in 0..ids.len() {\n            if i == j {\n                continue;\n            }${SEP}        for j in (i + 1)..ids.len() {\n            if i == j {\n                continue;\n            }${SEP}the_interconnection_pass_scans_EARLIER_macros_too" \
+"interconn-does-not-adopt${SEP}src/macroclass.rs${SEP}                if class[j] != -1 {\n                    // Adopt the neighbour's group and stop looking.\n                    class[i] = class[j];\n                    break;\n                }${SEP}                if class[j] != -1 {\n                    break;\n                }${SEP}a_macro_can_ADOPT_a_class_led_by_a_higher_index" \
+"grouping-ignores-size${SEP}src/macroclass.rs${SEP}            if macro_class[j] != -1 || size_class[i] != size_class[j] {${SEP}            if macro_class[j] != -1 {${SEP}a_merge_ALWAYS_requires_the_same_size" \
+"grouping-does-not-clear-interconn${SEP}src/macroclass.rs${SEP}                interconn[i] = -1;${SEP}                let _ = &interconn;${SEP}meeting_a_different_interconnection_CLEARS_the_leaders_own_class" \
+"grouping-signature-not-checked${SEP}src/macroclass.rs${SEP}                if signature_class[i] == signature_class[j] {${SEP}                if false {${SEP}same_size_and_same_signature_merges_when_the_interconnection_differs" \
+"grouping-interconn-not-checked${SEP}src/macroclass.rs${SEP}            if interconn[i] == interconn[j] {${SEP}            if false {${SEP}same_size_and_same_interconnection_makes_an_interconnected_array" \
+"single-macro-is-an-array${SEP}src/macroclass.rs${SEP}    Grouping { macro_class: vec![0], interconn_class: vec![-1], merges: Vec::new() }${SEP}    Grouping { macro_class: vec![0], interconn_class: vec![0], merges: Vec::new() }${SEP}a_single_movable_macro_is_never_an_array_of_one" \
 "a-stage-dropped-from-order${SEP}src/pipeline.rs${SEP}    StageId::ComputeWireLength,\n];${SEP}];${SEP}the_pipeline_matches_the_spec_table"
 }
 
