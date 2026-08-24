@@ -89,6 +89,9 @@ mutations() {
 "par-gate-uses-masked-counts${SEP}src/cluster.rs${SEP}        && (cluster.leaf_std_cells.len() as i64 > max_std_cell as i64\n            || cluster.leaf_macros.len() as i64 > max_macro as i64)${SEP}        && (cluster.num_std_cell() as i64 > max_std_cell as i64\n            || cluster.num_macro() as i64 > max_macro as i64)${SEP}the_par_gate_counts_leaf_vectors_not_the_masked_metrics" \
 "par-gate-ignores-modules${SEP}src/cluster.rs${SEP}    cluster.db_modules.is_empty()\n        && (cluster.leaf_std_cells.len()${SEP}    true\n        && (cluster.leaf_std_cells.len()${SEP}a_large_flat_cluster_is_one_with_no_modules_and_too_many_leaves" \
 "par-refusal-not-collected${SEP}src/cluster.rs${SEP}        .filter(|c| is_large_flat_cluster(c, max_std_cell, max_macro))${SEP}        .filter(|_c| false)${SEP}a_resulting_child_needing_the_partitioner_is_reported_not_approximated" \
+"blockage-cleanup-runs-forwards${SEP}src/apply.rs${SEP}    (baseline.blockages..now).rev().collect()${SEP}    (baseline.blockages..now).collect()${SEP}destruction_runs_highest_index_first" \
+"blockage-cleanup-endpoints-swapped${SEP}src/apply.rs${SEP}    (baseline.blockages..now).rev().collect()${SEP}    (now..baseline.blockages).rev().collect()${SEP}a_shrunken_count_asks_for_nothing_rather_than_producing_garbage_indices" \
+"refusal-commits${SEP}src/apply.rs${SEP}    if kept {\n        Settlement::Committed\n    } else {\n        Settlement::RolledBack\n    }${SEP}    let _ = kept;\n    Settlement::Committed${SEP}only_success_commits" \
 "a-stage-dropped-from-order${SEP}src/pipeline.rs${SEP}    StageId::ComputeWireLength,\n];${SEP}];${SEP}the_pipeline_matches_the_spec_table"
 }
 
