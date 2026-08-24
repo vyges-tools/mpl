@@ -21,6 +21,7 @@ pub mod cluster;
 pub mod design;
 pub mod halo;
 pub mod options;
+pub mod netlist;
 pub mod pipeline;
 #[cfg(unix)]
 pub mod read;
