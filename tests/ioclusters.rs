@@ -192,3 +192,142 @@ fn the_bundles_on_an_edge_tile_it_without_gaps_or_overlap() {
     }
     assert_eq!(prev_end, 500, "the five bundles cover the whole edge, not more");
 }
+
+// ------------------------------------------------------------------ createIOClusters
+
+use vyges_mpl::ioclusters::{create_io_clusters, Pin};
+
+fn fixed_at(edge: Boundary, along: i64) -> Pin {
+    Pin { name: format!("p{along}"), bbox: edge_pin(edge, along), is_fixed: true, constraint: None }
+}
+
+fn floating(name: &str, constraint: Option<Rect>) -> Pin {
+    Pin { name: name.into(), bbox: pin(500, 500), is_fixed: false, constraint }
+}
+
+#[test]
+fn a_design_with_no_ports_has_no_io_clusters() {
+    // Upstream warns MPL-26 and records it rather than failing.
+    let r = create_io_clusters(&[], &die(), 100);
+    assert!(!r.has_io_clusters);
+    assert!(r.bundles.is_empty() && r.pin_clusters.is_empty());
+}
+
+#[test]
+fn bundles_are_created_only_when_a_pin_is_FIXED() {
+    // 🔑 A design whose pins are all still floating has nothing to bundle AROUND.
+    let floating_only = vec![floating("a", None), floating("b", None)];
+    let r = create_io_clusters(&floating_only, &die(), 100);
+    assert!(r.bundles.is_empty(), "no fixed pin, no bundles");
+    assert_eq!(r.pin_clusters.len(), 1, "they share one unconstrained cluster");
+    // ⚠️ "No bundles survive" is NOT enough on its own: creating twenty and then releasing them
+    // all leaves the same empty list. The IDS are what reveal it -- twenty bundles would consume
+    // ids 100..119 and push the pin cluster to 120.
+    assert_eq!(r.pin_clusters[0].id, 100, "no bundle consumed an id");
+    assert_eq!(r.next_id, 101);
+}
+
+#[test]
+fn a_fixed_pin_lands_in_the_bundle_its_position_selects() {
+    let pins = vec![fixed_at(Boundary::L, 100), fixed_at(Boundary::R, 900)];
+    let r = create_io_clusters(&pins, &die(), 100);
+    // L_0 is offset 0, R_0 is offset 10 -- the ring reversal, end to end.
+    assert_eq!(r.assignment[0].1, 100, "L_0");
+    assert_eq!(r.assignment[1].1, 110, "R_0, the TOP of the right edge");
+}
+
+#[test]
+fn empty_bundles_are_RELEASED() {
+    // ⚠️ A bundle nothing landed in does not survive, so the surviving count is a fact about the
+    // design rather than always twenty.
+    let pins = vec![fixed_at(Boundary::L, 100)];
+    let r = create_io_clusters(&pins, &die(), 100);
+    assert_eq!(r.bundles.len(), 1, "nineteen were released");
+    assert_eq!(r.bundles[0].name, "L_0");
+    assert_eq!(r.bundles[0].num_io_pins, 1);
+}
+
+#[test]
+fn several_pins_in_one_bundle_are_counted() {
+    let pins = vec![fixed_at(Boundary::L, 50), fixed_at(Boundary::L, 150)];
+    let r = create_io_clusters(&pins, &die(), 100);
+    assert_eq!(r.bundles.len(), 1, "both fell in L_0");
+    assert_eq!(r.bundles[0].num_io_pins, 2);
+}
+
+#[test]
+fn every_unconstrained_pin_shares_ONE_cluster() {
+    // 🔑 The first such pin creates it; every later one joins it.
+    let pins = vec![floating("a", None), floating("b", None), floating("c", None)];
+    let r = create_io_clusters(&pins, &die(), 100);
+    assert_eq!(r.pin_clusters.len(), 1);
+    assert!(r.pin_clusters[0].is_cluster_of_unconstrained_io_pins);
+    let ids: Vec<i32> = r.assignment.iter().map(|(_, id)| *id).collect();
+    assert_eq!(ids, vec![100, 100, 100], "all three in the same cluster");
+}
+
+#[test]
+fn pins_with_the_SAME_constraint_share_a_cluster() {
+    let region = Rect { x_min: 0, y_min: 0, x_max: 100, y_max: 100 };
+    let pins = vec![floating("a", Some(region)), floating("b", Some(region))];
+    let r = create_io_clusters(&pins, &die(), 100);
+    assert_eq!(r.pin_clusters.len(), 1);
+    assert_eq!(r.assignment[0].1, r.assignment[1].1);
+}
+
+#[test]
+fn pins_with_DIFFERENT_constraints_get_separate_clusters() {
+    // ⚠️ Matched by equality, not overlap: two nested regions are still two clusters.
+    let a = Rect { x_min: 0, y_min: 0, x_max: 100, y_max: 100 };
+    let b = Rect { x_min: 0, y_min: 0, x_max: 200, y_max: 200 };
+    let pins = vec![floating("a", Some(a)), floating("b", Some(b))];
+    let r = create_io_clusters(&pins, &die(), 100);
+    assert_eq!(r.pin_clusters.len(), 2);
+    assert_ne!(r.assignment[0].1, r.assignment[1].1);
+}
+
+#[test]
+fn a_constrained_pin_does_not_join_the_unconstrained_cluster() {
+    // 🔑 They are different kinds of cluster. Merging them would place a restricted pin as if it
+    // were free.
+    let region = Rect { x_min: 0, y_min: 0, x_max: 100, y_max: 100 };
+    let pins = vec![floating("free", None), floating("bound", Some(region))];
+    let r = create_io_clusters(&pins, &die(), 100);
+    assert_eq!(r.pin_clusters.len(), 2);
+    assert!(r.pin_clusters[0].is_cluster_of_unconstrained_io_pins);
+    assert!(!r.pin_clusters[1].is_cluster_of_unconstrained_io_pins);
+    assert_eq!(r.pin_clusters[1].constraint_region, Some(region));
+}
+
+#[test]
+fn a_pin_cluster_is_named_after_its_own_id() {
+    // ⚠️ `ios_{id}`, not a running count -- so the name and the id cannot drift apart.
+    let pins = vec![floating("a", None)];
+    let r = create_io_clusters(&pins, &die(), 42);
+    assert_eq!(r.pin_clusters[0].name, "ios_42");
+    assert_eq!(r.pin_clusters[0].id, 42);
+}
+
+#[test]
+fn ids_run_bundles_first_then_pin_clusters() {
+    // With a fixed pin present, the twenty bundles take ids first, so a pin cluster starts after.
+    let pins = vec![fixed_at(Boundary::L, 100), floating("a", None)];
+    let r = create_io_clusters(&pins, &die(), 100);
+    assert_eq!(r.assignment[0].1, 100, "the fixed pin's bundle");
+    assert_eq!(r.assignment[1].1, 120, "the pin cluster follows all twenty bundles");
+    assert_eq!(r.next_id, 121);
+}
+
+#[test]
+fn a_mixed_design_bundles_the_fixed_and_groups_the_rest() {
+    let pins = vec![
+        fixed_at(Boundary::L, 100),
+        floating("a", None),
+        fixed_at(Boundary::T, 900),
+        floating("b", None),
+    ];
+    let r = create_io_clusters(&pins, &die(), 0);
+    assert_eq!(r.bundles.len(), 2, "L_0 and T_4 survived");
+    assert_eq!(r.pin_clusters.len(), 1, "both floating pins share one cluster");
+    assert_eq!(r.assignment.len(), 4, "every pin was assigned");
+}

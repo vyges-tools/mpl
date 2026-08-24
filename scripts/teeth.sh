@@ -192,6 +192,15 @@ mutations() {
 "vertical-edge-uses-x-span${SEP}src/ioclusters.rs${SEP}    let ext = if edge.is_vertical() { spans.y } else { spans.x };${SEP}    let ext = spans.x;${SEP}the_bundles_on_an_edge_tile_it_without_gaps_or_overlap" \
 "left-rect-has-thickness${SEP}src/ioclusters.rs${SEP}            x_max: die.x_min,\n            y_max: die.y_min + ext * i + ext,${SEP}            x_max: die.x_min + 10,\n            y_max: die.y_min + ext * i + ext,${SEP}a_bundle_rectangle_sits_ON_its_edge_with_no_thickness" \
 "spans-not-divided${SEP}src/ioclusters.rs${SEP}        x: (die.x_max - die.x_min) / IO_BUNDLES_PER_EDGE as i64,${SEP}        x: (die.x_max - die.x_min),${SEP}the_die_is_divided_into_five_per_edge" \
+"bundles-without-a-fixed-pin${SEP}src/ioclusters.rs${SEP}    if any_fixed {\n        for edge in BUNDLE_EDGE_ORDER {${SEP}    if true {\n        for edge in BUNDLE_EDGE_ORDER {${SEP}bundles_are_created_only_when_a_pin_is_FIXED" \
+"empty-bundles-kept${SEP}src/ioclusters.rs${SEP}    out.bundles.retain(|b| b.num_io_pins > 0);${SEP}    out.bundles.retain(|_b| true);${SEP}empty_bundles_are_RELEASED" \
+"bundle-pins-not-counted${SEP}src/ioclusters.rs${SEP}                b.num_io_pins += 1;${SEP}                let _ = &b.num_io_pins;${SEP}several_pins_in_one_bundle_are_counted" \
+"unconstrained-not-shared${SEP}src/ioclusters.rs${SEP}            None => unconstrained,${SEP}            None => None,${SEP}every_unconstrained_pin_shares_ONE_cluster" \
+"constraint-matched-by-overlap${SEP}src/ioclusters.rs${SEP}                .find(|c| c.constraint_region.as_ref() == Some(region))${SEP}                .find(|c| c.constraint_region.is_some())${SEP}pins_with_DIFFERENT_constraints_get_separate_clusters" \
+"constrained-joins-unconstrained${SEP}src/ioclusters.rs${SEP}            None => {\n                c.is_cluster_of_unconstrained_io_pins = true;\n                unconstrained = Some(c.id);\n            }${SEP}            None => {}${SEP}a_constrained_pin_does_not_join_the_unconstrained_cluster" \
+"no-ports-still-has-io-clusters${SEP}src/ioclusters.rs${SEP}        out.has_io_clusters = false;${SEP}        out.has_io_clusters = true;${SEP}a_design_with_no_ports_has_no_io_clusters" \
+"pin-cluster-named-by-count${SEP}src/ioclusters.rs${SEP}format!("ios_{}", out.next_id)${SEP}format!("ios_{}", out.pin_clusters.len())${SEP}a_pin_cluster_is_named_after_its_own_id" \
+"fixed-pins-not-bundled${SEP}src/ioclusters.rs${SEP}        if any_fixed && pin.is_fixed {${SEP}        if false {${SEP}a_fixed_pin_lands_in_the_bundle_its_position_selects" \
 "a-stage-dropped-from-order${SEP}src/pipeline.rs${SEP}    StageId::ComputeWireLength,\n];${SEP}];${SEP}the_pipeline_matches_the_spec_table"
 }
 

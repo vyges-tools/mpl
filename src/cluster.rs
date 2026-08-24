@@ -53,6 +53,9 @@ pub struct Cluster {
     pub is_fixed_macro: bool,
     /// Only meaningful for a pin-carrying cluster; the dump prints it instead of the counts.
     pub num_io_pins: usize,
+    /// The region an unplaced-IO cluster is restricted to. ⚠️ Two pins share a cluster only when
+    /// their regions are IDENTICAL — this is matched by equality, not by overlap.
+    pub constraint_region: Option<crate::design::Rect>,
 }
 
 impl Cluster {
@@ -73,6 +76,7 @@ impl Cluster {
             is_cluster_of_unconstrained_io_pins: false,
             is_fixed_macro: false,
             num_io_pins: 0,
+            constraint_region: None,
         }
     }
 

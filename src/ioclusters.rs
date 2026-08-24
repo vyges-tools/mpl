@@ -134,3 +134,117 @@ pub fn all_bundle_names() -> Vec<String> {
         .flat_map(|&e| (0..IO_BUNDLES_PER_EDGE).map(move |i| bundle_name(e, i)))
         .collect()
 }
+
+use crate::cluster::{Cluster, ClusterId};
+
+/// A block port, as the clustering stage sees it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Pin {
+    pub name: String,
+    pub bbox: Rect,
+    /// ⚠️ Upstream tests the FIRST pin's placement status, not the terminal's.
+    pub is_fixed: bool,
+    /// The region the user restricted this pin to, if any.
+    pub constraint: Option<Rect>,
+}
+
+/// What `createIOClusters` produced.
+#[derive(Debug, Clone, PartialEq, Default)]
+pub struct IoClusters {
+    /// The bundles that survived — ⚠️ empty ones are **released**.
+    pub bundles: Vec<Cluster>,
+    /// Clusters created for unplaced pins, in creation order.
+    pub pin_clusters: Vec<Cluster>,
+    /// `(pin index, cluster id)`.
+    pub assignment: Vec<(usize, ClusterId)>,
+    /// ⚠️ False when the design has no ports at all — upstream warns (`MPL-26`) and records it.
+    pub has_io_clusters: bool,
+    pub next_id: ClusterId,
+}
+
+/// Upstream `createIOClusters`, for a design **without** IO pads.
+///
+/// 🔑 **Bundles are created only when at least one pin is FIXED.** A design whose pins are all
+/// still floating gets constraint-sharing clusters instead — there is nothing to bundle *around*
+/// yet.
+///
+/// **Unfixed pins group by constraint:**
+/// - a pin with **no** constraint joins the single *unconstrained* cluster — the first such pin
+///   creates it and every later one shares it;
+/// - a pin **with** a constraint joins an existing cluster carrying the identical region, or
+///   starts a new one.
+///
+/// ⚠️ **Empty bundles are released.** A bundle nothing landed in does not survive, so the surviving
+/// count is a fact about the design rather than always twenty.
+pub fn create_io_clusters(pins: &[Pin], die: &Rect, first_id: ClusterId) -> IoClusters {
+    let mut out = IoClusters { has_io_clusters: true, next_id: first_id, ..Default::default() };
+
+    if pins.is_empty() {
+        // Upstream warns MPL-26 and carries on.
+        out.has_io_clusters = false;
+        return out;
+    }
+
+    let spans = bundle_spans(die);
+    let any_fixed = pins.iter().any(|p| p.is_fixed);
+    let first_bundle_id = out.next_id;
+
+    if any_fixed {
+        for edge in BUNDLE_EDGE_ORDER {
+            for i in 0..IO_BUNDLES_PER_EDGE {
+                let mut c = Cluster::new(out.next_id, bundle_name(edge, i));
+                c.is_io_bundle = true;
+                out.next_id += 1;
+                out.bundles.push(c);
+            }
+        }
+    }
+
+    // The single cluster every unconstrained pin shares, once one exists.
+    let mut unconstrained: Option<ClusterId> = None;
+
+    for (idx, pin) in pins.iter().enumerate() {
+        if any_fixed && pin.is_fixed {
+            let Some(offset) = bundle_offset(&pin.bbox, die, spans) else { continue };
+            let id = first_bundle_id + offset;
+            if let Some(b) = out.bundles.iter_mut().find(|b| b.id == id) {
+                b.num_io_pins += 1;
+            }
+            out.assignment.push((idx, id));
+            continue;
+        }
+
+        // Unfixed: share by constraint.
+        let existing = match &pin.constraint {
+            None => unconstrained,
+            Some(region) => out
+                .pin_clusters
+                .iter()
+                .find(|c| c.constraint_region.as_ref() == Some(region))
+                .map(|c| c.id),
+        };
+
+        if let Some(id) = existing {
+            out.assignment.push((idx, id));
+            continue;
+        }
+
+        // 🔑 Named `ios_{id}` — the id, not a running count, so the name and the id agree.
+        let mut c = Cluster::new(out.next_id, format!("ios_{}", out.next_id));
+        c.is_cluster_of_unplaced_io_pins = true;
+        match &pin.constraint {
+            Some(region) => c.constraint_region = Some(*region),
+            None => {
+                c.is_cluster_of_unconstrained_io_pins = true;
+                unconstrained = Some(c.id);
+            }
+        }
+        out.assignment.push((idx, c.id));
+        out.next_id += 1;
+        out.pin_clusters.push(c);
+    }
+
+    // ⚠️ A bundle nothing landed in does not survive.
+    out.bundles.retain(|b| b.num_io_pins > 0);
+    out
+}
