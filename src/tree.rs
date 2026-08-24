@@ -170,6 +170,13 @@ impl<'a> TreeBuilder<'a> {
     pub fn next_id(&self) -> ClusterId {
         self.next_id
     }
+
+    /// Resume id allocation from `id`. ⚠️ Used after IO clusters have taken their ids, so macro
+    /// clusters continue the sequence rather than colliding with them.
+    pub fn with_next_id(mut self, id: ClusterId) -> Self {
+        self.next_id = id;
+        self
+    }
 }
 
 fn to_cluster_metrics(m: ModuleMetrics) -> crate::cluster::Metrics {

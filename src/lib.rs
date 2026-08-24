@@ -19,6 +19,7 @@
 pub mod apply;
 pub mod cluster;
 pub mod design;
+pub mod engine;
 pub mod dump;
 pub mod halo;
 pub mod ioclusters;

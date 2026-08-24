@@ -1,0 +1,61 @@
+@@@CASE boundary_push1
+root  (0) Type: Mixed , Macros: 4 (160000000000 μ²),
++---ios_1  (1) Type: Unconstrained IOs Pins: 4
++---MACRO_4  (2) Type: Macro Leaf, Macros: 1 (40000000000 μ²),
++---MACRO_3  (3) Type: Macro Leaf, Macros: 1 (40000000000 μ²),
++---MACRO_2  (4) Type: Macro Leaf, Macros: 1 (40000000000 μ²),
++---MACRO_1  (5) Type: Macro Leaf, Macros: 1 (40000000000 μ²),
+@@@CASE centralization1
+root  (0) Type: Mixed , Macros: 1 (40000000000 μ²),
++---ios_1  (1) Type: Unconstrained IOs Pins: 1
++---MACRO_1  (2) Type: Macro Leaf, Macros: 1 (40000000000 μ²),
+@@@CASE clocked_macro
+root  (0) Type: Mixed , Macros: 1 (172000000000 μ²),
++---U1  (1) Type: Macro Leaf, Macros: 1 (172000000000 μ²),
+[WARNING MPL-0027] Design has only macros!
+@@@CASE guides2
+root  (0) Type: Mixed , Macros: 10 (664000000000 μ²),
++---U9  (1) Type: Macro Leaf, Macros: 1 (40000000000 μ²),
++---U8  (2) Type: Macro Leaf, Macros: 1 (40000000000 μ²),
++---U7  (3) Type: Macro Leaf, Macros: 1 (40000000000 μ²),
++---U6  (4) Type: Macro Leaf, Macros: 1 (172000000000 μ²),
++---U5  (5) Type: Macro Leaf, Macros: 1 (40000000000 μ²),
++---U4  (6) Type: Macro Leaf, Macros: 1 (40000000000 μ²),
++---U3  (7) Type: Macro Leaf, Macros: 1 (40000000000 μ²),
++---U2  (8) Type: Macro Leaf, Macros: 1 (40000000000 μ²),
++---U10  (9) Type: Macro Leaf, Macros: 1 (40000000000 μ²),
++---U1  (10) Type: Macro Leaf, Macros: 1 (172000000000 μ²),
+[WARNING MPL-0027] Design has only macros!
+@@@CASE halos3
+root  (0) Type: Mixed , Macros: 1 (40000000000 μ²),
++---ios_1  (1) Type: Unconstrained IOs Pins: 1
++---MACRO_1  (2) Type: Macro Leaf, Macros: 1 (40000000000 μ²),
+@@@CASE halos4
+root  (0) Type: Mixed , Macros: 1 (40000000000 μ²),
++---ios_1  (1) Type: Unconstrained IOs Pins: 1
++---MACRO_1  (2) Type: Macro Leaf, Macros: 1 (40000000000 μ²),
+@@@CASE macro_only
+root  (0) Type: Mixed , Macros: 10 (664000000000 μ²),
++---U1  (1) Type: Macro Leaf, Macros: 1 (172000000000 μ²),
++---U10  (2) Type: Macro Leaf, Macros: 1 (40000000000 μ²),
++---U2  (3) Type: Macro Leaf, Macros: 1 (40000000000 μ²),
++---U3  (4) Type: Macro Leaf, Macros: 1 (40000000000 μ²),
++---U4  (5) Type: Macro Leaf, Macros: 1 (40000000000 μ²),
++---U5  (6) Type: Macro Leaf, Macros: 1 (40000000000 μ²),
++---U6  (7) Type: Macro Leaf, Macros: 1 (172000000000 μ²),
++---U7  (8) Type: Macro Leaf, Macros: 1 (40000000000 μ²),
++---U8  (9) Type: Macro Leaf, Macros: 1 (40000000000 μ²),
++---U9  (10) Type: Macro Leaf, Macros: 1 (40000000000 μ²),
+[WARNING MPL-0027] Design has only macros!
+@@@CASE orientation_improve1
+root  (0) Type: Mixed , Macros: 1 (40000000000 μ²),
++---ios_1  (1) Type: Unplaced IOs Pins: 1
++---MACRO_1  (2) Type: Macro Leaf, Macros: 1 (40000000000 μ²),
+@@@CASE orientation_improve2
+root  (0) Type: Mixed , Macros: 1 (40000000000 μ²),
++---ios_1  (1) Type: Unconstrained IOs Pins: 1
++---MACRO_1  (2) Type: Macro Leaf, Macros: 1 (40000000000 μ²),
+@@@CASE orientation_improve3
+root  (0) Type: Mixed , Macros: 1 (40000000000 μ²),
++---R_4  (15) Type: IO Bundle Pins: 1
++---MACRO_1  (21) Type: Macro Leaf, Macros: 1 (40000000000 μ²),

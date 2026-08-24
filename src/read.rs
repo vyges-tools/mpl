@@ -105,3 +105,30 @@ pub fn mark_ignorable_macros(design: &mut Design, placement_area: &Rect) -> Vec<
     }
     ignored
 }
+
+/// Read the block's ports as the clustering stage needs them.
+///
+/// ⚠️ **`is_fixed` is the FIRST PIN's placement status, not the terminal's** — upstream reads
+/// `getFirstPinPlacementStatus`, and a terminal can carry pins whose status differs from it.
+pub fn read_pins(db: &Db) -> Vec<crate::ioclusters::Pin> {
+    db.block_get_b_terms()
+        .into_iter()
+        .map(|name| {
+            let status = db.bterm_get_first_pin_placement_status(&name);
+            crate::ioclusters::Pin {
+                // OpenDB spells a fixed status several ways; all of them mean "do not move".
+                is_fixed: matches!(status.as_str(), "FIRM" | "LOCKED" | "FIXED"),
+                bbox: Rect {
+                    x_min: db.bterm_get_b_box_x_min(&name) as i64,
+                    y_min: db.bterm_get_b_box_y_min(&name) as i64,
+                    x_max: db.bterm_get_b_box_x_max(&name) as i64,
+                    y_max: db.bterm_get_b_box_y_max(&name) as i64,
+                },
+                constraint: db.bterm_constraint_region(&name).ok().flatten().map(|(a, b, c, d)| {
+                    Rect { x_min: a as i64, y_min: b as i64, x_max: c as i64, y_max: d as i64 }
+                }),
+                name,
+            }
+        })
+        .collect()
+}

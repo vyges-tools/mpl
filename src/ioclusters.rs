@@ -225,6 +225,12 @@ pub fn create_io_clusters(pins: &[Pin], die: &Rect, first_id: ClusterId) -> IoCl
         };
 
         if let Some(id) = existing {
+            // ⚠️ A pin cluster counts its pins too. Only bundles did at first, so every pin
+            // cluster printed `Pins: 0` -- caught by comparing against upstream, not by any test
+            // here, because nothing in this crate knew what the number should be.
+            if let Some(c) = out.pin_clusters.iter_mut().find(|c| c.id == id) {
+                c.num_io_pins += 1;
+            }
             out.assignment.push((idx, id));
             continue;
         }
@@ -239,6 +245,7 @@ pub fn create_io_clusters(pins: &[Pin], die: &Rect, first_id: ClusterId) -> IoCl
                 unconstrained = Some(c.id);
             }
         }
+        c.num_io_pins = 1;
         out.assignment.push((idx, c.id));
         out.next_id += 1;
         out.pin_clusters.push(c);
