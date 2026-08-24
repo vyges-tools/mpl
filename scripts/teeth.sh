@@ -36,6 +36,16 @@ mutations() {
 "refusal-does-not-outrank${SEP}src/status.rs${SEP}if refusal.is_some() {${SEP}if false {${SEP}a_refusal_outranks_the_count" \
 "stop-after-uses-first-occurrence${SEP}src/pipeline.rs${SEP}seq.iter().rposition(${SEP}seq.iter().position(${SEP}repeat_duplicates_in_place_and_composes_with_stop_after" \
 "only-reorders-as-asked${SEP}src/pipeline.rs${SEP}ORDER.iter().copied().filter(|s| only.contains(s)).collect()${SEP}only.clone()${SEP}only_keeps_upstreams_relative_order_not_the_order_asked_for" \
+"boundary-order-l-after-r${SEP}src/halo.rs${SEP}    B = 0,\n    L = 1,\n    T = 2,\n    R = 3,${SEP}    B = 0,\n    L = 3,\n    T = 2,\n    R = 1,${SEP}equidistant_same_direction_falls_back_to_the_enum_order" \
+"boundary-order-b-after-t${SEP}src/halo.rs${SEP}    B = 0,\n    L = 1,\n    T = 2,\n    R = 3,${SEP}    B = 2,\n    L = 1,\n    T = 0,\n    R = 3,${SEP}a_centred_pin_prefers_bottom_over_top" \
+"is-vertical-inverted${SEP}src/halo.rs${SEP}        matches!(self, Boundary::L | Boundary::R)${SEP}        matches!(self, Boundary::B | Boundary::T)${SEP}a_corner_pin_is_decided_by_its_layer_direction" \
+"corner-rule-layer-dir-swapped${SEP}src/halo.rs${SEP}        LayerDir::Vertical => {\n            if first.1.is_vertical() { second.1 } else { first.1 }\n        }${SEP}        LayerDir::Vertical => {\n            if first.1.is_vertical() { first.1 } else { second.1 }\n        }${SEP}a_corner_pin_is_decided_by_its_layer_direction" \
+"right-distance-uses-x-min${SEP}src/halo.rs${SEP}        (master_width - pin.x_max, Boundary::R),${SEP}        (pin.x_min, Boundary::R),${SEP}right_and_bottom_distances_use_the_master_extents" \
+"soft-halo-floored-to-base${SEP}src/halo.rs${SEP}        Some((h, true)) => h,${SEP}        Some((h, true)) => Halo { left: h.left.max(base.left), bottom: h.bottom.max(base.bottom), right: h.right.max(base.right), top: h.top.max(base.top) },${SEP}a_soft_instance_halo_is_taken_as_is_and_is_not_floored" \
+"unfixed-macro-reoriented${SEP}src/halo.rs${SEP}    if is_fixed {\n        return reorient_for_fixed(halo, orient);\n    }${SEP}    return reorient_for_fixed(halo, orient);\n    #[allow(unreachable_code)]${SEP}an_unfixed_macro_is_not_reoriented" \
+"mx-swaps-left-right${SEP}src/halo.rs${SEP}    if matches!(orient, Orient::Mx | Orient::R180) {\n        std::mem::swap(&mut h.bottom, &mut h.top);${SEP}    if matches!(orient, Orient::Mx | Orient::R180) {\n        std::mem::swap(&mut h.left, &mut h.right);${SEP}a_fixed_macro_has_its_halo_reoriented" \
+"minimum-spacing-ignored${SEP}src/halo.rs${SEP}    let mut halo = Halo {\n        left: minimum_spacing,${SEP}    let mut halo = Halo {\n        left: 0,${SEP}no_pins_at_all_leaves_the_minimum_spacing_on_every_side" \
+"explicit-halo-not-short-circuited${SEP}src/halo.rs${SEP}    if let Some(h) = explicit {\n        return h;\n    }\n\n    let full = full_halo(None, inst_halo, base);${SEP}    let full = full_halo(explicit, inst_halo, base);${SEP}an_explicit_halo_bypasses_use_full_halo_and_reorientation" \
 "a-stage-dropped-from-order${SEP}src/pipeline.rs${SEP}    StageId::ComputeWireLength,\n];${SEP}];${SEP}the_pipeline_matches_the_spec_table"
 }
 
