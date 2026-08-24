@@ -10,8 +10,8 @@
 use std::collections::VecDeque;
 
 pub type ClusterId = i32;
-pub type InstId = u32;
-pub type ModuleId = u32;
+pub type InstId = usize;
+pub type ModuleId = usize;
 
 /// Upstream `enum ClusterType`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

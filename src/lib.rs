@@ -26,6 +26,7 @@ pub mod pipeline;
 pub mod read;
 pub mod status;
 pub mod thresholds;
+pub mod tree;
 
 pub use options::{parse_placer_args, Halo, MplError, PlacerOptions, Region};
 pub use pipeline::{Outcome, Plan, StageId};

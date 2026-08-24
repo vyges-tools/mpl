@@ -38,6 +38,10 @@ SEP=$'\x1f'   # unit separator: cannot occur in Rust source, unlike | or ,
 
 mutations() {
   # name <SEP> file <SEP> find <SEP> replace <SEP> test-that-must-fail
+  #
+  # ⛔ NO DOUBLE QUOTES IN A PATTERN. Each row is one bash double-quoted string, so an
+  # embedded " ends it and the script fails to parse. Anchor on a quote-free fragment
+  # instead -- it only has to be unique in the file, not complete. Cost an hour twice.
   printf '%s\n' \
 "halo-order-lrbt${SEP}src/options.rs${SEP}4 => (values[0], values[1], values[2], values[3]),${SEP}4 => (values[0], values[2], values[1], values[3]),${SEP}a_four_value_halo_is_left_bottom_right_top" \
 "halo-two-value-not-mirrored${SEP}src/options.rs${SEP}2 => (values[0], values[1], values[0], values[1]),${SEP}2 => (values[0], values[1], 0, 0),${SEP}a_two_value_halo_mirrors_into_four" \
@@ -101,6 +105,17 @@ mutations() {
 "metrics-do-not-recurse${SEP}src/design.rs${SEP}    for &child in &design.modules[module].children {${SEP}    for &child in &[] as &[usize] {${SEP}metrics_accumulate_through_the_module_hierarchy" \
 "fence-outside-core-falls-back${SEP}src/design.rs${SEP}    if shape.area() == 0 {\n        None${SEP}    if false {\n        None${SEP}a_fence_outside_the_core_leaves_nothing_to_place_into" \
 "unfixed-macros-includes-fixed${SEP}src/design.rs${SEP}        .filter(|(_, i)| i.is_block && !i.is_fixed)${SEP}        .filter(|(_, i)| i.is_block)${SEP}only_unfixed_macros_are_the_placers_to_move" \
+"empty-module-still-clustered${SEP}src/tree.rs${SEP}        if self.module_metrics[module].num_macro == 0\n            && self.module_metrics[module].num_std_cell == 0\n        {\n            return None;\n        }${SEP}        if false {\n            return None;\n        }${SEP}a_module_with_no_instances_gets_no_cluster" \
+"empty-module-skip-uses-or${SEP}src/tree.rs${SEP}        if self.module_metrics[module].num_macro == 0\n            && self.module_metrics[module].num_std_cell == 0${SEP}        if self.module_metrics[module].num_macro == 0\n            || self.module_metrics[module].num_std_cell == 0${SEP}a_module_with_only_macros_still_gets_a_cluster" \
+"cluster-named-by-leaf-name${SEP}src/tree.rs${SEP}self.design.modules[module].hierarchical_name.clone()${SEP}self.design.modules[module].name.clone()${SEP}a_cluster_is_named_by_the_modules_hierarchical_name" \
+"empty-glue-cluster-kept${SEP}src/tree.rs${SEP}        if c.leaf_std_cells.is_empty() && c.leaf_macros.is_empty() {\n            return None;\n        }${SEP}        if false {\n            return None;\n        }${SEP}a_glue_cluster_with_no_leaves_is_DISCARDED" \
+"glue-name-without-parens${SEP}src/tree.rs${SEP}({parent_name})_glue_logic${SEP}{parent_name}_glue_logic${SEP}glue_logic_is_named_after_its_parent_in_parentheses" \
+"glue-ignores-the-ignore-check${SEP}src/tree.rs${SEP}            if is_ignored_inst(inst) {\n                continue;\n            }${SEP}            if false {\n                continue;\n            }${SEP}a_module_of_only_ignored_cells_produces_no_glue_cluster" \
+"glue-files-macros-as-std-cells${SEP}src/tree.rs${SEP}            if inst.is_block {\n                cluster.leaf_macros.push(i);\n            } else {\n                cluster.leaf_std_cells.push(i);\n            }${SEP}            cluster.leaf_std_cells.push(i);${SEP}glue_leaves_are_filed_by_whether_they_are_macros" \
+"metrics-skip-held-modules${SEP}src/tree.rs${SEP}        for &module in &cluster.db_modules {\n            m.num_std_cell += self.module_metrics[module].num_std_cell;${SEP}        for &module in &[] as &[usize] {\n            m.num_std_cell += self.module_metrics[module].num_std_cell;${SEP}cluster_metrics_count_both_leaves_and_held_modules" \
+"macro-clusters-not-typed-hard${SEP}src/tree.rs${SEP}            c.cluster_type = ClusterType::HardMacro;${SEP}            c.cluster_type = ClusterType::Mixed;${SEP}each_macro_becomes_its_own_hard_macro_cluster" \
+"macro-per-cluster-includes-ignored${SEP}src/tree.rs${SEP}            if is_ignored_inst(inst) || !inst.is_block {${SEP}            if !inst.is_block {${SEP}an_ignored_macro_does_not_become_its_own_cluster" \
+"id-not-advanced${SEP}src/tree.rs${SEP}        let id = self.next_id;\n        self.next_id += 1;\n        id${SEP}        self.next_id${SEP}ids_are_handed_out_in_creation_order" \
 "a-stage-dropped-from-order${SEP}src/pipeline.rs${SEP}    StageId::ComputeWireLength,\n];${SEP}];${SEP}the_pipeline_matches_the_spec_table"
 }
 
