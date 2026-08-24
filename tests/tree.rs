@@ -195,7 +195,7 @@ use vyges_mpl::cluster::Cluster;
 fn holding(id: i32, name: &str, module: usize, std: i32, mac: i32) -> Cluster {
     let mut c = Cluster::new(id, name);
     c.db_modules.push(module);
-    c.metrics = vyges_mpl::cluster::Metrics { num_std_cell: std, num_macro: mac };
+    c.metrics = vyges_mpl::cluster::Metrics { num_std_cell: std, num_macro: mac , ..Default::default() };
     c
 }
 
@@ -326,7 +326,7 @@ fn a_merged_cluster_splits_by_module_and_then_by_its_own_leaves() {
     let mut merged = Cluster::new(50, "merged");
     merged.db_modules.push(1);
     merged.leaf_std_cells.push(0);
-    merged.metrics = vyges_mpl::cluster::Metrics { num_std_cell: 2, num_macro: 0 };
+    merged.metrics = vyges_mpl::cluster::Metrics { num_std_cell: 2, num_macro: 0 , ..Default::default() };
     b.break_cluster(&mut merged, false, 100, 100, 0, 0);
     let names: Vec<&str> = merged.children.iter().map(|c| c.name.as_str()).collect();
     assert_eq!(names, vec!["top/s1", "(merged)_glue_logic"]);

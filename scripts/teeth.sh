@@ -41,6 +41,8 @@ mutations() {
   #
   # ⛔ NO DOUBLE QUOTES IN A PATTERN. Each row is one bash double-quoted string, so an
   # embedded " ends it and the script fails to parse. Anchor on a quote-free fragment
+  # -- and NO BACKSLASH ESCAPES either: the \n-to-newline expansion below rewrites a
+  # literal '\n' inside the code you are anchoring on. Pick a different anchor
   # instead -- it only has to be unique in the file, not complete. Cost an hour twice.
   printf '%s\n' \
 "halo-order-lrbt${SEP}src/options.rs${SEP}4 => (values[0], values[1], values[2], values[3]),${SEP}4 => (values[0], values[2], values[1], values[3]),${SEP}a_four_value_halo_is_left_bottom_right_top" \
@@ -160,6 +162,15 @@ mutations() {
 "type3-disabled${SEP}src/merge.rs${SEP}            survivors.push(small[i]);\n            let Some(ii) = index_of(parent, small[i]) else { continue };${SEP}            survivors.push(small[i]);\n            let Some(ii) = index_of(parent, small[i]) else { continue };\n            if true { continue; }${SEP}dust_absorbs_dust_when_nothing_else_applies" \
 "connections-built-once${SEP}src/merge.rs${SEP}        let conns = rebuild_connections(parent);${SEP}        let conns = Connections::new(); let _ = &rebuild_connections;${SEP}a_small_cluster_merges_into_its_single_well_formed_neighbour" \
 "empty-small-list-still-loops${SEP}src/merge.rs${SEP}    if small.is_empty() {\n        return report;\n    }${SEP}    if false {\n        return report;\n    }${SEP}no_small_children_means_no_rounds" \
+"dump-drops-macro-trailing-comma${SEP}src/dump.rs${SEP}, Macros: {} ({} μ²),${SEP}, Macros: {} ({} μ²)${SEP}the_macro_field_ends_with_a_trailing_comma" \
+"dump-uses-and-not-or${SEP}src/dump.rs${SEP}        if cluster.num_std_cell() != 0 || cluster.std_cell_area() != 0 {${SEP}        if cluster.num_std_cell() != 0 && cluster.std_cell_area() != 0 {${SEP}a_field_prints_when_the_area_is_nonzero_even_if_the_count_is_zero" \
+"dump-single-space-before-id${SEP}src/dump.rs${SEP}{}  ({}) Type: {}${SEP}{} ({}) Type: {}${SEP}the_dump_matches_output_captured_from_upstream" \
+"dump-indent-wrong${SEP}src/dump.rs${SEP}        out.push_str("+---");${SEP}        out.push_str("+--");${SEP}depth_is_marked_with_one_prefix_per_level" \
+"dump-pin-clusters-print-counts${SEP}src/dump.rs${SEP}    if cluster.is_cluster_of_unplaced_io_pins || cluster.is_io_bundle {${SEP}    if false {${SEP}a_pin_cluster_prints_pins_and_nothing_else" \
+"dump-io-pads-print-counts${SEP}src/dump.rs${SEP}    } else if !cluster.is_io_pad_cluster {${SEP}    } else if true {${SEP}an_io_pad_cluster_prints_neither_pins_nor_counts" \
+"type-string-ignores-fixed-macro${SEP}src/cluster.rs${SEP}        if self.is_fixed_macro {\n            return "Fixed Macro";\n        }${SEP}        if false {\n            return "Fixed Macro";\n        }${SEP}the_type_string_checks_io_and_fixed_before_the_ordinary_type" \
+"leaf-string-ignores-children${SEP}src/cluster.rs${SEP}        if !self.is_io_cluster() && self.children.is_empty() {${SEP}        if !self.is_io_cluster() {${SEP}a_non_leaf_keeps_the_space_before_the_comma" \
+"dump-children-reversed${SEP}src/dump.rs${SEP}    for child in &cluster.children {${SEP}    for child in cluster.children.iter().rev() {${SEP}children_print_in_order_after_their_parent" \
 "a-stage-dropped-from-order${SEP}src/pipeline.rs${SEP}    StageId::ComputeWireLength,\n];${SEP}];${SEP}the_pipeline_matches_the_spec_table"
 }
 

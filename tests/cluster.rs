@@ -23,7 +23,7 @@ fn a_hard_macro_cluster_reports_no_standard_cells() {
     // comparison downstream, and the cluster would still look right in a debug dump.
     let mut k = c(1, "m");
     k.cluster_type = ClusterType::HardMacro;
-    k.metrics = Metrics { num_std_cell: 50, num_macro: 3 };
+    k.metrics = Metrics { num_std_cell: 50, num_macro: 3 , ..Default::default() };
     assert_eq!(k.num_std_cell(), 0, "masked");
     assert_eq!(k.num_macro(), 3, "not masked");
 }
@@ -32,7 +32,7 @@ fn a_hard_macro_cluster_reports_no_standard_cells() {
 fn a_std_cell_cluster_reports_no_macros() {
     let mut k = c(1, "s");
     k.cluster_type = ClusterType::StdCell;
-    k.metrics = Metrics { num_std_cell: 50, num_macro: 3 };
+    k.metrics = Metrics { num_std_cell: 50, num_macro: 3 , ..Default::default() };
     assert_eq!(k.num_std_cell(), 50);
     assert_eq!(k.num_macro(), 0, "masked");
 }
@@ -41,7 +41,7 @@ fn a_std_cell_cluster_reports_no_macros() {
 fn a_mixed_cluster_masks_neither() {
     let mut k = c(1, "x");
     k.cluster_type = ClusterType::Mixed;
-    k.metrics = Metrics { num_std_cell: 50, num_macro: 3 };
+    k.metrics = Metrics { num_std_cell: 50, num_macro: 3 , ..Default::default() };
     assert_eq!((k.num_std_cell(), k.num_macro()), (50, 3));
 }
 
@@ -99,11 +99,11 @@ fn any_of_the_three_io_flags_makes_it_an_io_cluster() {
 fn breaking_needs_either_count_over_its_maximum() {
     // ⚠️ `||`. One count over the limit is enough.
     let mut k = c(1, "k");
-    k.metrics = Metrics { num_std_cell: 5000, num_macro: 1 };
+    k.metrics = Metrics { num_std_cell: 5000, num_macro: 1 , ..Default::default() };
     assert!(should_break(&k, 100, 10), "std cells alone");
-    k.metrics = Metrics { num_std_cell: 1, num_macro: 50 };
+    k.metrics = Metrics { num_std_cell: 1, num_macro: 50 , ..Default::default() };
     assert!(should_break(&k, 100, 10), "macros alone");
-    k.metrics = Metrics { num_std_cell: 100, num_macro: 10 };
+    k.metrics = Metrics { num_std_cell: 100, num_macro: 10 , ..Default::default() };
     assert!(!should_break(&k, 100, 10), "strictly greater, so equal does not break");
 }
 
@@ -111,18 +111,18 @@ fn breaking_needs_either_count_over_its_maximum() {
 fn merging_needs_both_counts_under_their_minimum() {
     // ⚠️ `&&`. The mirror of should_break, and deliberately NOT the same operator.
     let mut k = c(1, "k");
-    k.metrics = Metrics { num_std_cell: 1, num_macro: 1 };
+    k.metrics = Metrics { num_std_cell: 1, num_macro: 1 , ..Default::default() };
     assert!(is_merge_candidate(&k, 100, 10));
-    k.metrics = Metrics { num_std_cell: 1, num_macro: 50 };
+    k.metrics = Metrics { num_std_cell: 1, num_macro: 50 , ..Default::default() };
     assert!(!is_merge_candidate(&k, 100, 10), "one count too big is enough to spare it");
-    k.metrics = Metrics { num_std_cell: 100, num_macro: 1 };
+    k.metrics = Metrics { num_std_cell: 100, num_macro: 1 , ..Default::default() };
     assert!(!is_merge_candidate(&k, 100, 10), "strictly less, so equal is not small");
 }
 
 #[test]
 fn an_io_cluster_is_never_a_merge_candidate() {
     let mut k = c(1, "io");
-    k.metrics = Metrics { num_std_cell: 0, num_macro: 0 };
+    k.metrics = Metrics { num_std_cell: 0, num_macro: 0 , ..Default::default() };
     assert!(is_merge_candidate(&k, 100, 10), "as an ordinary cluster it would merge");
     k.is_io_bundle = true;
     assert!(!is_merge_candidate(&k, 100, 10), "as an IO cluster it never does");
@@ -148,7 +148,7 @@ fn the_par_gate_counts_leaf_vectors_not_the_masked_metrics() {
     let mut k = c(1, "flat");
     k.cluster_type = ClusterType::HardMacro;
     k.leaf_std_cells = (0..6000).collect();
-    k.metrics = Metrics { num_std_cell: 6000, num_macro: 0 };
+    k.metrics = Metrics { num_std_cell: 6000, num_macro: 0 , ..Default::default() };
     assert_eq!(k.num_std_cell(), 0, "the masked accessor says zero");
     assert!(is_large_flat_cluster(&k, 5000, 5), "but the gate still fires");
 }

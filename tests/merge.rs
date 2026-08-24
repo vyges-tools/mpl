@@ -9,7 +9,7 @@ use vyges_mpl::netlist::Connections;
 
 fn cl(id: i32, name: &str, std: i32, mac: i32) -> Cluster {
     let mut c = Cluster::new(id, name);
-    c.metrics = Metrics { num_std_cell: std, num_macro: mac };
+    c.metrics = Metrics { num_std_cell: std, num_macro: mac , ..Default::default() };
     c
 }
 
@@ -214,7 +214,7 @@ fn merging_sums_the_metrics_and_concatenates_the_leaves() {
     i.leaf_macros = vec![9];
     i.db_modules = vec![7];
     merge_into(&mut r, i);
-    assert_eq!(r.metrics, Metrics { num_std_cell: 7, num_macro: 1 });
+    assert_eq!(r.metrics, Metrics { num_std_cell: 7, num_macro: 1 , ..Default::default() });
     assert_eq!(r.leaf_std_cells, vec![1, 2, 3]);
     assert_eq!(r.leaf_macros, vec![9]);
     assert_eq!(r.db_modules, vec![7]);

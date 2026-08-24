@@ -27,6 +27,10 @@ pub enum ClusterType {
 pub struct Metrics {
     pub num_std_cell: i32,
     pub num_macro: i32,
+    /// ⚠️ Carried because the hierarchy dump prints it, and the dump is our oracle. Counts alone
+    /// would compare equal against a run whose areas had drifted.
+    pub std_cell_area: i64,
+    pub macro_area: i64,
 }
 
 /// One node of the physical hierarchy.
@@ -44,6 +48,11 @@ pub struct Cluster {
     pub is_cluster_of_unplaced_io_pins: bool,
     pub is_io_pad_cluster: bool,
     pub is_io_bundle: bool,
+    /// ⚠️ NOT part of `is_io_cluster` — it only affects the printed type string.
+    pub is_cluster_of_unconstrained_io_pins: bool,
+    pub is_fixed_macro: bool,
+    /// Only meaningful for a pin-carrying cluster; the dump prints it instead of the counts.
+    pub num_io_pins: usize,
 }
 
 impl Cluster {
@@ -61,6 +70,9 @@ impl Cluster {
             is_cluster_of_unplaced_io_pins: false,
             is_io_pad_cluster: false,
             is_io_bundle: false,
+            is_cluster_of_unconstrained_io_pins: false,
+            is_fixed_macro: false,
+            num_io_pins: 0,
         }
     }
 
@@ -79,6 +91,51 @@ impl Cluster {
             return 0;
         }
         self.metrics.num_macro
+    }
+
+    /// ⚠️ Areas are **not** type-masked upstream — only the counts are. A `HardMacroCluster`
+    /// reports 0 standard cells and still reports their area, which is exactly why the dump
+    /// prints a field when the count **or** the area is non-zero.
+    pub fn std_cell_area(&self) -> i64 {
+        self.metrics.std_cell_area
+    }
+
+    pub fn macro_area(&self) -> i64 {
+        self.metrics.macro_area
+    }
+
+    /// Upstream `getClusterTypeString`. ⚠️ The IO and fixed-macro cases are checked **before**
+    /// the ordinary type, and in this order.
+    pub fn type_string(&self) -> &'static str {
+        if self.is_io_bundle {
+            return "IO Bundle";
+        }
+        if self.is_cluster_of_unconstrained_io_pins {
+            return "Unconstrained IOs";
+        }
+        if self.is_cluster_of_unplaced_io_pins {
+            return "Unplaced IOs";
+        }
+        if self.is_io_pad_cluster {
+            return "IO Pad";
+        }
+        if self.is_fixed_macro {
+            return "Fixed Macro";
+        }
+        match self.cluster_type {
+            ClusterType::StdCell => "StdCell",
+            ClusterType::Mixed => "Mixed",
+            ClusterType::HardMacro => "Macro",
+        }
+    }
+
+    /// Upstream `getIsLeafString`: `"Leaf"` for a childless non-IO cluster, otherwise empty.
+    pub fn is_leaf_string(&self) -> &'static str {
+        if !self.is_io_cluster() && self.children.is_empty() {
+            "Leaf"
+        } else {
+            ""
+        }
     }
 
     /// Nothing in it at all — no leaves and no modules.

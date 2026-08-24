@@ -144,6 +144,8 @@ pub fn find_single_well_formed_connected_cluster(
 pub fn merge_into(receiver: &mut Cluster, incomer: Cluster) -> bool {
     receiver.metrics.num_std_cell += incomer.metrics.num_std_cell;
     receiver.metrics.num_macro += incomer.metrics.num_macro;
+    receiver.metrics.std_cell_area += incomer.metrics.std_cell_area;
+    receiver.metrics.macro_area += incomer.metrics.macro_area;
     receiver.name = format!("{}||{}", receiver.name, incomer.name);
 
     if !receiver.children.is_empty() {

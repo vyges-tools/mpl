@@ -125,12 +125,17 @@ impl<'a> TreeBuilder<'a> {
         let mut m = crate::cluster::Metrics::default();
         for &i in &cluster.leaf_std_cells {
             m.num_std_cell += 1;
-            let _ = self.design.instances[i].bbox.area();
+            m.std_cell_area += self.design.instances[i].bbox.area();
         }
-        m.num_macro += cluster.leaf_macros.len() as i32;
+        for &i in &cluster.leaf_macros {
+            m.num_macro += 1;
+            m.macro_area += self.design.instances[i].bbox.area();
+        }
         for &module in &cluster.db_modules {
             m.num_std_cell += self.module_metrics[module].num_std_cell;
             m.num_macro += self.module_metrics[module].num_macro;
+            m.std_cell_area += self.module_metrics[module].std_cell_area;
+            m.macro_area += self.module_metrics[module].macro_area;
         }
         cluster.metrics = m;
     }
@@ -151,7 +156,12 @@ impl<'a> TreeBuilder<'a> {
             c.leaf_macros.push(i);
             // 🔑 Typed HardMacro here, which MASKS its standard-cell count to zero downstream.
             c.cluster_type = ClusterType::HardMacro;
-            c.metrics = crate::cluster::Metrics { num_std_cell: 0, num_macro: 1 };
+            c.metrics = crate::cluster::Metrics {
+                num_std_cell: 0,
+                num_macro: 1,
+                std_cell_area: 0,
+                macro_area: inst.bbox.area(),
+            };
             out.push(c);
         }
         out
@@ -163,7 +173,12 @@ impl<'a> TreeBuilder<'a> {
 }
 
 fn to_cluster_metrics(m: ModuleMetrics) -> crate::cluster::Metrics {
-    crate::cluster::Metrics { num_std_cell: m.num_std_cell, num_macro: m.num_macro }
+    crate::cluster::Metrics {
+        num_std_cell: m.num_std_cell,
+        num_macro: m.num_macro,
+        std_cell_area: m.std_cell_area,
+        macro_area: m.macro_area,
+    }
 }
 
 /// Metrics for every module, indexed by module.
