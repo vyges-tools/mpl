@@ -16,8 +16,10 @@
 //! whole suite is scoreable without it. ⚠️ **That makes a green suite a weaker claim than it
 //! looks** — a real design with a large flat block still needs `par`. `--describe` says so.
 
+pub mod options;
 pub mod pipeline;
 pub mod status;
 
+pub use options::{parse_placer_args, Halo, MplError, PlacerOptions, Region};
 pub use pipeline::{Outcome, Plan, StageId};
 pub use status::{settle_status, Status};
