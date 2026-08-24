@@ -18,9 +18,12 @@
 
 pub mod apply;
 pub mod cluster;
+pub mod design;
 pub mod halo;
 pub mod options;
 pub mod pipeline;
+#[cfg(unix)]
+pub mod read;
 pub mod status;
 pub mod thresholds;
 

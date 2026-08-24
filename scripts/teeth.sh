@@ -92,6 +92,15 @@ mutations() {
 "blockage-cleanup-runs-forwards${SEP}src/apply.rs${SEP}    (baseline.blockages..now).rev().collect()${SEP}    (baseline.blockages..now).collect()${SEP}destruction_runs_highest_index_first" \
 "blockage-cleanup-endpoints-swapped${SEP}src/apply.rs${SEP}    (baseline.blockages..now).rev().collect()${SEP}    (now..baseline.blockages).rev().collect()${SEP}a_shrunken_count_asks_for_nothing_rather_than_producing_garbage_indices" \
 "refusal-commits${SEP}src/apply.rs${SEP}    if kept {\n        Settlement::Committed\n    } else {\n        Settlement::RolledBack\n    }${SEP}    let _ = kept;\n    Settlement::Committed${SEP}only_success_commits" \
+"overlap-includes-touching${SEP}src/design.rs${SEP}        self.x_min < other.x_max\n            && other.x_min < self.x_max${SEP}        self.x_min <= other.x_max\n            && other.x_min <= self.x_max${SEP}touching_rectangles_do_not_overlap" \
+"ignore-check-before-block${SEP}src/design.rs${SEP}        if inst.is_block {\n            m.num_macro += 1;${SEP}        if inst.is_block && !is_ignored_inst(inst) {\n            m.num_macro += 1;${SEP}an_ignorable_macro_STILL_counts_as_a_macro" \
+"cover-not-exempt-from-fixed-error${SEP}src/design.rs${SEP}        } else if inst.is_fixed\n            && !inst.master.is_cover${SEP}        } else if inst.is_fixed\n            && true${SEP}a_fixed_cover_cell_inside_the_area_is_allowed" \
+"fixed-error-ignores-the-area${SEP}src/design.rs${SEP}            && inst.bbox.overlaps(placement_area)${SEP}            && true${SEP}a_fixed_cell_outside_the_placement_area_is_allowed_and_counted" \
+"ignored-std-cells-counted${SEP}src/design.rs${SEP}        } else if !is_ignored_inst(inst) {${SEP}        } else if true {${SEP}an_ignored_standard_cell_counts_as_neither" \
+"ignorable-flag-applies-to-std-cells${SEP}src/design.rs${SEP}    if inst.is_block && inst.is_ignorable_macro {${SEP}    if inst.is_ignorable_macro {${SEP}the_ignorable_flag_only_applies_to_macros" \
+"metrics-do-not-recurse${SEP}src/design.rs${SEP}    for &child in &design.modules[module].children {${SEP}    for &child in &[] as &[usize] {${SEP}metrics_accumulate_through_the_module_hierarchy" \
+"fence-outside-core-falls-back${SEP}src/design.rs${SEP}    if shape.area() == 0 {\n        None${SEP}    if false {\n        None${SEP}a_fence_outside_the_core_leaves_nothing_to_place_into" \
+"unfixed-macros-includes-fixed${SEP}src/design.rs${SEP}        .filter(|(_, i)| i.is_block && !i.is_fixed)${SEP}        .filter(|(_, i)| i.is_block)${SEP}only_unfixed_macros_are_the_placers_to_move" \
 "a-stage-dropped-from-order${SEP}src/pipeline.rs${SEP}    StageId::ComputeWireLength,\n];${SEP}];${SEP}the_pipeline_matches_the_spec_table"
 }
 
