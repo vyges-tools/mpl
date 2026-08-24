@@ -179,3 +179,119 @@ pub fn all_module_metrics(
     crate::design::compute_module_metrics(design, design.top, placement_area, &mut errors);
     (metrics, errors)
 }
+
+/// What `break_cluster` left for the caller to deal with.
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub struct BreakOutcome {
+    /// Children small enough to be merge candidates, by id, in the order upstream collects them.
+    ///
+    /// ⚠️ Identified but **not merged** — merging consults net connectivity, which is a separate
+    /// stage. Reporting them keeps the decision visible rather than silently skipped.
+    pub merge_candidates: Vec<ClusterId>,
+}
+
+impl TreeBuilder<'_> {
+    /// Upstream `ClusteringEngine::breakCluster`: split one cluster into children.
+    ///
+    /// ⚠️ **`is_root` is a real behavioural switch, not bookkeeping.** A flat module at the root
+    /// gets a glue-logic CHILD; the same flat module anywhere else is absorbed INTO its own
+    /// cluster, which then stops being a module cluster at all. Same input, different tree.
+    pub fn break_cluster(
+        &mut self,
+        parent: &mut Cluster,
+        is_root: bool,
+        max_std_cell: i32,
+        max_macro: i32,
+        min_std_cell: i32,
+        min_macro: i32,
+    ) -> BreakOutcome {
+        // Nothing to split.
+        //
+        // ℹ️ **An optimisation, not a behaviour** — and mutation testing proved it. `is_empty`
+        // means no leaves AND no modules, so the logical-module branch cannot match (it needs
+        // exactly one module) and the merged branch has nothing to iterate and no leaves to turn
+        // into glue. Removing this early return changes no output, here or upstream. It is kept
+        // because upstream has it, and flagged so nobody writes a test that cannot fail.
+        if parent.is_empty() {
+            return BreakOutcome::default();
+        }
+
+        if parent.corresponds_to_logical_module() {
+            let module = parent.db_modules[0];
+
+            // A module with no child modules: the hierarchy has nothing left to split on.
+            if self.design.modules[module].children.is_empty() {
+                if is_root {
+                    // 🔑 At the root the glue becomes a CHILD, so the root keeps its module and
+                    // gains one cluster holding the instances.
+                    let name = parent.name.clone();
+                    if let Some(c) = self.create_flat_cluster(module, &name) {
+                        parent.children.push(c);
+                    }
+                } else {
+                    // 🔑 Anywhere else the instances are absorbed INTO this cluster and the
+                    // module reference is dropped -- it becomes a leaf-holding cluster, which is
+                    // what later makes it a candidate for flat partitioning.
+                    self.add_module_leaf_insts(parent, module);
+                    parent.db_modules.clear();
+                }
+                return BreakOutcome::default();
+            }
+
+            // Otherwise: one cluster per child module, THEN the parent's own instances as glue.
+            // ⚠️ The order matters -- the glue cluster's id follows the child modules'.
+            for i in 0..self.design.modules[module].children.len() {
+                let child_module = self.design.modules[module].children[i];
+                if let Some(c) = self.create_cluster_for_module(child_module) {
+                    parent.children.push(c);
+                }
+            }
+            let name = parent.name.clone();
+            if let Some(c) = self.create_flat_cluster(module, &name) {
+                parent.children.push(c);
+            }
+        } else {
+            // A cluster built by merging: it may hold several modules and loose instances.
+            for i in 0..parent.db_modules.len() {
+                let module = parent.db_modules[i];
+                if let Some(c) = self.create_cluster_for_module(module) {
+                    parent.children.push(c);
+                }
+            }
+            // ⚠️ The parent's leaves are COPIED into a glue child and deliberately not cleared
+            // here; the instance-to-cluster mapping is rebuilt afterwards and settles ownership.
+            if !parent.leaf_std_cells.is_empty() || !parent.leaf_macros.is_empty() {
+                let glue = self.create_glue_from_leaves(parent);
+                parent.children.push(glue);
+            }
+        }
+
+        // Recurse into children that still hold a module AND are too big.
+        //
+        // ⛔ **The module check is what makes this recursion TERMINATE.** It reads like a mere
+        // "nothing to split on", and it is not: a cluster with no module takes the merged branch
+        // below, which copies its own leaves into a new glue child — a child with the same leaves,
+        // no module, and the same size. Recursing into that regenerates it forever.
+        //
+        // Measured: removing this condition overflows the stack. A child with no module is left
+        // for flat partitioning, which is also exactly where stage 1 refuses.
+        // ⚠️ So it is skipped **however large it is** — size is not the deciding factor here.
+        for child in &mut parent.children {
+            if !child.db_modules.is_empty()
+                && crate::cluster::should_break(child, max_std_cell, max_macro)
+            {
+                self.break_cluster(child, false, max_std_cell, max_macro, min_std_cell, min_macro);
+            }
+        }
+
+        // Collect the small ones, in child order.
+        BreakOutcome {
+            merge_candidates: parent
+                .children
+                .iter()
+                .filter(|c| crate::cluster::is_merge_candidate(c, min_std_cell, min_macro))
+                .map(|c| c.id)
+                .collect(),
+        }
+    }
+}

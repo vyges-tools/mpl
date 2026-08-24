@@ -116,6 +116,17 @@ mutations() {
 "macro-clusters-not-typed-hard${SEP}src/tree.rs${SEP}            c.cluster_type = ClusterType::HardMacro;${SEP}            c.cluster_type = ClusterType::Mixed;${SEP}each_macro_becomes_its_own_hard_macro_cluster" \
 "macro-per-cluster-includes-ignored${SEP}src/tree.rs${SEP}            if is_ignored_inst(inst) || !inst.is_block {${SEP}            if !inst.is_block {${SEP}an_ignored_macro_does_not_become_its_own_cluster" \
 "id-not-advanced${SEP}src/tree.rs${SEP}        let id = self.next_id;\n        self.next_id += 1;\n        id${SEP}        self.next_id${SEP}ids_are_handed_out_in_creation_order" \
+"root-flat-module-absorbed${SEP}src/tree.rs${SEP}                if is_root {${SEP}                if false {${SEP}a_flat_module_at_the_ROOT_gets_a_glue_child" \
+"nonroot-flat-module-gets-child${SEP}src/tree.rs${SEP}                if is_root {${SEP}                if true {${SEP}the_SAME_flat_module_below_the_root_is_absorbed_instead" \
+"absorbed-module-not-cleared${SEP}src/tree.rs${SEP}                    parent.db_modules.clear();${SEP}                    let _ = &parent.db_modules;${SEP}the_SAME_flat_module_below_the_root_is_absorbed_instead" \
+"glue-created-before-child-modules${SEP}src/tree.rs${SEP}            for i in 0..self.design.modules[module].children.len() {${SEP}            for i in (0..self.design.modules[module].children.len()).rev() {${SEP}a_module_with_children_yields_one_cluster_each_then_the_glue" \
+"merged-cluster-skips-its-modules${SEP}src/tree.rs${SEP}            for i in 0..parent.db_modules.len() {${SEP}            for i in 0..0 {${SEP}a_merged_cluster_splits_by_module_and_then_by_its_own_leaves" \
+"merged-cluster-skips-its-leaves${SEP}src/tree.rs${SEP}            if !parent.leaf_std_cells.is_empty() || !parent.leaf_macros.is_empty() {${SEP}            if false {${SEP}a_merged_cluster_splits_by_module_and_then_by_its_own_leaves" \
+"recursion-ignores-module-check${SEP}src/tree.rs${SEP}            if !child.db_modules.is_empty()\n                && crate::cluster::should_break(child, max_std_cell, max_macro)${SEP}            if crate::cluster::should_break(child, max_std_cell, max_macro)${SEP}a_glue_child_with_no_module_is_never_recursed_into" \
+"recursion-always-descends${SEP}src/tree.rs${SEP}                && crate::cluster::should_break(child, max_std_cell, max_macro)\n            {${SEP}            {${SEP}a_child_that_fits_is_left_alone" \
+"recursion-passes-is-root${SEP}src/tree.rs${SEP}                self.break_cluster(child, false, max_std_cell, max_macro, min_std_cell, min_macro);${SEP}                self.break_cluster(child, true, max_std_cell, max_macro, min_std_cell, min_macro);${SEP}a_recursed_child_is_never_treated_as_the_root" \
+"merge-candidates-not-collected${SEP}src/tree.rs${SEP}                .filter(|c| crate::cluster::is_merge_candidate(c, min_std_cell, min_macro))${SEP}                .filter(|_c| false)${SEP}small_children_are_reported_in_child_order_and_not_merged" \
+"merge-candidates-ignore-thresholds${SEP}src/tree.rs${SEP}                .filter(|c| crate::cluster::is_merge_candidate(c, min_std_cell, min_macro))${SEP}                .filter(|_c| true)${SEP}a_child_above_the_minimum_is_not_a_merge_candidate" \
 "a-stage-dropped-from-order${SEP}src/pipeline.rs${SEP}    StageId::ComputeWireLength,\n];${SEP}];${SEP}the_pipeline_matches_the_spec_table"
 }
 
@@ -159,15 +170,21 @@ while IFS="$SEP" read -r name file find replace want; do
   # caught, and this skips linking the other test binaries. If it is NOT caught here we fall
   # through to the full suite, because distinguishing WRONG TEST from NOT CAUGHT needs to see
   # every test -- and getting that distinction wrong is worse than being slow.
-  out=$(cargo test --offline $(target_flag "$want") 2>&1)
-  if ! echo "$out" | grep -qE "^test .*\b${want}\b.* FAILED"; then
-    out=$(cargo test --offline 2>&1)
+  out=$(cargo test --offline $(target_flag "$want") 2>&1); rc=$?
+  if [ "$rc" -eq 0 ]; then
+    out=$(cargo test --offline 2>&1); rc=$?
   fi
-  if echo "$out" | grep -qE "^test .*\b${want}\b.* FAILED"; then
+  # 🔑 The verdict is the EXIT CODE, not a grep. `cargo test` exits non-zero for any failure,
+  # including one a grep cannot see: a mutation that makes a test CRASH -- a stack overflow from
+  # runaway recursion, say -- aborts the binary before it can print `FAILED`, and a grep-only
+  # classifier then reports the loudest possible failure as a silent pass. Found 2026-08-24, when
+  # removing a recursion guard produced infinite recursion and was scored NOT CAUGHT.
+  if echo "$out" | grep -qE "^test .*\b${want}\b.* FAILED" \
+     || { [ "$rc" -ne 0 ] && echo "$out" | grep -qE "\b${want}\b.*(overflowed its stack|panicked)"; }; then
     printf '  %-34s \033[32mcaught\033[0m by %s\n' "$name" "$want"
     caught=$((caught+1))
-  elif echo "$out" | grep -qE "^error(\[|:)|test result: FAILED"; then
-    other=$(echo "$out" | grep -E "^test .* FAILED" | sed 's/^test //;s/ \.\.\..*//' | paste -sd, - | cut -c1-60)
+  elif [ "$rc" -ne 0 ]; then
+    other=$(echo "$out" | grep -E "^test .* FAILED|overflowed its stack" | sed 's/^test //;s/ \.\.\..*//' | paste -sd, - | cut -c1-60)
     printf '  %-34s \033[33mWRONG TEST\033[0m expected %s, red: %s\n' "$name" "$want" "${other:-compile error}"
     wrong=$((wrong+1))
   else
