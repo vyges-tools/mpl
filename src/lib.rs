@@ -21,6 +21,7 @@ pub mod cluster;
 pub mod design;
 pub mod dump;
 pub mod halo;
+pub mod ioclusters;
 pub mod options;
 pub mod merge;
 pub mod netlist;

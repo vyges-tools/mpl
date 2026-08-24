@@ -180,6 +180,18 @@ mutations() {
 "children-inherit-is-root${SEP}src/tree.rs${SEP}                let child_outcome = self.multilevel_autocluster(\n                    child,\n                    false,${SEP}                let child_outcome = self.multilevel_autocluster(\n                    child,\n                    is_root,${SEP}a_cluster_over_the_maximum_is_split_and_its_children_visited" \
 "partitioning-not-propagated${SEP}src/tree.rs${SEP}            outcome.needs_partitioning.extend(sub.needs_partitioning);${SEP}            let _ = &sub.needs_partitioning;${SEP}a_flat_cluster_needing_the_partitioner_is_reported_up_the_descent" \
 "merge-candidates-not-propagated${SEP}src/tree.rs${SEP}            if !breaks.merge_candidates.is_empty() {${SEP}            if false {${SEP}merge_candidates_are_reported_per_parent" \
+"right-edge-indexes-forward${SEP}src/ioclusters.rs${SEP}        Some(per_edge * 2 + div_floor(die.y_max - y_center, spans.y))${SEP}        Some(per_edge * 2 + div_floor(y_center - die.y_min, spans.y))${SEP}the_right_edge_indexes_BACKWARD_from_the_top" \
+"bottom-edge-indexes-forward${SEP}src/ioclusters.rs${SEP}        Some(per_edge * 3 + div_floor(die.x_max - x_center, spans.x))${SEP}        Some(per_edge * 3 + div_floor(x_center - die.x_min, spans.x))${SEP}the_bottom_edge_indexes_BACKWARD_from_the_right" \
+"edge-order-B-before-L${SEP}src/ioclusters.rs${SEP}    if pin.x_min <= die.x_min {${SEP}    if pin.y_min <= die.y_min {${SEP}the_left_edge_indexes_FORWARD_from_the_bottom" \
+"bundle-order-not-LTRB${SEP}src/ioclusters.rs${SEP}[Boundary::L, Boundary::T, Boundary::R, Boundary::B]${SEP}[Boundary::L, Boundary::B, Boundary::R, Boundary::T]${SEP}bundles_are_named_and_ordered_L_T_R_B" \
+"offset-uses-wrong-multiplier${SEP}src/ioclusters.rs${SEP}        Some(per_edge + div_floor(x_center - die.x_min, spans.x))${SEP}        Some(div_floor(x_center - die.x_min, spans.x))${SEP}the_top_edge_indexes_FORWARD_from_the_left" \
+"interior-pin-gets-a-bundle${SEP}src/ioclusters.rs${SEP}    } else {\n        None\n    }\n}${SEP}    } else {\n        Some(0)\n    }\n}${SEP}a_pin_touching_no_edge_belongs_to_no_bundle" \
+"zero-span-divides${SEP}src/ioclusters.rs${SEP}    if b == 0 {\n        return 0;\n    }${SEP}    if false {\n        return 0;\n    }${SEP}a_degenerate_span_does_not_divide_by_zero" \
+"right-rect-advances${SEP}src/ioclusters.rs${SEP}            y_min: die.y_max - ext * (i + 1),${SEP}            y_min: die.y_min + ext * i,${SEP}bundle_rectangles_advance_on_the_left_and_retreat_on_the_right" \
+"bottom-rect-advances${SEP}src/ioclusters.rs${SEP}            x_min: die.x_max - ext * (i + 1),${SEP}            x_min: die.x_min + ext * i,${SEP}bundle_rectangles_advance_on_the_left_and_retreat_on_the_right" \
+"vertical-edge-uses-x-span${SEP}src/ioclusters.rs${SEP}    let ext = if edge.is_vertical() { spans.y } else { spans.x };${SEP}    let ext = spans.x;${SEP}the_bundles_on_an_edge_tile_it_without_gaps_or_overlap" \
+"left-rect-has-thickness${SEP}src/ioclusters.rs${SEP}            x_max: die.x_min,\n            y_max: die.y_min + ext * i + ext,${SEP}            x_max: die.x_min + 10,\n            y_max: die.y_min + ext * i + ext,${SEP}a_bundle_rectangle_sits_ON_its_edge_with_no_thickness" \
+"spans-not-divided${SEP}src/ioclusters.rs${SEP}        x: (die.x_max - die.x_min) / IO_BUNDLES_PER_EDGE as i64,${SEP}        x: (die.x_max - die.x_min),${SEP}the_die_is_divided_into_five_per_edge" \
 "a-stage-dropped-from-order${SEP}src/pipeline.rs${SEP}    StageId::ComputeWireLength,\n];${SEP}];${SEP}the_pipeline_matches_the_spec_table"
 }
 
