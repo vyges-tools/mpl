@@ -310,3 +310,109 @@ impl TreeBuilder<'_> {
         }
     }
 }
+
+/// What one `multilevel_autocluster` descent produced.
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub struct AutoclusterOutcome {
+    /// Clusters that need TritonPart. ⛔ **Stage 1 refuses on a non-empty list.**
+    pub needs_partitioning: Vec<ClusterId>,
+    /// Merge candidates reported per parent, in visit order.
+    pub merge_candidates: Vec<(ClusterId, Vec<ClusterId>)>,
+    /// Cluster ids dissolved by the level collapse, so the id map can be pruned.
+    pub dissolved: Vec<ClusterId>,
+}
+
+impl AutoclusterOutcome {
+    fn absorb(&mut self, other: AutoclusterOutcome) {
+        self.needs_partitioning.extend(other.needs_partitioning);
+        self.merge_candidates.extend(other.merge_candidates);
+        self.dissolved.extend(other.dissolved);
+    }
+}
+
+impl TreeBuilder<'_> {
+    /// Upstream `ClusteringEngine::multilevelAutocluster`, the descent that drives `breakCluster`.
+    ///
+    /// 🔑 **The `else` branch recurses on the SAME cluster with the level incremented — not on its
+    /// children.** That is how the walk descends a level without splitting anything, and it
+    /// terminates only because `level >= max_level` returns. Recursing on the children there — the
+    /// obvious reading — would skip levels entirely and build a different tree.
+    ///
+    /// ⚠️ **`force_split_root` is computed only at level 0**, and against the LEAF maximum
+    /// (`base_max_std_cell / ratio^(max_level - 1)`), not the current level's. A root already
+    /// smaller than a leaf is split anyway, because leaving it whole hands the placer one cluster.
+    #[allow(clippy::too_many_arguments)]
+    pub fn multilevel_autocluster(
+        &mut self,
+        parent: &mut Cluster,
+        is_root: bool,
+        level: i32,
+        base: crate::thresholds::Thresholds,
+        max_level: i32,
+        cluster_size_ratio: f32,
+    ) -> AutoclusterOutcome {
+        let mut outcome = AutoclusterOutcome::default();
+
+        // Only at the top, and against the LEAF maximum rather than this level's.
+        let force_split_root = if level == 0 {
+            let leaf_max_std_cell =
+                (base.max_std_cell as f64 / (cluster_size_ratio as f64).powi(max_level - 1)) as i32;
+            parent.num_std_cell() < leaf_max_std_cell
+        } else {
+            false
+        };
+
+        if level >= max_level {
+            return outcome;
+        }
+
+        // ⚠️ The level is incremented BEFORE the thresholds are computed, so the first descent
+        // already uses level 1's thresholds rather than the base ones.
+        let level = level + 1;
+        let t = crate::thresholds::update_size_thresholds(base, level, cluster_size_ratio);
+
+        if force_split_root || crate::cluster::should_break(parent, t.max_std_cell, t.max_macro) {
+            let breaks = self.break_cluster(
+                parent,
+                is_root,
+                t.max_std_cell,
+                t.max_macro,
+                t.min_std_cell,
+                t.min_macro,
+            );
+            if !breaks.merge_candidates.is_empty() {
+                outcome.merge_candidates.push((parent.id, breaks.merge_candidates));
+            }
+
+            let sub = crate::cluster::update_sub_tree(parent, t.max_std_cell, t.max_macro);
+            outcome.dissolved.extend(sub.dissolved);
+            outcome.needs_partitioning.extend(sub.needs_partitioning);
+
+            for child in &mut parent.children {
+                // ⚠️ Children are never the root, whatever the parent was.
+                let child_outcome = self.multilevel_autocluster(
+                    child,
+                    false,
+                    level,
+                    base,
+                    max_level,
+                    cluster_size_ratio,
+                );
+                outcome.absorb(child_outcome);
+            }
+        } else {
+            // 🔑 The same cluster, one level down. NOT its children.
+            let same = self.multilevel_autocluster(
+                parent,
+                is_root,
+                level,
+                base,
+                max_level,
+                cluster_size_ratio,
+            );
+            outcome.absorb(same);
+        }
+
+        outcome
+    }
+}

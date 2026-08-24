@@ -395,3 +395,198 @@ fn a_child_above_the_minimum_is_not_a_merge_candidate() {
     let out = b.break_cluster(&mut root, true, 100, 100, 5, 5);
     assert_eq!(out.merge_candidates.len(), 1, "only the small one");
 }
+
+// ------------------------------------------------------------------ the autocluster descent
+
+use vyges_mpl::thresholds::Thresholds;
+
+fn t(max_std: i32, min_std: i32, max_mac: i32, min_mac: i32) -> Thresholds {
+    Thresholds {
+        max_std_cell: max_std,
+        min_std_cell: min_std,
+        max_macro: max_mac,
+        min_macro: min_mac,
+    }
+}
+
+#[test]
+fn a_descent_that_reaches_the_level_limit_stops() {
+    let d = design(vec![inst("a", false)], vec![m("top", vec![0], vec![])]);
+    let mut b = TreeBuilder::new(&d, vec![metrics(1, 0)]);
+    let mut root = holding(0, "root", 0, 20, 0);
+    // ⚠️ The thresholds matter: with generous ones, continuing past the limit would split nothing
+    // anyway and the test could not tell `>=` from `>`. Here level 2 would give a maximum of 1,
+    // which the 20-cell root exceeds -- so an off-by-one WOULD split, and this catches it.
+    let out = b.multilevel_autocluster(&mut root, true, 1, t(10, 10, 10, 10), 1, 10.0);
+    assert!(root.children.is_empty(), "the level limit stopped it before any split");
+    assert!(out.needs_partitioning.is_empty());
+}
+
+#[test]
+fn a_root_smaller_than_a_leaf_is_force_split_anyway() {
+    // 🔑 force_split_root: the root has fewer cells than a LEAF cluster may hold, so leaving it
+    // whole would hand the placer one cluster. It is split despite being under the maximum.
+    let d = design(
+        vec![inst("a", false)],
+        vec![m("top", vec![0], vec![1]), m("s1", vec![], vec![])],
+    );
+    let mut b = TreeBuilder::new(&d, vec![metrics(1, 0), metrics(0, 0)]);
+    let mut root = holding(0, "root", 0, 1, 0);
+    // base max 5000, max_level 1 -> leaf max = 5000; root has 1 cell, far below.
+    let out = b.multilevel_autocluster(&mut root, true, 0, t(5000, 1000, 5, 1), 1, 10.0);
+    assert!(!root.children.is_empty(), "split despite being tiny");
+    assert!(out.needs_partitioning.is_empty());
+}
+
+#[test]
+fn force_split_measures_against_the_LEAF_maximum_not_the_base_one() {
+    // ⚠️ With max_level == 1 the divisor is ratio^0 == 1 and the two readings AGREE, so the test
+    // above cannot tell them apart. Separating them takes more than a deeper hierarchy, because
+    // the descent eventually breaks the root either way -- what differs is WHICH LEVEL it breaks
+    // at, and therefore which thresholds that break uses.
+    //
+    // Root holds 200 cells, base maximum 5000, ratio 10, max_level 3:
+    //   correct  -- leaf maximum is 5000/100 = 50, and 200 is ABOVE it, so no force split. The
+    //               descent runs to level 3, where the minimum is 10 and a 200-cell child is
+    //               NOT a merge candidate.
+    //   mutated  -- leaf maximum read as the base 5000, 200 is below it, so it force splits at
+    //               level 1, where the minimum is 1000 and the same child IS a merge candidate.
+    let d = design(
+        vec![inst("a", false)],
+        vec![m("top", vec![], vec![1]), m("s1", vec![0], vec![])],
+    );
+    let mut b = TreeBuilder::new(&d, vec![metrics(200, 0), metrics(200, 0)]);
+    let mut root = holding(0, "root", 0, 200, 0);
+    let out = b.multilevel_autocluster(&mut root, true, 0, t(5000, 1000, 5000, 1000), 3, 10.0);
+    assert!(!root.children.is_empty(), "it is broken -- the question is at which level");
+    assert!(
+        out.merge_candidates.is_empty(),
+        "broken at the DEEP level, where 200 cells clear the minimum: {:?}",
+        out.merge_candidates
+    );
+}
+
+#[test]
+fn force_split_is_only_considered_at_the_top() {
+    // ⚠️ At any level below 0 the flag is not even computed, so a small child is left alone.
+    let d = design(vec![inst("a", false)], vec![m("top", vec![0], vec![])]);
+    let mut b = TreeBuilder::new(&d, vec![metrics(1, 0)]);
+    let mut sub = holding(0, "sub", 0, 1, 0);
+    // Level 1 of 3, tiny cluster, generous maximums -> nothing to do.
+    b.multilevel_autocluster(&mut sub, false, 1, t(5000, 1000, 5, 1), 3, 10.0);
+    assert!(sub.children.is_empty(), "a small non-root is not force split");
+    // ⚠️ "No children" alone cannot catch this: sub holds a FLAT module, and the flat branch at a
+    // non-root ABSORBS rather than creating a child -- so a wrongly-forced split would also leave
+    // no children. The absorption is the observable half.
+    assert_eq!(sub.db_modules, vec![0], "and its module is untouched");
+    assert!(sub.leaf_std_cells.is_empty(), "nothing was absorbed into it");
+}
+
+#[test]
+fn a_cluster_that_fits_descends_a_level_WITHOUT_splitting() {
+    // 🔑 The `else` branch recurses on the SAME cluster with the level incremented -- it does
+    // not descend into children. Recursing on children there (the obvious reading) would skip
+    // levels and produce a different tree. Observable as: it terminates, and splits nothing.
+    let d = design(vec![inst("a", false)], vec![m("top", vec![0], vec![])]);
+    let mut b = TreeBuilder::new(&d, vec![metrics(1, 0)]);
+    let mut sub = holding(0, "sub", 0, 1, 0);
+    // Starts at level 1 so force_split_root is off; fits comfortably; max_level 4.
+    b.multilevel_autocluster(&mut sub, false, 1, t(5000, 1000, 5, 1), 4, 10.0);
+    assert!(sub.children.is_empty(), "descended without splitting, and terminated");
+}
+
+#[test]
+fn a_cluster_over_the_maximum_is_split_and_its_children_visited() {
+    let d = design(
+        vec![inst("a", false), inst("b", false)],
+        vec![
+            m("top", vec![], vec![1, 2]),
+            m("s1", vec![0], vec![]),
+            m("s2", vec![1], vec![]),
+        ],
+    );
+    let mut b = TreeBuilder::new(&d, vec![metrics(2, 0), metrics(1, 0), metrics(1, 0)]);
+    let mut root = holding(0, "root", 0, 2, 0);
+    // ⚠️ Choosing thresholds here takes care, and my first attempt was wrong. With
+    // `t(10, 1, ...)` the level-2 minimum divides to 0, the degenerate floor raises it to 100,
+    // and the MAXIMUM is then recomputed as 500 -- so nothing exceeds it and nothing splits.
+    // Base minimums must stay above the ratio for the level scaling to be the thing under test.
+    // Here level 2 gives max 1 / min 1, and the root's 2 cells exceed it.
+    //
+    // ⚠️ And max_level must leave ROOM BELOW: with max_level 2 the recursive call into each child
+    // starts at level 2 and returns immediately, so `is_root` is never read and a leaked value
+    // cannot be observed. max_level 3 gives the recursion something to do.
+    b.multilevel_autocluster(&mut root, true, 1, t(10, 10, 10, 10), 3, 10.0);
+    let names: Vec<&str> = root.children.iter().map(|c| c.name.as_str()).collect();
+    assert_eq!(names, vec!["top/s1", "top/s2"]);
+    // ⚠️ The GRANDCHILDREN are where a leaked `is_root` shows up: each child holds a flat module,
+    // which a non-root absorbs but a root would give a glue child. Asserting only the child names
+    // cannot see that.
+    for child in &root.children {
+        assert!(child.children.is_empty(), "{} was absorbed, not given a glue child", child.name);
+    }
+}
+
+#[test]
+fn a_recursed_child_that_BREAKS_is_not_treated_as_the_root() {
+    // ⚠️ `is_root` is only READ inside break_cluster's flat-module branch, so the recursed child
+    // has to actually BREAK there. Three earlier attempts missed it: a child that returns at the
+    // level limit, or fits under its maximum, passes the flag along and never uses it.
+    //
+    // Base 1000 / ratio 10 / max_level 3. Level 2 gives a maximum of 100, which the 200-cell root
+    // exceeds; its children then descend to level 3 where the maximum is 10.
+    //
+    // 🔑 The two children behave DIFFERENTLY, and that is upstream's design rather than a defect:
+    // break_cluster has its OWN recursion into oversized children, so s1 (150 > 100) is already
+    // broken and absorbed inside the root's break, and by the time the descent reaches it, it is a
+    // merged cluster taking the other branch. s2 (50) is not, so it still holds its module when
+    // the descent reaches it -- which is exactly where `is_root` is read.
+    let d = design(
+        vec![inst("a", false), inst("b", false), inst("c", false)],
+        vec![
+            m("top", vec![], vec![1, 2]),
+            m("s1", vec![0, 1], vec![]),
+            m("s2", vec![2], vec![]),
+        ],
+    );
+    let mut b = TreeBuilder::new(&d, vec![metrics(200, 0), metrics(150, 0), metrics(50, 0)]);
+    let mut root = holding(0, "root", 0, 200, 0);
+    b.multilevel_autocluster(&mut root, true, 1, t(1000, 1000, 1000, 1000), 3, 10.0);
+
+    let s2 = root.children.iter().find(|c| c.name.starts_with("top/s2")).expect("s2 survived");
+    assert!(s2.children.is_empty(), "a recursed child ABSORBS its flat module, it is not the root");
+    assert!(s2.db_modules.is_empty(), "and the module reference is dropped");
+    assert_eq!(s2.leaf_std_cells.len(), 1, "its instance came to it");
+}
+
+#[test]
+fn a_flat_cluster_needing_the_partitioner_is_reported_up_the_descent() {
+    // ⛔ Stage 1 refuses on this. It must survive the recursion rather than being lost in a
+    // child's outcome -- a refusal that does not reach the caller is a silent approximation.
+    let insts: Vec<_> = (0..30).map(|i| inst(&format!("i{i}"), false)).collect();
+    let d = design(insts, vec![m("top", (0..30).collect(), vec![])]);
+    let mut b = TreeBuilder::new(&d, vec![metrics(30, 0)]);
+    let mut root = holding(0, "root", 0, 30, 0);
+    // Root is force split (30 < leaf max), producing a glue child with 30 leaves and no
+    // module -- which is exactly a large flat cluster once the maximum is 5.
+    let out = b.multilevel_autocluster(&mut root, true, 0, t(5, 1, 5, 1), 1, 10.0);
+    assert!(!out.needs_partitioning.is_empty(), "the refusal reached the caller");
+}
+
+#[test]
+fn merge_candidates_are_reported_per_parent() {
+    let d = design(
+        vec![inst("a", false), inst("b", false)],
+        vec![
+            m("top", vec![], vec![1, 2]),
+            m("s1", vec![0], vec![]),
+            m("s2", vec![1], vec![]),
+        ],
+    );
+    let mut b = TreeBuilder::new(&d, vec![metrics(2, 0), metrics(1, 0), metrics(1, 0)]);
+    let mut root = holding(0, "root", 0, 2, 0);
+    let out = b.multilevel_autocluster(&mut root, true, 1, t(10, 50, 10, 50), 2, 10.0);
+    assert!(!out.merge_candidates.is_empty(), "both children are below the minimum");
+    assert_eq!(out.merge_candidates[0].0, 0, "reported against their parent");
+}
+
