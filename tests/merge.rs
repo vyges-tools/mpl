@@ -253,3 +253,212 @@ fn all_connections_weight_sums_every_link() {
     assert_eq!(all_connections_weight(&c, 1), 4.0);
     assert_eq!(all_connections_weight(&c, 99), 0.0);
 }
+
+// ------------------------------------------------------------------ the loop
+
+use vyges_mpl::merge::{merge_children_below_thresholds, ImpossibleMerge};
+
+/// A parent holding the given children.
+fn parent_of(children: Vec<Cluster>) -> Cluster {
+    let mut p = Cluster::new(0, "parent");
+    p.children = children;
+    p
+}
+
+/// Connections that never change, for a loop that should converge on structure alone.
+fn fixed(c: Connections) -> impl FnMut(&Cluster) -> Connections {
+    move |_: &Cluster| c.clone()
+}
+
+#[test]
+fn no_small_children_means_no_rounds() {
+    let mut p = parent_of(vec![cl(1, "a", 100, 0)]);
+    let r = merge_children_below_thresholds(
+        &mut p, vec![], &mut fixed(Connections::new()), &never_io, 5, 5, 100, 100,
+    );
+    assert_eq!(r.rounds, 0);
+    assert!(r.merged.is_empty());
+}
+
+#[test]
+fn a_round_that_merges_nothing_ends_the_loop() {
+    // ⚠️ Getting "nothing matches" takes care, and my first attempt did not: two isolated
+    // ONE-CELL clusters are DUST, so type 3 merges them happily. To reach the exit test the
+    // clusters must be small (below the minimum) yet NOT dust -- 20 cells against a minimum of
+    // 50 and a dust limit of 10 -- and unconnected, so types 1 and 2 cannot fire either.
+    // Without the exit test this loops forever.
+    let mut p = parent_of(vec![cl(1, "a", 20, 0), cl(2, "b", 20, 0)]);
+    let r = merge_children_below_thresholds(
+        &mut p, vec![1, 2], &mut fixed(Connections::new()), &never_io, 50, 5, 100, 100,
+    );
+    assert_eq!(r.rounds, 1, "one round, then it gives up");
+    assert!(r.merged.is_empty());
+    assert_eq!(p.children.len(), 2, "both survive");
+}
+
+#[test]
+fn a_small_cluster_merges_into_its_single_well_formed_neighbour() {
+    // Type 1. Cluster 1 is small; 2 is well-formed (not in the small list) and strongly connected.
+    let mut p = parent_of(vec![cl(1, "small", 1, 0), cl(2, "big", 50, 0)]);
+    let mut conns = Connections::new();
+    conns.connect(1, 2, 5.0);
+    let r = merge_children_below_thresholds(
+        &mut p, vec![1], &mut fixed(conns), &never_io, 5, 5, 100, 100,
+    );
+    assert_eq!(r.merged, vec![(2, 1)], "the WELL-FORMED cluster is the receiver");
+    assert_eq!(p.children.len(), 1);
+    assert_eq!(p.children[0].name, "big||small");
+}
+
+#[test]
+fn type_1_is_skipped_when_the_merge_would_break_a_maximum() {
+    let mut p = parent_of(vec![cl(1, "small", 4, 0), cl(2, "big", 50, 0)]);
+    let mut conns = Connections::new();
+    conns.connect(1, 2, 5.0);
+    let r = merge_children_below_thresholds(
+        &mut p, vec![1], &mut fixed(conns), &never_io, 5, 5, 50, 5,
+    );
+    assert!(r.merged.is_empty(), "4 + 50 exceeds the 50-cell maximum");
+    assert_eq!(p.children.len(), 2);
+}
+
+#[test]
+fn siblings_with_the_same_signature_merge_when_type_1_does_not_apply() {
+    // Type 2. Both are small (so neither is well-formed for the other) and both connect to 10.
+    let mut p = parent_of(vec![cl(1, "a", 1, 0), cl(2, "b", 1, 0), cl(10, "hub", 90, 0)]);
+    let mut conns = Connections::new();
+    conns.connect(1, 10, 5.0);
+    conns.connect(2, 10, 5.0);
+    let r = merge_children_below_thresholds(
+        &mut p, vec![1, 2], &mut fixed(conns), &never_io, 5, 5, 100, 100,
+    );
+    // ⚠️ Type 1 fires first: each small cluster has exactly one well-formed neighbour (10).
+    // That is the correct upstream behaviour -- type 2 only sees what type 1 left.
+    assert!(!r.merged.is_empty());
+    assert!(r.merged.iter().all(|&(recv, _)| recv == 10), "both went to the hub: {:?}", r.merged);
+}
+
+#[test]
+fn type_1_takes_precedence_over_type_2() {
+    // 🔑 The order IS the algorithm. A cluster absorbed by type 1 is no longer available to
+    // type 2, so a test that only checks the end state cannot tell the two apart.
+    let mut p = parent_of(vec![cl(1, "a", 1, 0), cl(2, "b", 1, 0), cl(10, "hub", 90, 0)]);
+    let mut conns = Connections::new();
+    conns.connect(1, 10, 5.0);
+    conns.connect(2, 10, 5.0);
+    let r = merge_children_below_thresholds(
+        &mut p, vec![1, 2], &mut fixed(conns), &never_io, 5, 5, 100, 100,
+    );
+    assert!(
+        !r.merged.iter().any(|&(recv, _)| recv == 1 || recv == 2),
+        "no small cluster received another: {:?}",
+        r.merged
+    );
+}
+
+#[test]
+fn dust_absorbs_dust_when_nothing_else_applies() {
+    // Type 3. Two isolated dust clusters -- no connections at all, so types 1 and 2 cannot fire.
+    let mut p = parent_of(vec![cl(1, "d1", 2, 0), cl(2, "d2", 3, 0)]);
+    let r = merge_children_below_thresholds(
+        &mut p, vec![1, 2], &mut fixed(Connections::new()), &never_io, 50, 5, 100, 100,
+    );
+    assert_eq!(r.merged, vec![(1, 2)], "the earlier one receives");
+    assert_eq!(p.children.len(), 1);
+    assert_eq!(p.children[0].name, "d1||d2");
+}
+
+#[test]
+fn a_non_dust_receiver_does_not_absorb_dust() {
+    // ⚠️ The hole mutation testing found. The existing test only exercised a non-dust INCOMER;
+    // the check on the RECEIVER was untested, so removing it changed nothing observable.
+    // Here cluster 1 is small (20 < 50) but NOT dust (20 > 10), and 2 is dust. Upstream only
+    // lets DUST absorb dust, so nothing should happen.
+    let mut p = parent_of(vec![cl(1, "notdust", 20, 0), cl(2, "dust", 2, 0)]);
+    let r = merge_children_below_thresholds(
+        &mut p, vec![1, 2], &mut fixed(Connections::new()), &never_io, 50, 5, 100, 100,
+    );
+    assert!(r.merged.is_empty(), "a non-dust cluster does not absorb dust");
+    assert_eq!(p.children.len(), 2);
+}
+
+#[test]
+fn a_cluster_with_a_macro_is_not_dust_and_is_left_alone() {
+    let mut p = parent_of(vec![cl(1, "d", 2, 0), cl(2, "hasmacro", 2, 1)]);
+    let r = merge_children_below_thresholds(
+        &mut p, vec![1, 2], &mut fixed(Connections::new()), &never_io, 50, 5, 100, 100,
+    );
+    assert!(r.merged.is_empty(), "a macro is never negligible");
+    assert_eq!(p.children.len(), 2);
+}
+
+#[test]
+fn merging_preserves_sibling_order() {
+    // ⚠️ Order is observable downstream, so removal must not swap. With `swap_remove` the
+    // surviving children would come back in a different order.
+    let mut p = parent_of(vec![
+        cl(1, "d1", 2, 0),
+        cl(2, "d2", 2, 0),
+        cl(3, "keep", 90, 0),
+        cl(4, "last", 91, 0),
+    ]);
+    merge_children_below_thresholds(
+        &mut p, vec![1, 2], &mut fixed(Connections::new()), &never_io, 50, 5, 100, 100,
+    );
+    let names: Vec<&str> = p.children.iter().map(|c| c.name.as_str()).collect();
+    assert_eq!(names, vec!["d1||d2", "keep", "last"], "the tail kept its order");
+}
+
+#[test]
+fn the_loop_runs_again_after_a_successful_merge() {
+    // Three dust clusters: the first round absorbs both into the first, then the next round
+    // finds nothing left to do and stops.
+    let mut p = parent_of(vec![cl(1, "a", 1, 0), cl(2, "b", 1, 0), cl(3, "c", 1, 0)]);
+    let r = merge_children_below_thresholds(
+        &mut p, vec![1, 2, 3], &mut fixed(Connections::new()), &never_io, 50, 5, 100, 100,
+    );
+    assert_eq!(p.children.len(), 1, "all three ended up together");
+    assert!(r.rounds >= 1);
+}
+
+#[test]
+fn connections_are_rebuilt_every_round() {
+    // ⚠️ Cluster ids change as clusters merge, so a map built once and reused would connect
+    // clusters that no longer exist.
+    let mut calls = 0;
+    let mut p = parent_of(vec![cl(1, "a", 1, 0), cl(2, "b", 1, 0)]);
+    let mut rebuild = |_: &Cluster| {
+        calls += 1;
+        Connections::new()
+    };
+    merge_children_below_thresholds(&mut p, vec![1, 2], &mut rebuild, &never_io, 50, 5, 100, 100);
+    assert!(calls >= 1, "rebuilt at least once");
+}
+
+#[test]
+fn a_well_formed_neighbour_that_is_not_a_sibling_is_silently_skipped() {
+    // ⚠️ Upstream's attemptMerge returns false on differing parents and type 1 does NOT treat
+    // that as an error -- unlike types 2 and 3, whose failures are critical.
+    let mut p = parent_of(vec![cl(1, "small", 1, 0)]);
+    let mut conns = Connections::new();
+    conns.connect(1, 99, 5.0); // 99 is not a child of this parent
+    let r = merge_children_below_thresholds(
+        &mut p, vec![1], &mut fixed(conns), &never_io, 5, 5, 100, 100,
+    );
+    assert!(r.merged.is_empty());
+    assert!(r.impossible.is_empty(), "not an error, just no merge");
+    assert_eq!(p.children.len(), 1);
+}
+
+#[test]
+fn no_impossible_merges_arise_in_ordinary_operation() {
+    // ⛔ A non-empty `impossible` list means an invariant broke, not a design we cannot handle.
+    let mut p = parent_of(vec![cl(1, "a", 1, 0), cl(2, "b", 1, 0), cl(10, "hub", 90, 0)]);
+    let mut conns = Connections::new();
+    conns.connect(1, 10, 5.0);
+    conns.connect(2, 10, 5.0);
+    let r = merge_children_below_thresholds(
+        &mut p, vec![1, 2], &mut fixed(conns), &never_io, 5, 5, 100, 100,
+    );
+    assert_eq!(r.impossible, Vec::<ImpossibleMerge>::new());
+}

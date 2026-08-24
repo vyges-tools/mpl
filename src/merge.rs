@@ -164,3 +164,211 @@ pub fn merge_into(receiver: &mut Cluster, incomer: Cluster) -> bool {
 pub fn is_dust(cluster: &Cluster) -> bool {
     cluster.num_std_cell() <= DUST_CLUSTER_STD_CELL && cluster.num_macro() == 0
 }
+
+/// A merge that upstream treats as **impossible** rather than unlikely.
+///
+/// ⛔ Upstream calls `logger_->critical` on these, which **aborts**. They can only happen if two
+/// clusters selected as siblings turn out not to share a parent. We record them instead of
+/// aborting, so the caller can refuse with a reason — but a non-empty list means a real invariant
+/// broke, not a design the engine merely cannot handle.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ImpossibleMerge {
+    /// MPL-23: two siblings with the same connection signature failed to merge.
+    SameSignature { receiver: ClusterId, incomer: ClusterId },
+    /// MPL-24: two dust siblings failed to merge.
+    Dust { receiver: ClusterId, incomer: ClusterId },
+}
+
+/// What the merge loop did.
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub struct MergeReport {
+    pub rounds: usize,
+    /// `(receiver, incomer)` in the order the merges happened.
+    pub merged: Vec<(ClusterId, ClusterId)>,
+    pub impossible: Vec<ImpossibleMerge>,
+}
+
+fn index_of(parent: &Cluster, id: ClusterId) -> Option<usize> {
+    parent.children.iter().position(|c| c.id == id)
+}
+
+/// Fold `incomer_id` into `receiver_id`, both children of `parent`.
+///
+/// ⚠️ Uses `remove`, not `swap_remove`: sibling ORDER is observable downstream, and swapping
+/// would silently reorder the tree.
+fn merge_siblings(parent: &mut Cluster, receiver_id: ClusterId, incomer_id: ClusterId) -> bool {
+    let (Some(ri), Some(ii)) = (index_of(parent, receiver_id), index_of(parent, incomer_id)) else {
+        // Not siblings — upstream's `attemptMerge` returns false on differing parents.
+        return false;
+    };
+    if ri == ii {
+        return false;
+    }
+    let incomer = parent.children.remove(ii);
+    let ri = index_of(parent, receiver_id).expect("receiver survives removing another child");
+    merge_into(&mut parent.children[ri], incomer);
+    true
+}
+
+/// Upstream `mergeChildrenBelowThresholds`: absorb children too small to stand alone.
+///
+/// `rebuild_connections` is called **once per round**, because cluster ids change as clusters
+/// merge and a stale map would connect clusters that no longer exist.
+///
+/// 🔑 **Three merge types, in order, and the order is the algorithm** — a cluster absorbed by
+/// type 1 is no longer available to type 2:
+///
+/// 1. **A single well-formed connected neighbour.** ⚠️ Its receiver may not be a sibling, in which
+///    case the merge simply does not happen — upstream does not treat that as an error.
+/// 2. **Siblings with the same connection signature.** ⛔ Failure here is `critical` upstream.
+/// 3. **Dust into dust.** ⛔ Failure here is `critical` too.
+///
+/// The loop ends when a round merges nothing, or when no small children remain.
+#[allow(clippy::too_many_arguments)]
+pub fn merge_children_below_thresholds(
+    parent: &mut Cluster,
+    mut small: Vec<ClusterId>,
+    rebuild_connections: &mut dyn FnMut(&Cluster) -> Connections,
+    is_io_cluster: &dyn Fn(ClusterId) -> bool,
+    min_std_cell: i32,
+    min_macro: i32,
+    max_std_cell: i32,
+    max_macro: i32,
+) -> MergeReport {
+    let mut report = MergeReport::default();
+    if small.is_empty() {
+        return report;
+    }
+
+    loop {
+        report.rounds += 1;
+        let conns = rebuild_connections(parent);
+
+        let count_at_round_start = small.len();
+        // `None` = still unmerged. Upstream's `cluster_class`.
+        let mut absorbed: Vec<bool> = vec![false; small.len()];
+
+        // ---- Type 1: a single well-formed connected neighbour.
+        for i in 0..small.len() {
+            let Some(close) =
+                find_single_well_formed_connected_cluster(&conns, small[i], &small, is_io_cluster)
+            else {
+                continue;
+            };
+            let (Some(ci), Some(si)) = (index_of(parent, close), index_of(parent, small[i])) else {
+                continue;
+            };
+            if !merge_honors_max_thresholds(
+                &parent.children[ci],
+                &parent.children[si],
+                max_std_cell,
+                max_macro,
+            ) {
+                continue;
+            }
+            // ⚠️ Upstream calls `attemptMerge` here and lets it return false when the neighbour
+            // is not a sibling, WITHOUT treating that as an error — unlike types 2 and 3. We
+            // reach the same outcome one step earlier: the index lookup above already skipped a
+            // non-sibling, so this call only ever sees siblings. Behaviourally identical; noted
+            // because a mutation adding an error report here cannot fail, the guard having
+            // short-circuited first.
+            if merge_siblings(parent, close, small[i]) {
+                absorbed[i] = true;
+                report.merged.push((close, small[i]));
+            }
+        }
+
+        // ---- Type 2: siblings with the same connection signature.
+        for i in 0..small.len() {
+            if absorbed[i] {
+                continue;
+            }
+            for j in (i + 1)..small.len() {
+                if absorbed[j] {
+                    continue;
+                }
+                let (Some(ii), Some(ji)) = (index_of(parent, small[i]), index_of(parent, small[j]))
+                else {
+                    continue;
+                };
+                if !merge_honors_max_thresholds(
+                    &parent.children[ii],
+                    &parent.children[ji],
+                    max_std_cell,
+                    max_macro,
+                ) || !same_connection_signature(&conns, small[i], small[j])
+                {
+                    continue;
+                }
+                if merge_siblings(parent, small[i], small[j]) {
+                    absorbed[j] = true;
+                    report.merged.push((small[i], small[j]));
+                } else {
+                    report.impossible.push(ImpossibleMerge::SameSignature {
+                        receiver: small[i],
+                        incomer: small[j],
+                    });
+                }
+            }
+        }
+
+        // ---- Type 3: dust absorbs dust.
+        let mut survivors = Vec::new();
+        for i in 0..small.len() {
+            if absorbed[i] {
+                continue;
+            }
+            survivors.push(small[i]);
+            let Some(ii) = index_of(parent, small[i]) else { continue };
+            if !is_dust(&parent.children[ii]) {
+                continue;
+            }
+            for j in (i + 1)..small.len() {
+                if absorbed[j] {
+                    continue;
+                }
+                let Some(ji) = index_of(parent, small[j]) else { continue };
+                if !is_dust(&parent.children[ji]) {
+                    continue;
+                }
+                // ⚠️ No threshold check here — dust merges regardless of the maximums.
+                if merge_siblings(parent, small[i], small[j]) {
+                    absorbed[j] = true;
+                    report.merged.push((small[i], small[j]));
+                } else {
+                    report.impossible.push(ImpossibleMerge::Dust {
+                        receiver: small[i],
+                        incomer: small[j],
+                    });
+                }
+            }
+        }
+
+        // Some survivors have grown past the minimums and are no longer "small".
+        small = survivors
+            .iter()
+            .copied()
+            .filter(|&id| {
+                index_of(parent, id).is_some_and(|k| {
+                    crate::cluster::is_merge_candidate(&parent.children[k], min_std_cell, min_macro)
+                })
+            })
+            .collect();
+
+        // Exit when nothing was absorbed this round.
+        //
+        // ℹ️ Upstream compares against the SURVIVORS rather than the filtered list, and that is
+        // kept for faithfulness — but mutation testing showed the two are **equivalent here**:
+        // a cluster can only leave the small list by growing, and it can only grow by absorbing
+        // another, so "nothing absorbed" implies the filtered list is unchanged too. Documented
+        // rather than asserted, because a test pinning the distinction could not fail.
+        if count_at_round_start == survivors.len() {
+            break;
+        }
+        if small.is_empty() {
+            break;
+        }
+    }
+
+    report
+}
