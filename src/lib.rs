@@ -16,6 +16,7 @@
 //! whole suite is scoreable without it. ⚠️ **That makes a green suite a weaker claim than it
 //! looks** — a real design with a large flat block still needs `par`. `--describe` says so.
 
+pub mod cluster;
 pub mod halo;
 pub mod options;
 pub mod pipeline;

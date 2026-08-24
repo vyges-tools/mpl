@@ -15,6 +15,25 @@
 set -uo pipefail
 cd "$(dirname "$0")/.."
 
+# ⛔ NEVER run two of these at once. It mutates the working tree in place, so a second instance
+# sees the first one's mutation and reports a failure in an unrelated file. That produced exactly
+# one confusing WRONG TEST on 2026-08-24 -- a halo mutation blamed for a cluster-tree failure --
+# and the result did not reproduce, which is the worst kind of finding to leave unexplained.
+LOCK=".teeth.lock"
+if ! mkdir "$LOCK" 2>/dev/null; then
+  echo "ERROR: another teeth.sh is running (remove $LOCK if that is stale)." >&2
+  exit 2
+fi
+cleanup() {
+  rmdir "$LOCK" 2>/dev/null
+  # Restore anything a kill left mutated, so an interrupted run never leaves a broken tree.
+  for b in src/*.teeth-backup tests/*.teeth-backup; do
+    [ -e "$b" ] || continue
+    mv "$b" "${b%.teeth-backup}"
+  done
+}
+trap cleanup EXIT INT TERM
+
 SEP=$'\x1f'   # unit separator: cannot occur in Rust source, unlike | or ,
 
 mutations() {
@@ -56,6 +75,20 @@ mutations() {
 "per-level-max-not-recomputed${SEP}src/thresholds.rs${SEP}    if t.min_macro <= 0 {\n        t.min_macro = 1;\n        t.max_macro = half_ratio(t.min_macro, cluster_size_ratio);\n    }${SEP}    if t.min_macro <= 0 {\n        t.min_macro = 1;\n    }${SEP}a_degenerate_macro_minimum_becomes_one_and_recomputes_its_maximum" \
 "half-ratio-rounds-instead-of-truncating${SEP}src/thresholds.rs${SEP}    trunc((base as f32 * ratio) as f64 / 2.0)${SEP}    (((base as f32 * ratio) as f64 / 2.0).round()) as i32${SEP}an_odd_ratio_truncates_the_half_rather_than_rounding_it" \
 "level-divides-repeatedly${SEP}src/thresholds.rs${SEP}    let coarse_factor = (cluster_size_ratio as f64).powi(level - 1);${SEP}    let coarse_factor = (cluster_size_ratio as f64) * (level - 1).max(1) as f64;${SEP}each_level_divides_by_the_ratio" \
+"break-uses-and-not-or${SEP}src/cluster.rs${SEP}    cluster.num_std_cell() > max_std_cell || cluster.num_macro() > max_macro${SEP}    cluster.num_std_cell() > max_std_cell && cluster.num_macro() > max_macro${SEP}breaking_needs_either_count_over_its_maximum" \
+"merge-uses-or-not-and${SEP}src/cluster.rs${SEP}        && cluster.num_std_cell() < min_std_cell\n        && cluster.num_macro() < min_macro${SEP}        && (cluster.num_std_cell() < min_std_cell\n        || cluster.num_macro() < min_macro)${SEP}merging_needs_both_counts_under_their_minimum" \
+"io-clusters-can-merge${SEP}src/cluster.rs${SEP}    !cluster.is_io_cluster()\n        && cluster.num_std_cell()${SEP}    true\n        && cluster.num_std_cell()${SEP}an_io_cluster_is_never_a_merge_candidate" \
+"break-is-greater-or-equal${SEP}src/cluster.rs${SEP}    cluster.num_std_cell() > max_std_cell || cluster.num_macro() > max_macro${SEP}    cluster.num_std_cell() >= max_std_cell || cluster.num_macro() >= max_macro${SEP}breaking_needs_either_count_over_its_maximum" \
+"hard-macro-mask-missing${SEP}src/cluster.rs${SEP}        if self.cluster_type == ClusterType::HardMacro {\n            return 0;\n        }${SEP}        if false {\n            return 0;\n        }${SEP}a_hard_macro_cluster_reports_no_standard_cells" \
+"std-cell-mask-missing${SEP}src/cluster.rs${SEP}        if self.cluster_type == ClusterType::StdCell {\n            return 0;\n        }${SEP}        if false {\n            return 0;\n        }${SEP}a_std_cell_cluster_reports_no_macros" \
+"logical-module-allows-glue${SEP}src/cluster.rs${SEP}        self.leaf_std_cells.is_empty() && self.leaf_macros.is_empty() && self.db_modules.len() == 1${SEP}        self.db_modules.len() == 1${SEP}glue_instances_stop_a_cluster_corresponding_to_a_logical_module" \
+"logical-module-at-least-one${SEP}src/cluster.rs${SEP}&& self.db_modules.len() == 1\n    }${SEP}&& !self.db_modules.is_empty()\n    }${SEP}two_modules_stop_it_too" \
+"subtree-collapse-is-lifo${SEP}src/cluster.rs${SEP}        if cluster.children.is_empty() {\n            leaves.push(cluster);${SEP}        if cluster.children.is_empty() {\n            leaves.insert(0, cluster);${SEP}the_collapse_is_breadth_first_not_depth_first" \
+"subtree-pushes-to-front${SEP}src/cluster.rs${SEP}                wavefront.push_back(child);${SEP}                wavefront.push_front(child);${SEP}the_collapse_is_breadth_first_not_depth_first" \
+"dissolved-ids-not-reported${SEP}src/cluster.rs${SEP}            dissolved.push(cluster.id);${SEP}            let _ = cluster.id;${SEP}every_dissolved_id_is_reported_so_the_id_map_can_be_pruned" \
+"par-gate-uses-masked-counts${SEP}src/cluster.rs${SEP}        && (cluster.leaf_std_cells.len() as i64 > max_std_cell as i64\n            || cluster.leaf_macros.len() as i64 > max_macro as i64)${SEP}        && (cluster.num_std_cell() as i64 > max_std_cell as i64\n            || cluster.num_macro() as i64 > max_macro as i64)${SEP}the_par_gate_counts_leaf_vectors_not_the_masked_metrics" \
+"par-gate-ignores-modules${SEP}src/cluster.rs${SEP}    cluster.db_modules.is_empty()\n        && (cluster.leaf_std_cells.len()${SEP}    true\n        && (cluster.leaf_std_cells.len()${SEP}a_large_flat_cluster_is_one_with_no_modules_and_too_many_leaves" \
+"par-refusal-not-collected${SEP}src/cluster.rs${SEP}        .filter(|c| is_large_flat_cluster(c, max_std_cell, max_macro))${SEP}        .filter(|_c| false)${SEP}a_resulting_child_needing_the_partitioner_is_reported_not_approximated" \
 "a-stage-dropped-from-order${SEP}src/pipeline.rs${SEP}    StageId::ComputeWireLength,\n];${SEP}];${SEP}the_pipeline_matches_the_spec_table"
 }
 
@@ -64,6 +97,20 @@ mutations() {
 # mutation is measured against the previous one. Found by this script's own post-run green check
 # on 2026-08-24, which is the only reason it was not silently wrong for the whole run.
 restore() { mv "$1.teeth-backup" "$1"; touch "$1"; }
+
+# Which cargo target holds a given test name? Integration tests live in tests/<name>.rs; unit
+# tests live in the lib. Returns the narrowest --test/--lib flag, or nothing if it cannot tell
+# (in which case the full suite runs, which is the safe default).
+target_flag() {
+  local want="$1" f
+  for f in tests/*.rs; do
+    [ -e "$f" ] || continue
+    if grep -qE "fn +${want}\\(" "$f"; then
+      printf -- "--test %s" "$(basename "$f" .rs)"; return
+    fi
+  done
+  if grep -rqE "fn +${want}\\(" src/ 2>/dev/null; then printf -- "--lib"; fi
+}
 
 caught=0; wrong=0; hole=0; stale=0; total=0
 while IFS="$SEP" read -r name file find replace want; do
@@ -81,7 +128,14 @@ while IFS="$SEP" read -r name file find replace want; do
     stale=$((stale+1)); restore "$file"; continue
   fi
 
-  out=$(cargo test --offline 2>&1)
+  # ⚡ Fast path: build and run ONLY the target holding the expected test. Most mutations are
+  # caught, and this skips linking the other test binaries. If it is NOT caught here we fall
+  # through to the full suite, because distinguishing WRONG TEST from NOT CAUGHT needs to see
+  # every test -- and getting that distinction wrong is worse than being slow.
+  out=$(cargo test --offline $(target_flag "$want") 2>&1)
+  if ! echo "$out" | grep -qE "^test .*\b${want}\b.* FAILED"; then
+    out=$(cargo test --offline 2>&1)
+  fi
   if echo "$out" | grep -qE "^test .*\b${want}\b.* FAILED"; then
     printf '  %-34s \033[32mcaught\033[0m by %s\n' "$name" "$want"
     caught=$((caught+1))
