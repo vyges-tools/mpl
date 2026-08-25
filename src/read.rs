@@ -51,6 +51,10 @@ pub fn read_design(db: &Db) -> Result<Design, String> {
             },
             master: MasterKind {
                 is_pad: db.master_is_pad(&master),
+                is_pad_without_signal: matches!(
+                    db.master_get_type(&master).unwrap_or_default().as_str(),
+                    "PAD_POWER" | "PAD_SPACER"
+                ),
                 is_cover: db.master_is_cover(&master),
                 is_end_cap: db.master_is_end_cap(&master),
             },
@@ -131,4 +135,54 @@ pub fn read_pins(db: &Db) -> Vec<crate::ioclusters::Pin> {
             }
         })
         .collect()
+}
+
+/// Read every net, reduced to the terminals the clustering cares about.
+///
+/// 🔑 **A terminal is identified by index, not by name**, from here on: instances by their position
+/// in [`Design::instances`], block ports by their position in the pin list from [`read_pins`]. A
+/// name that does not resolve is dropped rather than guessed — an unresolvable terminal is not
+/// connectivity, and inventing one would tie unrelated clusters together.
+///
+/// ⚠️ The instance pin arrives as `inst/mterm`; the split is on the LAST separator, because an
+/// instance name in a hierarchical design contains them and a master terminal name does not.
+pub fn read_nets(
+    db: &Db,
+    design: &Design,
+    pins: &[crate::ioclusters::Pin],
+) -> Vec<crate::netlist::DbNet> {
+    let inst_index: HashMap<&str, usize> =
+        design.instances.iter().enumerate().map(|(i, x)| (x.name.as_str(), i)).collect();
+    let pin_index: HashMap<&str, usize> =
+        pins.iter().enumerate().map(|(i, p)| (p.name.as_str(), i)).collect();
+
+    let mut out = Vec::new();
+    for name in db.net_names() {
+        let sig = db.net_sigtype(&name);
+        let mut iterms = Vec::new();
+        for term in db.net_iterms(&name) {
+            let Some((inst, pin)) = term.rsplit_once('/') else { continue };
+            let Some(&i) = inst_index.get(inst) else { continue };
+            iterms.push(crate::netlist::InstTerm {
+                inst: i,
+                is_output: db.iterm_get_io_type(inst, pin) == "OUTPUT",
+            });
+        }
+        let mut bterms = Vec::new();
+        for term in db.net_bterms(&name) {
+            let Some(&b) = pin_index.get(term.as_str()) else { continue };
+            bterms.push(crate::netlist::PortTerm {
+                bterm: b,
+                is_input: db.bterm_direction(&term) == "INPUT",
+            });
+        }
+        out.push(crate::netlist::DbNet {
+            name,
+            // A supply net carries no placement information; `isValidNet` drops it.
+            is_supply: sig == "POWER" || sig == "GROUND",
+            iterms,
+            bterms,
+        });
+    }
+    out
 }

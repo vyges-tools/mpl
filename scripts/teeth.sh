@@ -219,7 +219,15 @@ mutations() {
 "std-cell-cluster-not-connected${SEP}src/macroclass.rs${SEP}    let mut virtual_members = vec![mixed_leaf];${SEP}    let mut virtual_members: Vec<ClusterId> = vec![];${SEP}virtual_connections_join_every_pair" \
 "virtual-pairs-only-adjacent${SEP}src/macroclass.rs${SEP}        for j in (i + 1)..virtual_members.len() {${SEP}        for j in (i + 1)..(i + 2).min(virtual_members.len()) {${SEP}virtual_connections_join_every_pair" \
 "fixed-clusters-not-virtually-connected${SEP}src/macroclass.rs${SEP}    virtual_members.extend(fixed_clusters.iter().copied());${SEP}    let _ = &fixed_clusters;${SEP}virtual_connections_join_every_pair" \
-"a-stage-dropped-from-order${SEP}src/pipeline.rs${SEP}    StageId::ComputeWireLength,\n];${SEP}];${SEP}the_pipeline_matches_the_spec_table"
+"a-stage-dropped-from-order${SEP}src/pipeline.rs${SEP}    StageId::ComputeWireLength,\n];${SEP}];${SEP}the_pipeline_matches_the_spec_table" \
+"macros-of-drops-own-leaf-macros${SEP}src/tree.rs${SEP}    let mut out = cluster.leaf_macros.clone();\n    for &m in &cluster.db_modules {${SEP}    let mut out = Vec::new();\n    for &m in &cluster.db_modules {${SEP}a_clusters_macros_are_its_own_then_its_modules_depth_first" \
+"module-children-not-walked${SEP}src/tree.rs${SEP}        hard_macros_of_module(c, design, out);${SEP}        let _ = c;${SEP}a_clusters_macros_are_its_own_then_its_modules_depth_first" \
+"std-cell-cluster-claims-macros${SEP}src/tree.rs${SEP}        if !include_macro && inst.is_block {${SEP}        if false && inst.is_block {${SEP}a_std_cell_cluster_never_claims_a_macro_in_its_module" \
+"fixed-macro-not-lifted-to-root${SEP}src/tree.rs${SEP}            if c.is_fixed_macro && !is_root {${SEP}            if false {${SEP}a_fixed_macro_is_lifted_to_the_root_rather_than_left_beside_its_siblings" \
+"merged-name-uses-ids${SEP}src/tree.rs${SEP}                    .map(|d| d.name.clone())${SEP}                    .map(|d| d.id.to_string())${SEP}merged_macros_leave_one_cluster_carrying_both_names_and_both_areas" \
+"merged-macro-count-not-summed${SEP}src/tree.rs${SEP}                    c.metrics.num_macro += 1;${SEP}                    c.metrics.num_macro = 1;${SEP}merged_macros_leave_one_cluster_carrying_both_names_and_both_areas" \
+"mixed-leaf-not-retyped${SEP}src/tree.rs${SEP}        child.cluster_type = ClusterType::StdCell;\n        child.metrics.num_macro = 0;${SEP}        child.metrics.num_macro = 0;${SEP}a_mixed_leaf_becomes_a_std_cell_cluster_and_its_macros_become_siblings" \
+"absorbed-cluster-kept-in-tree${SEP}src/tree.rs${SEP}            if !survivors.contains(&c.id) {\n                continue;\n            }${SEP}            if false {\n                continue;\n            }${SEP}merged_macros_leave_one_cluster_carrying_both_names_and_both_areas"
 }
 
 # ⚠️ `mv` restores the BACKUP's mtime, which can be older than the artifact built from the

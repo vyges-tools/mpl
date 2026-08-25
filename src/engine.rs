@@ -39,6 +39,7 @@ pub struct ClusterOptions {
     pub max_num_level: i32,
     pub cluster_size_ratio: f32,
     pub global_fence: Option<Rect>,
+    pub large_net_threshold: usize,
 }
 
 impl Default for ClusterOptions {
@@ -54,6 +55,7 @@ impl Default for ClusterOptions {
             max_num_level: d.max_num_level as i32,
             cluster_size_ratio: d.coarsening_ratio as f32,
             global_fence: None,
+            large_net_threshold: d.large_net_threshold as usize,
         }
     }
 }
@@ -63,7 +65,12 @@ impl Default for ClusterOptions {
 /// The order is the algorithm, and one step of it is visible in upstream's own output:
 /// **IO clusters are created BEFORE the macro clusters**, so they take the lower ids —
 /// `ios_1` precedes `MACRO_4` in a real dump.
-pub fn run_clustering(design: &Design, pins: &[Pin], opts: &ClusterOptions) -> Clustering {
+pub fn run_clustering(
+    design: &Design,
+    pins: &[Pin],
+    nets: &[crate::netlist::DbNet],
+    opts: &ClusterOptions,
+) -> Clustering {
     // ---- init
     let Some(placement_area) =
         crate::design::floorplan_shape(&design.core_area, opts.global_fence.as_ref())
@@ -113,7 +120,13 @@ pub fn run_clustering(design: &Design, pins: &[Pin], opts: &ClusterOptions) -> C
     );
 
     // ---- IO clusters, BEFORE any macro cluster, so they take the lower ids
-    let io = create_io_clusters(pins, &design.die_area, builder.next_id());
+    let pads = crate::design::io_pads(design);
+    let io_first_id = builder.next_id();
+    let io = if pads.is_empty() {
+        create_io_clusters(pins, &design.die_area, builder.next_id())
+    } else {
+        crate::ioclusters::create_io_pad_clusters(&pads, design, builder.next_id())
+    };
     let mut builder = builder.with_next_id(io.next_id);
     for c in io.bundles.iter().chain(io.pin_clusters.iter()) {
         root.children.push(c.clone());
@@ -128,13 +141,47 @@ pub fn run_clustering(design: &Design, pins: &[Pin], opts: &ClusterOptions) -> C
         return Clustering { root, status: Status::Applied, refusal: None };
     }
 
-    // ⏸️ The mixed path needs `breakMixedLeaves`, which classifies macros by size, connection
-    // signature and interconnection. Not built — and refused rather than approximated, because a
-    // tree that is merely PLAUSIBLE is exactly what this programme exists to avoid.
-    let _ = (&mut root, &base, is_ignored_inst, ClusterType::Mixed, IoClusters::default);
-    refuse(Refusal::NotImplemented(
-        "designs with standard cells need breakMixedLeaves",
-    ))
+    // ---- the mixed path: descend the levels, then split the mixed leaves
+    let out = builder.multilevel_autocluster(
+        &mut root,
+        true,
+        0,
+        base.thresholds,
+        base.max_level,
+        opts.cluster_size_ratio,
+    );
+
+    // ⛔ A flat cluster needing TritonPart. Refused, never approximated.
+    if !out.needs_partitioning.is_empty() {
+        return refuse(Refusal::NeedsPartitioner(out.needs_partitioning));
+    }
+
+    // `fetchMixedLeaves` retypes as it walks, so it must run before anything reads the types.
+    // Its groups are not needed here: `split_mixed_leaves` walks the same post-order itself, and
+    // one traversal that both collects and breaks cannot disagree with itself about the order.
+    let _groups = crate::tree::fetch_mixed_leaves(&mut root);
+
+    // Block ports reach the netlist through the IO cluster they were assigned to.
+    let mut bterm_to_cluster = vec![None; pins.len()];
+    for &(pin, cluster) in &io.assignment {
+        bterm_to_cluster[pin] = Some(cluster);
+    }
+
+    let mut ctx = crate::tree::SplitCtx {
+        design,
+        nets,
+        bterm_to_cluster,
+        // ⚠️ With pads present the pads carry the connectivity and block ports are ignored.
+        design_has_io_pads: !pads.is_empty(),
+        large_net_threshold: opts.large_net_threshold,
+        seed_assoc: pads.iter().copied().zip(io_first_id..).collect(),
+        assoc: Vec::new(),
+    };
+    let mut next_id = builder.next_id();
+    let _virtual = crate::tree::split_mixed_leaves(&mut root, &mut ctx, &mut next_id);
+
+    let _ = (&base, is_ignored_inst, ClusterType::Mixed, IoClusters::default);
+    Clustering { root, status: Status::Applied, refusal: None }
 }
 
 fn refuse(r: Refusal) -> Clustering {

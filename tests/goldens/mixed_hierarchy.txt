@@ -1,0 +1,125 @@
+@@@CASE fixed_covers
+root  (0) Type: Mixed , StdCells: 150 (2713200000 μ²), Macros: 2 (80000000000 μ²),
++---(root)_glue_logic  (1) Type: StdCell Leaf, StdCells: 150 (2713200000 μ²)
++---MACRO_2  (2) Type: Macro Leaf, Macros: 1 (40000000000 μ²),
++---MACRO_1  (3) Type: Fixed Macro Leaf, Macros: 1 (40000000000 μ²),
+@@@CASE fixed_ios1
+root  (0) Type: Mixed , StdCells: 150 (2713200000 μ²), Macros: 1 (40000000000 μ²),
++---L_2  (3) Type: IO Bundle Pins: 1
++---(root)_glue_logic  (21) Type: StdCell Leaf, StdCells: 150 (2713200000 μ²)
++---MACRO_1  (22) Type: Macro Leaf, Macros: 1 (40000000000 μ²),
+@@@CASE fixed_macros1
+root  (0) Type: Mixed , StdCells: 150 (2713200000 μ²), Macros: 2 (80000000000 μ²),
++---(root)_glue_logic  (1) Type: StdCell Leaf, StdCells: 150 (2713200000 μ²)
++---MACRO_2  (2) Type: Macro Leaf, Macros: 1 (40000000000 μ²),
++---MACRO_1  (3) Type: Fixed Macro Leaf, Macros: 1 (40000000000 μ²),
+@@@CASE fixed_macros2
+root  (0) Type: Mixed , StdCells: 400 (7235200000 μ²), Macros: 2 (80000000000 μ²),
++---(root)_glue_logic  (1) Type: StdCell Leaf, StdCells: 400 (7235200000 μ²)
++---MACRO_2  (2) Type: Macro Leaf, Macros: 1 (40000000000 μ²),
++---MACRO_1  (3) Type: Fixed Macro Leaf, Macros: 1 (40000000000 μ²),
+@@@CASE guides1
+root  (0) Type: Mixed , StdCells: 150 (2713200000 μ²), Macros: 1 (40000000000 μ²),
++---ios_1  (1) Type: Unplaced IOs Pins: 3
++---(root)_glue_logic  (2) Type: StdCell Leaf, StdCells: 150 (2713200000 μ²)
++---MACRO_1  (3) Type: Macro Leaf, Macros: 1 (40000000000 μ²),
+@@@CASE halos1
+root  (0) Type: Mixed , StdCells: 150 (2713200000 μ²), Macros: 2 (80000000000 μ²),
++---(root)_glue_logic  (1) Type: StdCell Leaf, StdCells: 150 (2713200000 μ²)
++---MACRO_2  (2) Type: Macro Leaf, Macros: 1 (40000000000 μ²),
++---MACRO_1  (3) Type: Macro Leaf, Macros: 1 (40000000000 μ²),
+@@@CASE halos2
+root  (0) Type: Mixed , StdCells: 150 (2713200000 μ²), Macros: 2 (80000000000 μ²),
++---(root)_glue_logic  (1) Type: StdCell Leaf, StdCells: 150 (2713200000 μ²)
++---MACRO_2  (2) Type: Macro Leaf, Macros: 1 (40000000000 μ²),
++---MACRO_1  (3) Type: Macro Leaf, Macros: 1 (40000000000 μ²),
+@@@CASE halos5
+root  (0) Type: Mixed , StdCells: 150 (2713200000 μ²), Macros: 2 (80000000000 μ²),
++---(root)_glue_logic  (1) Type: StdCell Leaf, StdCells: 150 (2713200000 μ²)
++---MACRO_2  (2) Type: Macro Leaf, Macros: 1 (40000000000 μ²),
++---MACRO_1  (3) Type: Macro Leaf, Macros: 1 (40000000000 μ²),
+@@@CASE io_constraints10
+root  (0) Type: Mixed , StdCells: 150 (2713200000 μ²), Macros: 1 (40000000000 μ²),
++---ios_1  (1) Type: Unplaced IOs Pins: 2
++---ios_2  (2) Type: Unconstrained IOs Pins: 1
++---(root)_glue_logic  (3) Type: StdCell Leaf, StdCells: 150 (2713200000 μ²)
++---MACRO_1  (4) Type: Macro Leaf, Macros: 1 (40000000000 μ²),
+@@@CASE io_constraints1
+root  (0) Type: Mixed , StdCells: 150 (2713200000 μ²), Macros: 1 (40000000000 μ²),
++---ios_1  (1) Type: Unplaced IOs Pins: 3
++---(root)_glue_logic  (2) Type: StdCell Leaf, StdCells: 150 (2713200000 μ²)
++---MACRO_1  (3) Type: Macro Leaf, Macros: 1 (40000000000 μ²),
+@@@CASE io_constraints2
+root  (0) Type: Mixed , StdCells: 150 (2713200000 μ²), Macros: 1 (40000000000 μ²),
++---ios_1  (1) Type: Unconstrained IOs Pins: 3
++---(root)_glue_logic  (2) Type: StdCell Leaf, StdCells: 150 (2713200000 μ²)
++---MACRO_1  (3) Type: Macro Leaf, Macros: 1 (40000000000 μ²),
+@@@CASE io_constraints3
+root  (0) Type: Mixed , StdCells: 200 (3617600000 μ²), Macros: 1 (40000000000 μ²),
++---ios_1  (1) Type: Unconstrained IOs Pins: 3
++---(root)_glue_logic  (2) Type: StdCell Leaf, StdCells: 200 (3617600000 μ²)
++---MACRO_1  (3) Type: Macro Leaf, Macros: 1 (40000000000 μ²),
+@@@CASE io_constraints4
+root  (0) Type: Mixed , StdCells: 400 (7235200000 μ²), Macros: 1 (40000000000 μ²),
++---ios_1  (1) Type: Unplaced IOs Pins: 2
++---ios_2  (2) Type: Unplaced IOs Pins: 1
++---(root)_glue_logic  (3) Type: StdCell Leaf, StdCells: 400 (7235200000 μ²)
++---MACRO_1  (4) Type: Macro Leaf, Macros: 1 (40000000000 μ²),
+@@@CASE io_constraints5
+root  (0) Type: Mixed , StdCells: 400 (7235200000 μ²), Macros: 1 (40000000000 μ²),
++---ios_1  (1) Type: Unplaced IOs Pins: 2
++---ios_2  (2) Type: Unplaced IOs Pins: 1
++---(root)_glue_logic  (3) Type: StdCell Leaf, StdCells: 400 (7235200000 μ²)
++---MACRO_1  (4) Type: Macro Leaf, Macros: 1 (40000000000 μ²),
+@@@CASE io_constraints6
+root  (0) Type: Mixed , StdCells: 150 (2713200000 μ²), Macros: 1 (40000000000 μ²),
++---ios_1  (1) Type: Unconstrained IOs Pins: 1
++---(root)_glue_logic  (2) Type: StdCell Leaf, StdCells: 150 (2713200000 μ²)
++---MACRO_1  (3) Type: Macro Leaf, Macros: 1 (40000000000 μ²),
+@@@CASE io_constraints7
+root  (0) Type: Mixed , StdCells: 150 (2713200000 μ²), Macros: 1 (40000000000 μ²),
++---ios_1  (1) Type: Unplaced IOs Pins: 1
++---(root)_glue_logic  (2) Type: StdCell Leaf, StdCells: 150 (2713200000 μ²)
++---MACRO_1  (3) Type: Macro Leaf, Macros: 1 (40000000000 μ²),
+@@@CASE io_constraints8
+root  (0) Type: Mixed , StdCells: 150 (2713200000 μ²), Macros: 1 (40000000000 μ²),
++---ios_1  (1) Type: Unconstrained IOs Pins: 1
++---(root)_glue_logic  (2) Type: StdCell Leaf, StdCells: 150 (2713200000 μ²)
++---MACRO_1  (3) Type: Macro Leaf, Macros: 1 (40000000000 μ²),
+@@@CASE io_constraints9
+root  (0) Type: Mixed , StdCells: 150 (2713200000 μ²), Macros: 1 (40000000000 μ²),
++---ios_1  (1) Type: Unplaced IOs Pins: 2
++---ios_2  (2) Type: Unconstrained IOs Pins: 1
++---(root)_glue_logic  (3) Type: StdCell Leaf, StdCells: 150 (2713200000 μ²)
++---MACRO_1  (4) Type: Macro Leaf, Macros: 1 (40000000000 μ²),
+@@@CASE io_pads1
+root  (0) Type: Mixed , StdCells: 150 (2713200000 μ²), Macros: 1 (40000000000 μ²),
++---PAD_1  (1) Type: IO Pad
++---(root)_glue_logic  (2) Type: StdCell Leaf, StdCells: 150 (2713200000 μ²)
++---MACRO_1  (3) Type: Macro Leaf, Macros: 1 (40000000000 μ²),
+@@@CASE keep_clustering_data1
+root  (0) Type: Mixed , StdCells: 150 (2713200000 μ²), Macros: 1 (40000000000 μ²),
++---ios_1  (1) Type: Unconstrained IOs Pins: 1
++---(root)_glue_logic  (2) Type: StdCell Leaf, StdCells: 150 (2713200000 μ²)
++---MACRO_1  (3) Type: Macro Leaf, Macros: 1 (40000000000 μ²),
+@@@CASE keep_clustering_data2
+root  (0) Type: Mixed , StdCells: 8 (25536000 μ²), Macros: 2 (80000000000 μ²),
++---ios_1  (1) Type: Unconstrained IOs Pins: 4
++---mixed_module0  (2) Type: StdCell Leaf, StdCells: 4 (12768000 μ²)
++---(root)_glue_logic  (3) Type: StdCell Leaf, StdCells: 4 (12768000 μ²)
++---mixed_module0/m0||mixed_module0/m1  (4) Type: Macro Leaf, Macros: 2 (80000000000 μ²),
+@@@CASE macros_without_pins1
+root  (0) Type: Mixed , StdCells: 400 (7235200000 μ²), Macros: 2 (80000000000 μ²),
++---(root)_glue_logic  (1) Type: StdCell Leaf, StdCells: 400 (7235200000 μ²)
++---MACRO_2  (2) Type: Macro Leaf, Macros: 1 (40000000000 μ²),
++---MACRO_1  (3) Type: Fixed Macro Leaf, Macros: 1 (40000000000 μ²),
+@@@CASE mixed_ios1
+root  (0) Type: Mixed , StdCells: 150 (2713200000 μ²), Macros: 1 (40000000000 μ²),
++---L_3  (4) Type: IO Bundle Pins: 1
++---ios_21  (21) Type: Unplaced IOs Pins: 1
++---(root)_glue_logic  (22) Type: StdCell Leaf, StdCells: 150 (2713200000 μ²)
++---MACRO_1  (23) Type: Macro Leaf, Macros: 1 (40000000000 μ²),
+@@@CASE placement_blockages1
+root  (0) Type: Mixed , StdCells: 150 (2713200000 μ²), Macros: 1 (40000000000 μ²),
++---(root)_glue_logic  (1) Type: StdCell Leaf, StdCells: 150 (2713200000 μ²)
++---MACRO_1  (2) Type: Macro Leaf, Macros: 1 (40000000000 μ²),

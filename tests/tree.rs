@@ -590,3 +590,280 @@ fn merge_candidates_are_reported_per_parent() {
     assert_eq!(out.merge_candidates[0].0, 0, "reported against their parent");
 }
 
+
+// ------------------------------------------------------------------ fetchMixedLeaves
+
+use vyges_mpl::tree::fetch_mixed_leaves;
+
+fn leafk(id: i32, name: &str, std: i32, mac: i32) -> Cluster {
+    let mut c = Cluster::new(id, name);
+    c.metrics = vyges_mpl::cluster::Metrics { num_std_cell: std, num_macro: mac, ..Default::default() };
+    c
+}
+
+#[test]
+fn a_leaf_holding_macros_is_collected_as_mixed() {
+    let mut p = Cluster::new(0, "p");
+    p.children = vec![leafk(1, "withmacro", 5, 2)];
+    let groups = fetch_mixed_leaves(&mut p);
+    assert_eq!(groups, vec![vec![1]]);
+}
+
+#[test]
+fn a_leaf_with_NO_macros_is_retyped_and_skipped() {
+    // 🔑 The walk MUTATES: a child holding no macros becomes a StdCellCluster before the leaf
+    // test, so the retyping decides what is collected. Reading it as a pure search would gather
+    // clusters upstream has already reclassified out of the way.
+    let mut p = Cluster::new(0, "p");
+    p.children = vec![leafk(1, "cellsonly", 5, 0)];
+    let groups = fetch_mixed_leaves(&mut p);
+    assert_eq!(groups, vec![Vec::<i32>::new()], "collected nothing");
+    assert_eq!(p.children[0].cluster_type, ClusterType::StdCell, "and it was retyped");
+}
+
+#[test]
+fn groups_are_pushed_even_when_EMPTY() {
+    // ⚠️ One group per parent, empty or not -- which is what makes the later merge sweep
+    // per-parent rather than global.
+    let mut p = Cluster::new(0, "p");
+    p.children = vec![leafk(1, "cells", 5, 0)];
+    assert_eq!(fetch_mixed_leaves(&mut p).len(), 1);
+}
+
+#[test]
+fn each_parents_children_form_their_own_group() {
+    let mut p = Cluster::new(0, "p");
+    let mut branch = Cluster::new(1, "branch");
+    branch.metrics.num_macro = 1;
+    branch.children = vec![leafk(2, "m1", 0, 1), leafk(3, "m2", 0, 1)];
+    p.children = vec![branch, leafk(4, "m3", 0, 1)];
+    let groups = fetch_mixed_leaves(&mut p);
+    // The branch's children are one group; the top's own leaves are another.
+    assert_eq!(groups, vec![vec![2, 3], vec![4]]);
+}
+
+#[test]
+fn a_non_leaf_is_recursed_into_rather_than_collected() {
+    let mut p = Cluster::new(0, "p");
+    let mut branch = Cluster::new(1, "branch");
+    branch.metrics.num_macro = 1;
+    branch.children = vec![leafk(2, "m", 0, 1)];
+    p.children = vec![branch];
+    let groups = fetch_mixed_leaves(&mut p);
+    assert!(groups.iter().all(|g| !g.contains(&1)), "the branch itself is not a mixed leaf");
+    assert!(groups.iter().any(|g| g.contains(&2)), "its leaf child is");
+}
+
+// ------------------------------------------------------------------ macros_of / association
+
+#[test]
+fn a_clusters_macros_are_its_own_then_its_modules_depth_first() {
+    // 🔑 Upstream `mapMacroInCluster2HardMacro`: leaf macros first, then each module walked
+    // depth-first — its OWN instances before its children's. `createOneClusterForEachMacro`
+    // hands out ids in exactly this sequence, so any other order renumbers the whole tree.
+    let d = design(
+        vec![inst("own", true), inst("m0", true), inst("cell", false), inst("deep", true)],
+        vec![m("top", vec![], vec![1]), m("mid", vec![1, 2], vec![2]), m("low", vec![3], vec![])],
+    );
+    let mut c = vyges_mpl::cluster::Cluster::new(7, "c");
+    c.leaf_macros.push(0);
+    c.db_modules.push(1);
+    assert_eq!(
+        vyges_mpl::tree::macros_of(&c, &d),
+        vec![0, 1, 3],
+        "own macro, then the module's, then the child module's — and never the std cell"
+    );
+}
+
+#[test]
+fn a_std_cell_cluster_never_claims_a_macro_in_its_module() {
+    // ⚠️ `include_macro == false` SKIPS block instances rather than merely not overwriting them.
+    let d = design(
+        vec![inst("cell", false), inst("mac", true)],
+        vec![m("top", vec![0, 1], vec![])],
+    );
+    let mut root = vyges_mpl::cluster::Cluster::new(0, "root");
+    root.cluster_type = ClusterType::StdCell;
+    root.db_modules.push(0);
+    let a = vyges_mpl::tree::associate_instances(&root, &d);
+    assert_eq!(a[0], Some(0), "the standard cell belongs to it");
+    assert_eq!(a[1], None, "the macro does not");
+}
+
+#[test]
+fn a_mixed_cluster_claims_both() {
+    // The same module, the same cluster, one flag apart — this is the whole difference.
+    let d = design(
+        vec![inst("cell", false), inst("mac", true)],
+        vec![m("top", vec![0, 1], vec![])],
+    );
+    let mut root = vyges_mpl::cluster::Cluster::new(0, "root");
+    root.cluster_type = ClusterType::Mixed;
+    root.db_modules.push(0);
+    let a = vyges_mpl::tree::associate_instances(&root, &d);
+    assert_eq!((a[0], a[1]), (Some(0), Some(0)));
+}
+
+// ------------------------------------------------------------------ splitting mixed leaves
+
+/// A root holding one mixed leaf with `macros`, one of which may be fixed.
+fn mixed_leaf_design(fixed: &[usize]) -> (Design, vyges_mpl::cluster::Cluster) {
+    let mut instances = vec![inst("cell", false)];
+    for i in 0..2 {
+        let mut mac = inst(&format!("MACRO_{i}"), true);
+        mac.is_fixed = fixed.contains(&i);
+        // Different sizes, so nothing merges and each macro keeps its own cluster.
+        mac.bbox = Rect { x_min: 0, y_min: 0, x_max: 10 + i as i64 * 50, y_max: 10 };
+        instances.push(mac);
+    }
+    let d = design(instances, vec![m("top", vec![0, 1, 2], vec![])]);
+    let mut root = vyges_mpl::cluster::Cluster::new(0, "root");
+    root.cluster_type = ClusterType::Mixed;
+    let mut leaf = vyges_mpl::cluster::Cluster::new(1, "(root)_glue_logic");
+    leaf.cluster_type = ClusterType::Mixed;
+    leaf.leaf_std_cells.push(0);
+    leaf.leaf_macros.extend([1, 2]);
+    leaf.metrics = vyges_mpl::cluster::Metrics {
+        num_std_cell: 1,
+        num_macro: 2,
+        std_cell_area: 0,
+        macro_area: 0,
+    };
+    root.children.push(leaf);
+    (d, root)
+}
+
+fn split(d: &Design, root: &mut vyges_mpl::cluster::Cluster) -> vyges_mpl::cluster::ClusterId {
+    split_with(d, root, &[])
+}
+
+fn split_with(
+    d: &Design,
+    root: &mut vyges_mpl::cluster::Cluster,
+    nets: &[vyges_mpl::netlist::DbNet],
+) -> vyges_mpl::cluster::ClusterId {
+    let mut ctx = vyges_mpl::tree::SplitCtx {
+        design: d,
+        nets,
+        bterm_to_cluster: Vec::new(),
+        design_has_io_pads: false,
+        large_net_threshold: 50,
+        seed_assoc: Vec::new(),
+        assoc: Vec::new(),
+    };
+    let mut next_id = 2;
+    vyges_mpl::tree::split_mixed_leaves(root, &mut ctx, &mut next_id);
+    next_id
+}
+
+#[test]
+fn a_mixed_leaf_becomes_a_std_cell_cluster_and_its_macros_become_siblings() {
+    let (d, mut root) = mixed_leaf_design(&[]);
+    let next = split(&d, &mut root);
+    assert_eq!(next, 4, "two macros consumed two ids");
+    let names: Vec<&str> = root.children.iter().map(|c| c.name.as_str()).collect();
+    assert_eq!(names, vec!["(root)_glue_logic", "MACRO_0", "MACRO_1"]);
+    let leaf = &root.children[0];
+    assert_eq!(leaf.cluster_type, ClusterType::StdCell, "the leaf is retyped");
+    assert!(leaf.leaf_macros.is_empty(), "and gives up its macros");
+    assert_eq!(leaf.metrics.num_macro, 0, "and its macro count with them");
+    assert_eq!(leaf.leaf_std_cells, vec![0], "but keeps its standard cells");
+}
+
+#[test]
+fn a_fixed_macro_is_lifted_to_the_root_rather_than_left_beside_its_siblings() {
+    // 🔑 The structural rule that makes this more than an in-place edit: a fixed macro is not the
+    // placer's to move, so it leaves the local hierarchy entirely.
+    let (d, mut root) = mixed_leaf_design(&[1]);
+    let mut deep = vyges_mpl::cluster::Cluster::new(9, "branch");
+    deep.cluster_type = ClusterType::Mixed;
+    deep.children.push(root.children.remove(0));
+    root.children.push(deep);
+
+    split(&d, &mut root);
+
+    let branch = root.children.iter().find(|c| c.name == "branch").unwrap();
+    let under_branch: Vec<&str> = branch.children.iter().map(|c| c.name.as_str()).collect();
+    assert_eq!(under_branch, vec!["(root)_glue_logic", "MACRO_0"], "only the movable one stays");
+    assert!(
+        root.children.iter().any(|c| c.name == "MACRO_1"),
+        "the fixed macro is a child of the ROOT, two levels up from where it was found"
+    );
+}
+
+#[test]
+fn same_size_macros_that_share_no_net_are_not_merged() {
+    // ⚠️ Reads like a merge and is not one. `classifyMacrosByInterconn` assigns `class[i] = i`
+    // UNCONDITIONALLY, so two unconnected macros land in different interconnection classes and
+    // never reach the equality that would group them. Same size alone is never enough.
+    let (d, mut root, nets) = merge_fixture(&[]);
+    split_with(&d, &mut root, &nets);
+    assert_eq!(
+        root.children.iter().filter(|c| c.cluster_type == ClusterType::HardMacro).count(),
+        2
+    );
+}
+
+#[test]
+fn merged_macros_leave_one_cluster_carrying_both_names_and_both_areas() {
+    // ⚠️ `Cluster::attemptMerge` does `name_ += "||" + incomer->name_` and adds the metrics; the
+    // absorbed cluster is DESTROYED. A leader that kept only its own macro would print
+    // `Macros: 1` for a pair, and the absorbed one would print as an extra line.
+    //
+    // Both macros are driven by the same standard cell, so they share a connection signature —
+    // which, with equal size, is what actually groups them.
+    let (d, mut root, nets) = merge_fixture(&[("n0", 1), ("n1", 2)]);
+    split_with(&d, &mut root, &nets);
+
+    let macros: Vec<&vyges_mpl::cluster::Cluster> =
+        root.children.iter().filter(|c| c.cluster_type == ClusterType::HardMacro).collect();
+    assert_eq!(macros.len(), 1, "the absorbed cluster is gone from the tree");
+    assert_eq!(macros[0].name, "MACRO_0||MACRO_1");
+    assert_eq!(macros[0].metrics.num_macro, 2);
+    assert_eq!(macros[0].metrics.macro_area, 40 * 40 * 2);
+    assert_eq!(macros[0].leaf_macros, vec![1, 2], "and it holds both instances");
+}
+
+/// A mixed leaf with one driving cell and two equally sized macros, wired by `nets`.
+fn merge_fixture(
+    nets: &[(&str, usize)],
+) -> (Design, vyges_mpl::cluster::Cluster, Vec<vyges_mpl::netlist::DbNet>) {
+    let mut instances = vec![inst("cell", false)];
+    for i in 0..2 {
+        let mut mac = inst(&format!("MACRO_{i}"), true);
+        mac.bbox = Rect { x_min: 0, y_min: 0, x_max: 40, y_max: 40 };
+        instances.push(mac);
+    }
+    let d = design(instances, vec![m("top", vec![0, 1, 2], vec![])]);
+    let mut root = vyges_mpl::cluster::Cluster::new(0, "root");
+    root.cluster_type = ClusterType::Mixed;
+    let mut leaf = vyges_mpl::cluster::Cluster::new(1, "(root)_glue_logic");
+    leaf.cluster_type = ClusterType::Mixed;
+    leaf.leaf_std_cells.push(0);
+    leaf.leaf_macros.extend([1, 2]);
+    root.children.push(leaf);
+    let db_nets = nets
+        .iter()
+        .map(|&(name, load)| vyges_mpl::netlist::DbNet {
+            name: name.into(),
+            is_supply: false,
+            iterms: vec![
+                vyges_mpl::netlist::InstTerm { inst: 0, is_output: true },
+                vyges_mpl::netlist::InstTerm { inst: load, is_output: false },
+            ],
+            bterms: Vec::new(),
+        })
+        .collect();
+    (d, root, db_nets)
+}
+
+#[test]
+fn a_pure_std_cell_leaf_is_left_alone() {
+    // The guard that keeps the walk from inventing macro clusters for leaves that have none.
+    let (d, mut root) = mixed_leaf_design(&[]);
+    root.children[0].cluster_type = ClusterType::StdCell;
+    root.children[0].leaf_macros.clear();
+    let next = split(&d, &mut root);
+    assert_eq!(next, 2, "no id was consumed");
+    assert_eq!(root.children.len(), 1);
+}

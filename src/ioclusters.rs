@@ -255,3 +255,32 @@ pub fn create_io_clusters(pins: &[Pin], die: &Rect, first_id: ClusterId) -> IoCl
     out.bundles.retain(|b| b.num_io_pins > 0);
     out
 }
+
+/// Upstream `createIOPadClusters`: one cluster per IO pad, named after the pad instance.
+///
+/// 🔑 **This REPLACES the bundle/unplaced-pin path entirely.** `createIOClusters` returns
+/// immediately after calling it, so a design with IO pads has no `ios_*` clusters and no IO
+/// bundles at all — the pads are the design's connection to the outside.
+pub fn create_io_pad_clusters(
+    pads: &[usize],
+    design: &crate::design::Design,
+    first_id: ClusterId,
+) -> IoClusters {
+    let mut pin_clusters = Vec::new();
+    let mut next_id = first_id;
+    for &p in pads {
+        let mut c = Cluster::new(next_id, design.instances[p].name.clone());
+        c.is_io_pad_cluster = true;
+        pin_clusters.push(c);
+        next_id += 1;
+    }
+    IoClusters {
+        bundles: Vec::new(),
+        pin_clusters,
+        // ⚠️ The assignment is by INSTANCE here, not by block port — pads are instances, and the
+        // block ports are never consulted again on this path.
+        assignment: Vec::new(),
+        has_io_clusters: true,
+        next_id,
+    }
+}

@@ -50,6 +50,10 @@ pub struct MasterKind {
     pub is_pad: bool,
     pub is_cover: bool,
     pub is_end_cap: bool,
+    /// ⚠️ `PAD_POWER` and `PAD_SPACER` are pads with **no core signal connection**, and
+    /// `getIOPads` skips them. Treating them as IO pads would put a cluster in the tree for
+    /// something the netlist never reaches.
+    pub is_pad_without_signal: bool,
 }
 
 /// One placed or placeable instance.
@@ -217,4 +221,19 @@ pub fn floorplan_shape(core_area: &Rect, global_fence: Option<&Rect>) -> Option<
     } else {
         Some(shape)
     }
+}
+
+/// Upstream `getIOPads`: every pad instance that carries a core signal, in database order.
+///
+/// 🔑 **A design with even one of these takes a completely different IO path**: `createIOClusters`
+/// makes one cluster per pad and never looks at the block ports, and `buildNetListConnections`
+/// then ignores block ports too — the pads already carry that connectivity.
+pub fn io_pads(design: &Design) -> Vec<usize> {
+    design
+        .instances
+        .iter()
+        .enumerate()
+        .filter(|(_, i)| i.master.is_pad && !i.master.is_pad_without_signal)
+        .map(|(i, _)| i)
+        .collect()
 }

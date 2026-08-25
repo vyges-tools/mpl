@@ -17,12 +17,20 @@ fn main() {
         .expect("a core to place into");
     vyges_mpl::read::mark_ignorable_macros(&mut design, &area);
     let pins = vyges_mpl::read::read_pins(&db);
+    let nets = vyges_mpl::read::read_nets(&db, &design, &pins);
 
     let opts = vyges_mpl::engine::ClusterOptions::default();
-    let r = vyges_mpl::engine::run_clustering(&design, &pins, &opts);
+    let r = vyges_mpl::engine::run_clustering(&design, &pins, &nets, &opts);
     if let Some(refusal) = &r.refusal {
         eprintln!("refused: {refusal:?}");
         std::process::exit(1);
+    }
+    // ⛔ A vacuous run must not print a tree. It produces an empty root, and printing that gives
+    // `root (0) Type: Mixed Leaf` — a line that reads like a result and would be DIFFED against
+    // upstream as though the engine had clustered something. Vacuous gets its own exit code.
+    if r.status == vyges_mpl::status::Status::Vacuous {
+        eprintln!("vacuous: nothing to place");
+        std::process::exit(3);
     }
     print!("{}", vyges_mpl::dump::physical_hierarchy(&r.root));
 }
