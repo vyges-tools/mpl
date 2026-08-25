@@ -36,6 +36,9 @@ pub struct Clustering {
     pub root: Cluster,
     pub status: Status,
     pub refusal: Option<Refusal>,
+    /// Upstream `reportDesignData`, which `init` emits only once it knows there is work to do.
+    /// ⚠️ `None` for a refused or vacuous run — upstream returns before reporting in both cases.
+    pub report: Option<crate::report::DesignReport>,
 }
 
 /// Everything the stage reads from the database.
@@ -53,6 +56,8 @@ pub struct DesignInputs<'a> {
     pub blockages: &'a [Rect],
     /// Upstream `getMinimumSpacing`, computed once over every macro's geometry.
     pub minimum_spacing: i64,
+    /// Reported verbatim; the engine does not use it.
+    pub manufacturing_grid: i32,
 }
 
 /// Everything the stage takes from the command line.
@@ -154,6 +159,7 @@ pub fn run_clustering(input: &DesignInputs, opts: &ClusterOptions) -> Clustering
             root: Cluster::new(0, "root"),
             status: Status::Vacuous,
             refusal: None,
+            report: None,
         };
     }
 
@@ -169,6 +175,18 @@ pub fn run_clustering(input: &DesignInputs, opts: &ClusterOptions) -> Clustering
             "The instance area considering the macros' halos exceeds the floorplan area.",
         )));
     }
+
+    // ---- reportDesignData, which upstream emits at the END of init — after the checks and only
+    // when there is work. It is the ONLY place a resolved halo is observable before commit.
+    let report = Some(crate::report::design_report(
+        design,
+        &placement_area,
+        &design_metrics,
+        opts.base_halo,
+        macro_with_halo_area,
+        unfixed.len(),
+        input.manufacturing_grid,
+    ));
 
     // ---- createRoot, then the thresholds it needs
     let module_metrics: Vec<_> = (0..design.modules.len())
@@ -212,7 +230,7 @@ pub fn run_clustering(input: &DesignInputs, opts: &ClusterOptions) -> Clustering
         for c in builder.one_cluster_per_macro() {
             root.children.push(c);
         }
-        return Clustering { root, status: Status::Applied, refusal: None };
+        return Clustering { root, status: Status::Applied, refusal: None, report };
     }
 
     // ---- the mixed path: descend the levels, then split the mixed leaves
@@ -255,7 +273,7 @@ pub fn run_clustering(input: &DesignInputs, opts: &ClusterOptions) -> Clustering
     let _virtual = crate::tree::split_mixed_leaves(&mut root, &mut ctx, &mut next_id);
 
     let _ = (is_ignorable_marker(), ClusterType::Mixed, IoClusters::default);
-    Clustering { root, status: Status::Applied, refusal: None }
+    Clustering { root, status: Status::Applied, refusal: None, report }
 }
 
 fn is_ignorable_marker() -> fn(&crate::design::Instance) -> bool {
@@ -313,5 +331,10 @@ fn overlaps(a: &Rect, b: &Rect) -> bool {
 }
 
 fn refuse(r: Refusal) -> Clustering {
-    Clustering { root: Cluster::new(0, "root"), status: Status::Refused, refusal: Some(r) }
+    Clustering {
+        root: Cluster::new(0, "root"),
+        status: Status::Refused,
+        refusal: Some(r),
+        report: None,
+    }
 }

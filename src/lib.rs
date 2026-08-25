@@ -31,6 +31,7 @@ pub mod netlist;
 pub mod pipeline;
 #[cfg(unix)]
 pub mod read;
+pub mod report;
 pub mod status;
 pub mod thresholds;
 pub mod tree;
