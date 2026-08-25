@@ -273,3 +273,93 @@ fn a_blockage_is_clamped_before_it_is_drawn() {
     // The depth asked for is 5000; the x maximum is 100.
     assert_eq!(pin_access_blockage(&region(r(0, 20, 0, 80)), 5000, &LIMITS), r(0, 20, 100, 80));
 }
+
+// ------------------------------------------------------------------ the builders
+
+use vyges_mpl::regions::{blockages_for_available_regions, blockages_for_regions, IoRegion};
+
+fn io(line: Rect, ios: i64) -> IoRegion {
+    IoRegion { region: region(line), ios }
+}
+
+/// A base depth that just returns the span, so the span is visible in the result.
+fn span_as_depth(span: i64) -> i64 {
+    span
+}
+
+#[test]
+fn the_span_is_summed_over_ALL_regions_and_the_base_depth_computed_once() {
+    // 🔑 Two regions of 30 give a span of 60, and BOTH get a depth derived from 60 — not from
+    // their own 30. A longer region lowers the depth of every region, its own included.
+    let got = blockages_for_regions(
+        &[io(r(0, 0, 0, 30), 1), io(r(0, 40, 0, 70), 1)],
+        2,
+        &span_as_depth,
+        &DepthLimits { x_min: 0, x_max: 10_000, y_min: 0, y_max: 10_000 },
+    );
+    // span 60, each carrying half the IOs -> factor 1.5 -> depth 90.
+    assert_eq!(got, vec![r(0, 0, 90, 30), r(0, 40, 90, 70)]);
+}
+
+#[test]
+fn a_region_with_more_ios_gets_a_deeper_blockage() {
+    let limits = DepthLimits { x_min: 0, x_max: 10_000, y_min: 0, y_max: 10_000 };
+    let got = blockages_for_regions(
+        &[io(r(0, 0, 0, 50), 1), io(r(0, 60, 0, 110), 3)],
+        4,
+        &span_as_depth,
+        &limits,
+    );
+    // span 100; factors 1.25 and 1.75 -> depths 125 and 175.
+    assert_eq!(got[0].x_max, 125);
+    assert_eq!(got[1].x_max, 175);
+}
+
+#[test]
+fn no_regions_means_the_base_depth_is_never_COMPUTED() {
+    // ⛔ The empty result is not what the guard is for — mapping over an empty list gives that
+    // anyway. What it prevents is calling the base-depth function with a span of ZERO, which
+    // divides by it. Upstream reaches `(int)inf` there, which is undefined; we would reach a
+    // silent 0. Either way it must not be reached, so the probe records whether it was.
+    let called = std::cell::Cell::new(false);
+    let watch = |span: i64| {
+        called.set(true);
+        span
+    };
+    assert!(blockages_for_regions(&[], 0, &watch, &LIMITS).is_empty());
+    assert!(!called.get(), "the base depth was computed for an empty span");
+}
+
+#[test]
+fn available_regions_all_get_the_SAME_depth() {
+    // 🔑 No density factor here. Unequal lengths, identical depth.
+    let limits = DepthLimits { x_min: 0, x_max: 10_000, y_min: 0, y_max: 10_000 };
+    let got = blockages_for_available_regions(
+        &[region(r(0, 0, 0, 20)), region(r(0, 30, 0, 130))],
+        true,
+        &span_as_depth,
+        &limits,
+    );
+    assert_eq!(got[0].x_max, 120, "the span, not this region's own 20");
+    assert_eq!(got[1].x_max, 120, "and the same for the longer one");
+}
+
+#[test]
+fn with_nothing_blocked_no_available_region_casts_a_blockage() {
+    // ⚠️ The guard is on the BLOCKED regions, not on the available ones — which are non-empty
+    // here, and still produce nothing.
+    let got = blockages_for_available_regions(
+        &[region(r(0, 0, 0, 200))],
+        false,
+        &span_as_depth,
+        &LIMITS,
+    );
+    assert!(got.is_empty());
+}
+
+#[test]
+fn placement_blockages_are_taken_as_they_stand() {
+    // ℹ️ No clipping, no union — unlike the feasibility test, which asks how much AREA they cover.
+    let bs = [r(0, 0, 10, 10), r(5, 5, 15, 15)];
+    assert_eq!(vyges_mpl::shaping::placement_blockages(&bs), bs.to_vec());
+}

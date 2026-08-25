@@ -2016,4 +2016,62 @@ pub const MUTATIONS: &[Mutation] = &[
         replace: r#"    let d = depth;"#,
         want: r#"a_blockage_is_clamped_before_it_is_drawn"#,
     },
+    Mutation {
+        name: r#"span-is-per-region"#,
+        file: r#"src/regions.rs"#,
+        find: r#"    let span: i64 = regions.iter().map(|r| region_length(&r.region.line)).sum();
+    let base = base_depth_for_span(span);"#,
+        replace: r#"    let base = 0;"#,
+        want: r#"the_span_is_summed_over_ALL_regions_and_the_base_depth_computed_once"#,
+    },
+    Mutation {
+        name: r#"density-not-applied-per-region"#,
+        file: r#"src/regions.rs"#,
+        find: r#"            let depth = scale_depth(base, io_density_factor(r.ios, ios_total));"#,
+        replace: r#"            let depth = base;"#,
+        want: r#"a_region_with_more_ios_gets_a_deeper_blockage"#,
+    },
+    Mutation {
+        name: r#"empty-regions-not-short-circuited"#,
+        file: r#"src/regions.rs"#,
+        find: r#"    if regions.is_empty() {
+        return Vec::new();
+    }"#,
+        replace: r#"    if false {
+        return Vec::new();
+    }"#,
+        want: r#"no_regions_means_the_base_depth_is_never_COMPUTED"#,
+    },
+    Mutation {
+        name: r#"available-regions-get-a-density-factor"#,
+        file: r#"src/regions.rs"#,
+        find: r#"    available.iter().map(|r| pin_access_blockage(r, base, limits)).collect()"#,
+        replace: r#"    available
+        .iter()
+        .map(|r| pin_access_blockage(r, region_length(&r.line), limits))
+        .collect()"#,
+        want: r#"available_regions_all_get_the_SAME_depth"#,
+    },
+    Mutation {
+        name: r#"available-guard-on-the-wrong-list"#,
+        file: r#"src/regions.rs"#,
+        find: r#"    if !any_blocked {
+        return Vec::new();
+    }"#,
+        replace: r#"    if available.is_empty() {
+        return Vec::new();
+    }"#,
+        want: r#"with_nothing_blocked_no_available_region_casts_a_blockage"#,
+    },
+    Mutation {
+        name: r#"placement-blockages-deduplicated"#,
+        file: r#"src/shaping.rs"#,
+        find: r#"pub fn placement_blockages(blockages: &[Rect]) -> Vec<Rect> {
+    blockages.to_vec()
+}"#,
+        replace: r#"pub fn placement_blockages(blockages: &[Rect]) -> Vec<Rect> {
+    blockages.iter().take(1).copied().collect()
+}"#,
+        want: r#"placement_blockages_are_taken_as_they_stand"#,
+    },
 ];

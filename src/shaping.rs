@@ -304,3 +304,12 @@ pub fn pin_access_base_depth(
     let macro_dominance_factor = macro_with_halo_area as f64 / root_area as f64;
     Ok((std_cell_area as f64 / io_span as f64 * (1.0 - macro_dominance_factor).powi(2)) as i64)
 }
+
+/// Upstream `setPlacementBlockages`: every blockage the block holds, taken as it stands.
+///
+/// ℹ️ No filtering, no clipping, no union — the placer wants each rectangle. Contrast
+/// [`crate::feasibility::movable_cells_fit`], which unions the same blockages and clips them to
+/// the placement area, because there the question is how much AREA they occupy.
+pub fn placement_blockages(blockages: &[Rect]) -> Vec<Rect> {
+    blockages.to_vec()
+}

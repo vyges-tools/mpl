@@ -176,3 +176,64 @@ pub fn pin_access_blockage(region: &BoundaryRegion, depth: i64, limits: &DepthLi
     }
     r
 }
+
+// ---------------------------------------------------------------- the three builders
+
+/// One region and how many IO pins it carries.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct IoRegion {
+    pub region: BoundaryRegion,
+    pub ios: i64,
+}
+
+/// Upstream `createBlockagesForIOBundles` and `createBlockagesForConstraintRegions`.
+///
+/// The two are the same shape and differ only in what they count: bundles divide by the number of
+/// **fixed** block ports, constraint regions by the number of **unfixed** ones. Both sum their own
+/// regions' lengths for the span, then scale the one base depth per region by its IO density.
+///
+/// ⚠️ **The span is the sum over the regions, and the base depth is computed ONCE from it** — not
+/// per region. A region twice as long does not get twice the depth; it lowers the depth of every
+/// region, its own included.
+pub fn blockages_for_regions(
+    regions: &[IoRegion],
+    ios_total: i64,
+    base_depth_for_span: &dyn Fn(i64) -> i64,
+    limits: &DepthLimits,
+) -> Vec<Rect> {
+    if regions.is_empty() {
+        return Vec::new();
+    }
+    let span: i64 = regions.iter().map(|r| region_length(&r.region.line)).sum();
+    let base = base_depth_for_span(span);
+    regions
+        .iter()
+        .map(|r| {
+            let depth = scale_depth(base, io_density_factor(r.ios, ios_total));
+            pin_access_blockage(&r.region, depth, limits)
+        })
+        .collect()
+}
+
+/// Upstream `createBlockagesForAvailableRegions`.
+///
+/// 🔑 **No density factor at all** — every available region gets the same base depth. The other
+/// two builders scale per region; this one does not, because an available region is space no pin
+/// has claimed, so there is no count to scale by.
+///
+/// ⚠️ **The guard is on the BLOCKED regions, not the available ones.** A design with nothing
+/// blocked produces no blockages here even though every edge is available — which is the point,
+/// since with nothing blocked the pins are unconstrained everywhere.
+pub fn blockages_for_available_regions(
+    available: &[BoundaryRegion],
+    any_blocked: bool,
+    base_depth_for_span: &dyn Fn(i64) -> i64,
+    limits: &DepthLimits,
+) -> Vec<Rect> {
+    if !any_blocked {
+        return Vec::new();
+    }
+    let span: i64 = available.iter().map(|r| region_length(&r.line)).sum();
+    let base = base_depth_for_span(span);
+    available.iter().map(|r| pin_access_blockage(r, base, limits)).collect()
+}
