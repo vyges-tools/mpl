@@ -129,3 +129,108 @@ pub fn root_shape(floorplan: &Rect) -> (Interval, i64) {
     let width = floorplan.x_max - floorplan.x_min;
     (Interval { min: width, max: width }, floorplan.area())
 }
+
+// ---------------------------------------------------------------- the recursion
+
+use crate::cluster::{Cluster, ClusterId, ClusterType};
+
+/// What the shaping stage needs that lives outside the tree.
+pub struct ShapingCtx<'a> {
+    /// 🔑 **The ROOT's outline, not the parent's.** Every tiling is tested against the whole
+    /// floorplan, at every depth — a child is never restricted to the space its parent occupies,
+    /// because at this stage no parent has a position yet.
+    pub outline: crate::design::Rect,
+    /// A macro's dimensions **with halo**, by instance.
+    pub macro_dims: &'a dyn Fn(usize) -> (i64, i64),
+}
+
+/// Why shaping stopped.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ShapingRefusal {
+    /// ⛔ A cluster whose tilings upstream generates by simulated annealing. Refused by name;
+    /// **never approximated**, because a plausible tiling set is not the same tiling set.
+    NeedsAnnealing(ClusterId),
+    /// MPL-4: no arrangement of the cluster's macros fits the outline.
+    Unshapeable(ClusterId, Unshapeable),
+}
+
+/// Upstream `calculateChildrenTilings`, minus the annealing search.
+///
+/// The order is the algorithm: **children are shaped before their parent**, because the parent's
+/// own shapes are built out of theirs.
+pub fn calculate_children_tilings(
+    parent: &mut Cluster,
+    ctx: &ShapingCtx,
+) -> Result<(), ShapingRefusal> {
+    // ⚠️ The base case is `num_macro == 0`, NOT "is a leaf". A cluster with no macros has no
+    // shape to choose — its area is soft — so shaping skips it and everything below it.
+    if parent.num_macro() == 0 {
+        return Ok(());
+    }
+
+    if parent.cluster_type == ClusterType::HardMacro {
+        return macro_cluster_tilings(parent, ctx);
+    }
+
+    for child in &mut parent.children {
+        // ℹ️ Redundant with the callee's own base case — the same test, one frame apart. Kept
+        // because upstream carries it, and a reader comparing the two should find them the same
+        // shape. ⚠️ Not mutation-testable for exactly that reason.
+        if child.num_macro() > 0 {
+            calculate_children_tilings(child, ctx)?;
+        }
+    }
+
+    // ⚠️ A **fixed** macro cluster still counts here even though it has no tilings of its own —
+    // it occupies space the parent has to shape around. That is why `fixed_covers` and
+    // `fixed_macros*` need the annealing search despite having one movable macro apiece.
+    //
+    // ℹ️ `is_fixed_macro ||` is currently redundant: a fixed macro cluster is a `HardMacro`
+    // cluster holding its macro, so it reports `num_macro() == 1` — the `fixed_covers` dump says
+    // `Type: Fixed Macro Leaf, Macros: 1`. Upstream nonetheless adds a fixed cluster
+    // UNCONDITIONALLY and only then tests the count for the others, so the two conditions are
+    // kept apart here as well.
+    let contributors: Vec<ClusterId> = parent
+        .children
+        .iter()
+        .filter(|c| c.is_fixed_macro || c.num_macro() > 0)
+        .map(|c| c.id)
+        .collect();
+
+    if contributors.len() == 1 {
+        // 🔑 The parent takes the shapes of its only macro-bearing child verbatim. Upstream
+        // re-scans the children for the first with `num_macro > 0` rather than reusing the one it
+        // just built, so a lone FIXED macro leaves the parent with no tilings at all.
+        if let Some(child) = parent.children.iter().find(|c| c.num_macro() > 0) {
+            parent.tilings = child.tilings.clone();
+        }
+        return Ok(());
+    }
+
+    // ⛔ Two or more contributors: upstream varies the outline and runs `SACoreSoftMacro` to
+    // find tilings. Not built here.
+    Err(ShapingRefusal::NeedsAnnealing(parent.id))
+}
+
+/// Upstream `calculateMacroTilings` against the tree.
+fn macro_cluster_tilings(
+    cluster: &mut Cluster,
+    ctx: &ShapingCtx,
+) -> Result<(), ShapingRefusal> {
+    // ⚠️ A fixed macro is not the placer's to shape: it returns with NO tilings, which is not the
+    // same as an empty result from a search that found nothing.
+    if cluster.is_fixed_macro {
+        return Ok(());
+    }
+    let Some(&first) = cluster.leaf_macros.first() else {
+        return Ok(());
+    };
+    let (w, h) = (ctx.macro_dims)(first);
+    match macro_tilings(w, h, cluster.leaf_macros.len() as i64, &ctx.outline) {
+        Ok(t) => {
+            cluster.tilings = t;
+            Ok(())
+        }
+        Err(e) => Err(ShapingRefusal::Unshapeable(cluster.id, e)),
+    }
+}

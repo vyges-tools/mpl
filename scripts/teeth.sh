@@ -69,6 +69,18 @@ mutations() {
   # -- and NO BACKSLASH ESCAPES either: the \n-to-newline expansion below rewrites a
   # literal '\n' inside the code you are anchoring on. Pick a different anchor
   # instead -- it only has to be unique in the file, not complete. Cost an hour twice.
+  # ⚠️ **Two shaping mutations were REMOVED as equivalent, not fixed.** Both changed the source
+  # and could not change the result, so no test can catch them and writing one would be writing a
+  # test that cannot fail:
+  #   * dropping the `num_macro() > 0` guard before recursing -- the callee's own base case is the
+  #     same test, so the guard is redundant. Upstream carries it too; ours matches for fidelity.
+  #   * adding `is_fixed_macro ||` to the single-contributor re-scan -- a fixed macro cluster never
+  #     has tilings, so finding it or not finding it both leave the parent with none.
+  #   * dropping `is_fixed_macro ||` from the contributor filter -- a fixed macro cluster reports
+  #     `num_macro() == 1` (the fixed_covers dump says `Macros: 1`), so the second test already
+  #     covers it. ⚠️ This one LOOKED catchable and a test was written for it; the test only
+  #     passed because it built a fixed cluster reporting 0 macros, which never occurs.
+  # Do not re-add them. An equivalent mutant reported as a hole trains people to ignore holes.
   printf '%s\n' \
 "halo-order-lrbt${SEP}src/options.rs${SEP}4 => (values[0], values[1], values[2], values[3]),${SEP}4 => (values[0], values[2], values[1], values[3]),${SEP}a_four_value_halo_is_left_bottom_right_top" \
 "halo-two-value-not-mirrored${SEP}src/options.rs${SEP}2 => (values[0], values[1], values[0], values[1]),${SEP}2 => (values[0], values[1], 0, 0),${SEP}a_two_value_halo_mirrors_into_four" \
@@ -274,7 +286,12 @@ mutations() {
 "intervals-not-degenerate${SEP}src/shaping.rs${SEP}        tilings.iter().map(|t| Interval { min: t.width, max: t.width }).collect();${SEP}        tilings.iter().map(|t| Interval { min: t.width, max: t.height }).collect();${SEP}each_tiling_becomes_one_degenerate_interval_sorted_by_width" \
 "intervals-unsorted${SEP}src/shaping.rs${SEP}    out.sort_by_key(|i| i.min);${SEP}    out.reverse();${SEP}each_tiling_becomes_one_degenerate_interval_sorted_by_width" \
 "aspect-ratio-inverted${SEP}src/shaping.rs${SEP}        self.height as f32 / self.width as f32${SEP}        self.width as f32 / self.height as f32${SEP}aspect_ratio_is_height_over_width" \
-"root-width-from-height${SEP}src/shaping.rs${SEP}    let width = floorplan.x_max - floorplan.x_min;${SEP}    let width = floorplan.y_max - floorplan.y_min;${SEP}the_root_takes_the_floorplan_shape_exactly"
+"root-width-from-height${SEP}src/shaping.rs${SEP}    let width = floorplan.x_max - floorplan.x_min;${SEP}    let width = floorplan.y_max - floorplan.y_min;${SEP}the_root_takes_the_floorplan_shape_exactly" \
+"shaping-base-case-is-leafness${SEP}src/shaping.rs${SEP}    if parent.num_macro() == 0 {\n        return Ok(());\n    }${SEP}    if parent.children.is_empty() && parent.leaf_macros.is_empty() {\n        return Ok(());\n    }${SEP}a_cluster_with_no_macros_is_not_shaped_and_neither_is_anything_below_it" \
+"fixed-macro-cluster-is-shaped${SEP}src/shaping.rs${SEP}    if cluster.is_fixed_macro {\n        return Ok(());\n    }${SEP}    if false {\n        return Ok(());\n    }${SEP}a_FIXED_macro_cluster_is_left_with_no_tilings" \
+"shortcut-applies-to-any-count${SEP}src/shaping.rs${SEP}    if contributors.len() == 1 {${SEP}    if contributors.len() <= 2 {${SEP}two_macro_bearing_children_need_the_annealing_search" \
+"parent-shaped-before-its-children${SEP}src/shaping.rs${SEP}    for child in &mut parent.children {\n        if child.num_macro() > 0 {\n            calculate_children_tilings(child, ctx)?;\n        }\n    }${SEP}    if false { for child in &mut parent.children { calculate_children_tilings(child, ctx)?; } }${SEP}children_are_shaped_before_the_parent_reads_them" \
+"macro-cluster-type-ignored${SEP}src/shaping.rs${SEP}    if parent.cluster_type == ClusterType::HardMacro {\n        return macro_cluster_tilings(parent, ctx);\n    }${SEP}    if false {\n        return macro_cluster_tilings(parent, ctx);\n    }${SEP}a_hard_macro_cluster_gets_the_tilings_of_its_macro_count"
 }
 
 # ⚠️ `mv` restores the BACKUP's mtime, which can be older than the artifact built from the

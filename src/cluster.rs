@@ -56,6 +56,10 @@ pub struct Cluster {
     /// The region an unplaced-IO cluster is restricted to. ⚠️ Two pins share a cluster only when
     /// their regions are IDENTICAL — this is matched by equality, not by overlap.
     pub constraint_region: Option<crate::design::Rect>,
+    /// The outlines this cluster may take, filled by the shaping stage.
+    /// ⚠️ Empty means *not shaped*, which is a different thing from *no legal shape* — the latter
+    /// is an MPL-4 error and never reaches here.
+    pub tilings: Vec<crate::shaping::Tiling>,
 }
 
 impl Cluster {
@@ -77,6 +81,7 @@ impl Cluster {
             is_fixed_macro: false,
             num_io_pins: 0,
             constraint_region: None,
+            tilings: Vec::new(),
         }
     }
 

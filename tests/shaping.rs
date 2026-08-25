@@ -128,3 +128,132 @@ fn the_root_takes_the_floorplan_shape_exactly() {
     assert_eq!(width, Interval { min: 1000, max: 1000 }, "a single degenerate width");
     assert_eq!(area, 1_500_000, "and the floorplan's own area");
 }
+
+// ------------------------------------------------------------------ the recursion
+
+use vyges_mpl::cluster::{Cluster, ClusterType};
+use vyges_mpl::shaping::{calculate_children_tilings, ShapingCtx, ShapingRefusal};
+
+/// A macro cluster holding `n` macros, all instance indices.
+fn macro_cluster(id: i32, name: &str, macros: &[usize]) -> Cluster {
+    let mut c = Cluster::new(id, name);
+    c.cluster_type = ClusterType::HardMacro;
+    c.leaf_macros = macros.to_vec();
+    c.metrics.num_macro = macros.len() as i32;
+    c
+}
+
+fn ctx(w: i64, h: i64) -> ShapingCtx<'static> {
+    ShapingCtx { outline: outline(w, h), macro_dims: &|_| (10, 10) }
+}
+
+#[test]
+fn a_cluster_with_no_macros_is_not_shaped_and_neither_is_anything_below_it() {
+    // ⚠️ The base case is `num_macro == 0`, not "is a leaf". A standard-cell branch has no shape
+    // to choose, and descending into it would shape clusters upstream never touches.
+    let mut root = Cluster::new(0, "root");
+    root.cluster_type = ClusterType::StdCell;
+    root.children.push(macro_cluster(1, "M", &[0, 1]));
+    calculate_children_tilings(&mut root, &ctx(1000, 1000)).expect("no macros, nothing to do");
+    assert!(root.tilings.is_empty());
+    assert!(root.children[0].tilings.is_empty(), "the child was never reached");
+}
+
+#[test]
+fn a_hard_macro_cluster_gets_the_tilings_of_its_macro_count() {
+    let mut c = macro_cluster(1, "M", &[0, 1, 2, 3]);
+    calculate_children_tilings(&mut c, &ctx(1000, 1000)).expect("shapeable");
+    assert_eq!(c.tilings, vec![t(10, 40), t(20, 20), t(40, 10)]);
+}
+
+#[test]
+fn a_FIXED_macro_cluster_is_left_with_no_tilings() {
+    // 🔑 A fixed macro is not the placer's to shape. ⚠️ "No tilings" here is not the empty result
+    // of a search — the search never runs.
+    let mut c = macro_cluster(1, "M", &[0]);
+    c.is_fixed_macro = true;
+    calculate_children_tilings(&mut c, &ctx(1, 1)).expect("not shaped, and not an error either");
+    assert!(c.tilings.is_empty());
+}
+
+#[test]
+fn a_parent_with_one_macro_bearing_child_takes_that_childs_tilings() {
+    let mut root = Cluster::new(0, "root");
+    root.metrics.num_macro = 2;
+    root.children.push(Cluster::new(1, "glue"));
+    root.children.push(macro_cluster(2, "M", &[0, 1]));
+    calculate_children_tilings(&mut root, &ctx(1000, 1000)).expect("shortcut");
+    assert_eq!(root.tilings, vec![t(10, 20), t(20, 10)]);
+    assert_eq!(root.tilings, root.children[1].tilings, "verbatim, not recomputed");
+}
+
+#[test]
+fn a_lone_FIXED_macro_leaves_the_parent_with_no_tilings() {
+    // ⚠️ Upstream re-scans the children for the first with `num_macro > 0` instead of reusing the
+    // contributor it just built. A fixed macro cluster contributes, but has no tilings to give.
+    let mut root = Cluster::new(0, "root");
+    root.metrics.num_macro = 1;
+    // ⚠️ A fixed macro cluster still REPORTS its macro — `fixed_covers` prints
+    // `Type: Fixed Macro Leaf, Macros: 1`. What it does not have is tilings.
+    let mut fixed = macro_cluster(1, "F", &[0]);
+    fixed.is_fixed_macro = true;
+    root.children.push(fixed);
+    calculate_children_tilings(&mut root, &ctx(1000, 1000)).expect("no annealing needed");
+    assert!(root.tilings.is_empty(), "it copied the fixed cluster's tilings, and there are none");
+}
+
+#[test]
+fn two_macro_bearing_children_need_the_annealing_search() {
+    // ⛔ Refused by name. A plausible tiling set is not the same tiling set.
+    let mut root = Cluster::new(0, "root");
+    root.metrics.num_macro = 2;
+    root.children.push(macro_cluster(1, "A", &[0]));
+    root.children.push(macro_cluster(2, "B", &[1]));
+    let e = calculate_children_tilings(&mut root, &ctx(1000, 1000)).expect_err("needs SA");
+    assert_eq!(e, ShapingRefusal::NeedsAnnealing(0), "and it names the cluster");
+}
+
+#[test]
+fn a_fixed_macro_beside_a_movable_one_still_needs_the_search() {
+    // 🔑 This is why `fixed_covers` and `fixed_macros*` are in the annealing group despite having
+    // one movable macro apiece: the fixed one occupies space the parent must shape around.
+    let mut root = Cluster::new(0, "root");
+    root.metrics.num_macro = 2;
+    let mut fixed = macro_cluster(1, "F", &[0]);
+    fixed.is_fixed_macro = true;
+    root.children.push(fixed);
+    root.children.push(macro_cluster(2, "M", &[1]));
+    let e = calculate_children_tilings(&mut root, &ctx(1000, 1000)).expect_err("needs SA");
+    assert_eq!(e, ShapingRefusal::NeedsAnnealing(0));
+}
+
+#[test]
+fn children_are_shaped_before_the_parent_reads_them() {
+    // The order IS the algorithm: the shortcut copies the child's tilings, so a parent shaped
+    // first would copy an empty list.
+    let mut root = Cluster::new(0, "root");
+    root.metrics.num_macro = 4;
+    let mut branch = Cluster::new(1, "branch");
+    branch.metrics.num_macro = 4;
+    branch.children.push(macro_cluster(2, "M", &[0, 1, 2, 3]));
+    root.children.push(branch);
+    calculate_children_tilings(&mut root, &ctx(1000, 1000)).expect("shortcut twice");
+    assert_eq!(root.children[0].children[0].tilings.len(), 3, "the leaf was shaped");
+    assert_eq!(root.children[0].tilings, root.children[0].children[0].tilings);
+    assert_eq!(root.tilings, root.children[0].tilings, "and it reached the root");
+}
+
+#[test]
+fn an_unshapeable_macro_cluster_names_itself() {
+    let mut root = Cluster::new(0, "root");
+    root.metrics.num_macro = 7;
+    root.children.push(macro_cluster(9, "M", &[0, 1, 2, 3, 4, 5, 6]));
+    let e = calculate_children_tilings(&mut root, &ctx(5, 5)).expect_err("nothing fits");
+    match e {
+        ShapingRefusal::Unshapeable(id, why) => {
+            assert_eq!(id, 9);
+            assert_eq!(why.number_of_macros, 7);
+        }
+        other => panic!("expected an unshapeable cluster, got {other:?}"),
+    }
+}
