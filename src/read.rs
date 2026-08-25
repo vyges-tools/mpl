@@ -186,3 +186,122 @@ pub fn read_nets(
     }
     out
 }
+
+/// Everything halo resolution needs from the database about one macro.
+#[derive(Debug, Clone, PartialEq)]
+pub struct MacroGeometry {
+    pub master_width: i64,
+    pub master_height: i64,
+    /// ⚠️ SIGNAL pins only — power and ground never widen a halo.
+    pub pins: Vec<crate::halo::PinBox>,
+    pub inst_halo: Option<(crate::options::Halo, bool)>,
+    pub orient: crate::halo::Orient,
+}
+
+/// Layer number → `(spacing, direction)`, read once.
+fn layer_table(db: &Db) -> HashMap<i64, (i64, crate::halo::LayerDir)> {
+    let mut out = HashMap::new();
+    for (name, dir) in db.layers_with_direction().unwrap_or_default() {
+        let dir = if dir == "VERTICAL" {
+            crate::halo::LayerDir::Vertical
+        } else {
+            crate::halo::LayerDir::Horizontal
+        };
+        out.insert(db.layer_get_number(&name) as i64, (db.layer_get_spacing(&name) as i64, dir));
+    }
+    out
+}
+
+/// Upstream `getMinimumSpacing`: the widest layer spacing any macro's geometry sits on.
+///
+/// ⚠️ **Obstructions AND every terminal's pins**, with no signal-type filter — unlike the halo
+/// rule right next to it, which is signal-only. Taking one and not the other silently narrows
+/// every pin-aware halo.
+pub fn minimum_spacing(db: &Db, design: &Design) -> i64 {
+    let layers = layer_table(db);
+    let spacing = |n: i64| layers.get(&n).map_or(0, |(s, _)| *s);
+    let mut out = 0;
+    for inst in design.instances.iter().filter(|i| i.is_block) {
+        let master = db.inst_get_master(&inst.name);
+        for (layer, ..) in db.master_obstruction_boxes(&master).unwrap_or_default() {
+            out = out.max(spacing(layer));
+        }
+        for term in db.master_get_m_terms(&master) {
+            for (layer, ..) in db.mterm_pin_boxes(&master, &term).unwrap_or_default() {
+                out = out.max(spacing(layer));
+            }
+        }
+    }
+    out
+}
+
+/// Read each macro's master dimensions, signal pin shapes, instance halo and orientation.
+///
+/// 🔑 **The layer direction of a pin box is the direction of its MPin's FIRST box**, not of the
+/// box itself — upstream reads `mpin->getGeometry().begin()` even while examining a later box of
+/// the same pin. That is why the shapes have to arrive grouped by MPin.
+pub fn read_macro_geometry(db: &Db, design: &Design) -> Vec<Option<MacroGeometry>> {
+    let layers = layer_table(db);
+    let mut out = vec![None; design.instances.len()];
+    for (i, inst) in design.instances.iter().enumerate() {
+        if !inst.is_block {
+            continue;
+        }
+        let master = db.inst_get_master(&inst.name);
+        let mut pins = Vec::new();
+        for term in db.master_get_m_terms(&master) {
+            if db.mterm_get_sig_type(&master, &term) != "SIGNAL" {
+                continue;
+            }
+            for p in 0..db.num_mterm_get_m_pins(&master, &term) {
+                let boxes = db.mpin_boxes(&master, &term, p).unwrap_or_default();
+                let Some(&(first, ..)) = boxes.first() else { continue };
+                let layer_dir =
+                    layers.get(&first).map_or(crate::halo::LayerDir::Horizontal, |(_, d)| *d);
+                for (_, x0, y0, x1, y1) in boxes {
+                    pins.push(crate::halo::PinBox {
+                        x_min: x0 as i64,
+                        y_min: y0 as i64,
+                        x_max: x1 as i64,
+                        y_max: y1 as i64,
+                        layer_dir,
+                    });
+                }
+            }
+        }
+        out[i] = Some(MacroGeometry {
+            master_width: db.master_get_width(&master) as i64,
+            master_height: db.master_get_height(&master) as i64,
+            pins,
+            inst_halo: db.inst_halo(&inst.name).unwrap_or(None).map(|(l, b, r, t, soft)| {
+                (crate::options::Halo { left: l, bottom: b, right: r, top: t }, soft)
+            }),
+            orient: match db.inst_get_orient(&inst.name).as_str() {
+                "R180" => crate::halo::Orient::R180,
+                "MX" => crate::halo::Orient::Mx,
+                "MY" => crate::halo::Orient::My,
+                "R0" => crate::halo::Orient::R0,
+                _ => crate::halo::Orient::Other,
+            },
+        });
+    }
+    out
+}
+
+/// Placement blockages, as rectangles.
+///
+/// ⚠️ Upstream takes **every** blockage the block holds — soft and hard alike — and unions them.
+/// Filtering by softness here would understate the occupied area and pass a design that upstream
+/// refuses.
+pub fn read_blockages(db: &Db) -> Vec<Rect> {
+    db.blockage_boxes()
+        .unwrap_or_default()
+        .into_iter()
+        .map(|(x0, y0, x1, y1)| Rect {
+            x_min: x0 as i64,
+            y_min: y0 as i64,
+            x_max: x1 as i64,
+            y_max: y1 as i64,
+        })
+        .collect()
+}

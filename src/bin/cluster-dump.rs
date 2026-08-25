@@ -18,9 +18,19 @@ fn main() {
     vyges_mpl::read::mark_ignorable_macros(&mut design, &area);
     let pins = vyges_mpl::read::read_pins(&db);
     let nets = vyges_mpl::read::read_nets(&db, &design, &pins);
+    let geometry = vyges_mpl::read::read_macro_geometry(&db, &design);
+    let blockages = vyges_mpl::read::read_blockages(&db);
+    let input = vyges_mpl::engine::DesignInputs {
+        design: &design,
+        pins: &pins,
+        nets: &nets,
+        geometry: &geometry,
+        blockages: &blockages,
+        minimum_spacing: vyges_mpl::read::minimum_spacing(&db, &design),
+    };
 
     let opts = vyges_mpl::engine::ClusterOptions::default();
-    let r = vyges_mpl::engine::run_clustering(&design, &pins, &nets, &opts);
+    let r = vyges_mpl::engine::run_clustering(&input, &opts);
     if let Some(refusal) = &r.refusal {
         eprintln!("refused: {refusal:?}");
         std::process::exit(1);

@@ -20,7 +20,7 @@ pub struct MplError {
 }
 
 impl MplError {
-    fn new(code: u16, message: impl Into<String>) -> Self {
+    pub fn new(code: u16, message: impl Into<String>) -> Self {
         Self { code, message: message.into() }
     }
 }

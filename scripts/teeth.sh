@@ -239,7 +239,17 @@ mutations() {
 "merged-name-uses-ids${SEP}src/tree.rs${SEP}                    .map(|d| d.name.clone())${SEP}                    .map(|d| d.id.to_string())${SEP}merged_macros_leave_one_cluster_carrying_both_names_and_both_areas" \
 "merged-macro-count-not-summed${SEP}src/tree.rs${SEP}                    c.metrics.num_macro += 1;${SEP}                    c.metrics.num_macro = 1;${SEP}merged_macros_leave_one_cluster_carrying_both_names_and_both_areas" \
 "mixed-leaf-not-retyped${SEP}src/tree.rs${SEP}        child.cluster_type = ClusterType::StdCell;\n        child.metrics.num_macro = 0;${SEP}        child.metrics.num_macro = 0;${SEP}a_mixed_leaf_becomes_a_std_cell_cluster_and_its_macros_become_siblings" \
-"absorbed-cluster-kept-in-tree${SEP}src/tree.rs${SEP}            if !survivors.contains(&c.id) {\n                continue;\n            }${SEP}            if false {\n                continue;\n            }${SEP}merged_macros_leave_one_cluster_carrying_both_names_and_both_areas"
+"absorbed-cluster-kept-in-tree${SEP}src/tree.rs${SEP}            if !survivors.contains(&c.id) {\n                continue;\n            }${SEP}            if false {\n                continue;\n            }${SEP}merged_macros_leave_one_cluster_carrying_both_names_and_both_areas" \
+"blockages-summed-not-unioned${SEP}src/feasibility.rs${SEP}    occupied += union_area(&clipped);${SEP}    occupied += clipped.iter().map(|r| r.area()).sum::<i64>();${SEP}overlapping_blockages_occupy_their_area_once" \
+"fixed-cell-counted-whole${SEP}src/feasibility.rs${SEP}            occupied += intersection(&inst.bbox, area).map_or(0, |r| r.area());${SEP}            occupied += inst.bbox.area();${SEP}a_fixed_cell_outside_the_area_contributes_only_the_part_inside" \
+"fixed-cell-skipped-entirely${SEP}src/feasibility.rs${SEP}            occupied += intersection(&inst.bbox, area).map_or(0, |r| r.area());\n            continue;${SEP}            continue;${SEP}a_fixed_cell_outside_the_area_contributes_only_the_part_inside" \
+"macro-measured-without-halo${SEP}src/feasibility.rs${SEP}        occupied += if inst.is_block { macro_area_with_halo(i) } else { inst.bbox.area() };${SEP}        occupied += inst.bbox.area();${SEP}an_unfixed_macro_is_measured_with_its_halo_not_its_box" \
+"fit-test-is-strict${SEP}src/feasibility.rs${SEP}    occupied <= area.area()${SEP}    occupied < area.area()${SEP}exactly_filling_the_area_still_fits" \
+"blockages-not-clipped${SEP}src/feasibility.rs${SEP}    let clipped: Vec<Rect> = blockages.iter().filter_map(|b| intersection(b, area)).collect();${SEP}    let clipped: Vec<Rect> = blockages.to_vec();${SEP}blockages_are_clipped_to_the_placement_area_before_they_count" \
+"core-fit-is-strict${SEP}src/feasibility.rs${SEP}    width_with_halo <= core.x_max - core.x_min && height_with_halo <= core.y_max - core.y_min${SEP}    width_with_halo < core.x_max - core.x_min && height_with_halo < core.y_max - core.y_min${SEP}a_macro_exactly_as_wide_as_the_core_fits" \
+"core-fit-ignores-height${SEP}src/feasibility.rs${SEP}    width_with_halo <= core.x_max - core.x_min && height_with_halo <= core.y_max - core.y_min${SEP}    width_with_halo <= core.x_max - core.x_min${SEP}the_core_test_uses_both_dimensions_independently" \
+"halo-area-drops-std-cells${SEP}src/feasibility.rs${SEP}    let inst_area_with_halos = macro_with_halo_area as f32 + std_cell_area as f32;${SEP}    let inst_area_with_halos = macro_with_halo_area as f32;${SEP}the_halo_area_test_adds_the_macros_to_the_standard_cells" \
+"union-ignores-x-spans${SEP}src/feasibility.rs${SEP}        total += covered * (x1 - x0);${SEP}        total += covered;${SEP}disjoint_blockages_add_up"
 }
 
 # ⚠️ `mv` restores the BACKUP's mtime, which can be older than the artifact built from the
