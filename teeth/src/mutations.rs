@@ -1,0 +1,1760 @@
+// SPDX-License-Identifier: Apache-2.0
+//! The mutation table: one broken rule per entry, and the test that must notice.
+//!
+//! 🔑 **This is a typed array, and that is the point.** Its predecessor was a list of bash
+//! double-quoted strings where a raw `"` ended a row early and swallowed every row after it —
+//! silently, and for several milestones. Here a malformed entry does not compile.
+//!
+//! ⚠️ Patterns are matched **literally**, once, at the first occurrence. Raw strings (`r#"…"#`)
+//! mean quotes, backslashes and newlines all appear exactly as they do in the source, with no
+//! escaping rules to get wrong.
+//!
+//! ⛔ **Three shaping mutations were REMOVED as EQUIVALENT, not fixed.** Each changed the source
+//! and could not change the result, so no test can catch one and writing one would be writing a
+//! test that cannot fail:
+//!
+//! * dropping the `num_macro() > 0` guard before recursing — the callee's own base case is the
+//!   same test, so the guard is redundant. Upstream carries it too; ours matches for fidelity.
+//! * adding `is_fixed_macro ||` to the single-contributor re-scan — a fixed macro cluster never
+//!   has tilings, so finding it or not both leave the parent with none.
+//! * dropping `is_fixed_macro ||` from the contributor filter — a fixed macro cluster reports
+//!   `num_macro() == 1` (the `fixed_covers` dump says `Macros: 1`), so the count test already
+//!   covers it. ⚠️ This one *looked* catchable and had a test, which passed only because it built
+//!   a fixed cluster reporting zero macros — a state that never occurs.
+//!
+//! Do not re-add them: an equivalent mutant reported as a hole trains people to ignore holes.
+
+use crate::Mutation;
+
+pub const MUTATIONS: &[Mutation] = &[
+    Mutation {
+        name: r#"halo-order-lrbt"#,
+        file: r#"src/options.rs"#,
+        find: r#"4 => (values[0], values[1], values[2], values[3]),"#,
+        replace: r#"4 => (values[0], values[2], values[1], values[3]),"#,
+        want: r#"a_four_value_halo_is_left_bottom_right_top"#,
+    },
+    Mutation {
+        name: r#"halo-two-value-not-mirrored"#,
+        file: r#"src/options.rs"#,
+        find: r#"2 => (values[0], values[1], values[0], values[1]),"#,
+        replace: r#"2 => (values[0], values[1], 0, 0),"#,
+        want: r#"a_two_value_halo_mirrors_into_four"#,
+    },
+    Mutation {
+        name: r#"negative-halo-allowed"#,
+        file: r#"src/options.rs"#,
+        find: r#"if v < 0 {"#,
+        replace: r#"if false {"#,
+        want: r#"a_negative_halo_value_is_mpl73"#,
+    },
+    Mutation {
+        name: r#"both-blockage-weights-allowed"#,
+        file: r#"src/options.rs"#,
+        find: r#"if saw_macro_blockage_weight && saw_soft_blockage_weight {"#,
+        replace: r#"if false {"#,
+        want: r#"giving_both_blockage_weights_is_mpl69"#,
+    },
+    Mutation {
+        name: r#"macro-blockage-does-not-alias"#,
+        file: r#"src/options.rs"#,
+        find: r#"                saw_macro_blockage_weight = true;
+                warnings.push(MplWarning {
+                    code: 70,"#,
+        replace: r#"                saw_macro_blockage_weight = true;
+                warnings.push(MplWarning {
+                    code: 700,"#,
+        want: r#"macro_blockage_weight_aliases_soft_and_warns_mpl70"#,
+    },
+    Mutation {
+        name: r#"macro-blockage-weight-not-applied"#,
+        file: r#"src/options.rs"#,
+        find: r#"                });
+                o.soft_blockage_weight = num(value)?;"#,
+        replace: r#"                });
+                let _ = num(value)?;"#,
+        want: r#"macro_blockage_weight_aliases_soft_and_warns_mpl70"#,
+    },
+    Mutation {
+        name: r#"halo-width-alone-loses-height"#,
+        file: r#"src/options.rs"#,
+        find: r#"let h = halo_height.or(halo_width).unwrap_or(0);"#,
+        replace: r#"let h = halo_height.unwrap_or(0);"#,
+        want: r#"halo_width_alone_sets_height_to_it_and_warns_mpl74"#,
+    },
+    Mutation {
+        name: r#"halo-height-alone-loses-width"#,
+        file: r#"src/options.rs"#,
+        find: r#"let w = halo_width.or(halo_height).unwrap_or(0);"#,
+        replace: r#"let w = halo_width.unwrap_or(0);"#,
+        want: r#"halo_height_alone_sets_width_to_it"#,
+    },
+    Mutation {
+        name: r#"mpl74-warning-dropped"#,
+        file: r#"src/options.rs"#,
+        find: r#"code: 74,"#,
+        replace: r#"code: 0,"#,
+        want: r#"halo_width_alone_sets_height_to_it_and_warns_mpl74"#,
+    },
+    Mutation {
+        name: r#"target-util-default-wrong"#,
+        file: r#"src/options.rs"#,
+        find: r#"target_util: 0.25,"#,
+        replace: r#"target_util: 0.30,"#,
+        want: r#"every_default_matches_upstreams_tcl"#,
+    },
+    Mutation {
+        name: r#"report-dir-default-wrong"#,
+        file: r#"src/options.rs"#,
+        find: r#"report_directory: "hier_rtlmp".to_string(),"#,
+        replace: r#"report_directory: "mpl".to_string(),"#,
+        want: r#"every_default_matches_upstreams_tcl"#,
+    },
+    Mutation {
+        name: r#"region-inversion-unchecked"#,
+        file: r#"src/options.rs"#,
+        find: r#"if x1 > x2 {"#,
+        replace: r#"if false {"#,
+        want: r#"a_region_is_four_values_and_must_not_be_inverted"#,
+    },
+    Mutation {
+        name: r#"vacuous-reads-as-applied"#,
+        file: r#"src/status.rs"#,
+        find: r#"if placed == 0 {"#,
+        replace: r#"if false {"#,
+        want: r#"placing_nothing_is_never_applied"#,
+    },
+    Mutation {
+        name: r#"refusal-does-not-outrank"#,
+        file: r#"src/status.rs"#,
+        find: r#"if refusal.is_some() {"#,
+        replace: r#"if false {"#,
+        want: r#"a_refusal_outranks_the_count"#,
+    },
+    Mutation {
+        name: r#"stop-after-uses-first-occurrence"#,
+        file: r#"src/pipeline.rs"#,
+        find: r#"seq.iter().rposition("#,
+        replace: r#"seq.iter().position("#,
+        want: r#"repeat_duplicates_in_place_and_composes_with_stop_after"#,
+    },
+    Mutation {
+        name: r#"only-reorders-as-asked"#,
+        file: r#"src/pipeline.rs"#,
+        find: r#"ORDER.iter().copied().filter(|s| only.contains(s)).collect()"#,
+        replace: r#"only.clone()"#,
+        want: r#"only_keeps_upstreams_relative_order_not_the_order_asked_for"#,
+    },
+    Mutation {
+        name: r#"boundary-order-l-after-r"#,
+        file: r#"src/halo.rs"#,
+        find: r#"    B = 0,
+    L = 1,
+    T = 2,
+    R = 3,"#,
+        replace: r#"    B = 0,
+    L = 3,
+    T = 2,
+    R = 1,"#,
+        want: r#"equidistant_same_direction_falls_back_to_the_enum_order"#,
+    },
+    Mutation {
+        name: r#"boundary-order-b-after-t"#,
+        file: r#"src/halo.rs"#,
+        find: r#"    B = 0,
+    L = 1,
+    T = 2,
+    R = 3,"#,
+        replace: r#"    B = 2,
+    L = 1,
+    T = 0,
+    R = 3,"#,
+        want: r#"a_centred_pin_prefers_bottom_over_top"#,
+    },
+    Mutation {
+        name: r#"is-vertical-inverted"#,
+        file: r#"src/halo.rs"#,
+        find: r#"        matches!(self, Boundary::L | Boundary::R)"#,
+        replace: r#"        matches!(self, Boundary::B | Boundary::T)"#,
+        want: r#"a_corner_pin_is_decided_by_its_layer_direction"#,
+    },
+    Mutation {
+        name: r#"corner-rule-layer-dir-swapped"#,
+        file: r#"src/halo.rs"#,
+        find: r#"        LayerDir::Vertical => {
+            if first.1.is_vertical() { second.1 } else { first.1 }
+        }"#,
+        replace: r#"        LayerDir::Vertical => {
+            if first.1.is_vertical() { first.1 } else { second.1 }
+        }"#,
+        want: r#"a_corner_pin_is_decided_by_its_layer_direction"#,
+    },
+    Mutation {
+        name: r#"right-distance-uses-x-min"#,
+        file: r#"src/halo.rs"#,
+        find: r#"        (master_width - pin.x_max, Boundary::R),"#,
+        replace: r#"        (pin.x_min, Boundary::R),"#,
+        want: r#"right_and_bottom_distances_use_the_master_extents"#,
+    },
+    Mutation {
+        name: r#"soft-halo-floored-to-base"#,
+        file: r#"src/halo.rs"#,
+        find: r#"        Some((h, true)) => h,"#,
+        replace: r#"        Some((h, true)) => Halo { left: h.left.max(base.left), bottom: h.bottom.max(base.bottom), right: h.right.max(base.right), top: h.top.max(base.top) },"#,
+        want: r#"a_soft_instance_halo_is_taken_as_is_and_is_not_floored"#,
+    },
+    Mutation {
+        name: r#"unfixed-macro-reoriented"#,
+        file: r#"src/halo.rs"#,
+        find: r#"    if is_fixed {
+        return reorient_for_fixed(halo, orient);
+    }"#,
+        replace: r#"    return reorient_for_fixed(halo, orient);
+    #[allow(unreachable_code)]"#,
+        want: r#"an_unfixed_macro_is_not_reoriented"#,
+    },
+    Mutation {
+        name: r#"mx-swaps-left-right"#,
+        file: r#"src/halo.rs"#,
+        find: r#"    if matches!(orient, Orient::Mx | Orient::R180) {
+        std::mem::swap(&mut h.bottom, &mut h.top);"#,
+        replace: r#"    if matches!(orient, Orient::Mx | Orient::R180) {
+        std::mem::swap(&mut h.left, &mut h.right);"#,
+        want: r#"a_fixed_macro_has_its_halo_reoriented"#,
+    },
+    Mutation {
+        name: r#"minimum-spacing-ignored"#,
+        file: r#"src/halo.rs"#,
+        find: r#"    let mut halo = Halo {
+        left: minimum_spacing,"#,
+        replace: r#"    let mut halo = Halo {
+        left: 0,"#,
+        want: r#"no_pins_at_all_leaves_the_minimum_spacing_on_every_side"#,
+    },
+    Mutation {
+        name: r#"explicit-halo-not-short-circuited"#,
+        file: r#"src/halo.rs"#,
+        find: r#"    if let Some(h) = explicit {
+        return h;
+    }
+
+    let full = full_halo(None, inst_halo, base);"#,
+        replace: r#"    let full = full_halo(explicit, inst_halo, base);"#,
+        want: r#"an_explicit_halo_bypasses_use_full_halo_and_reorientation"#,
+    },
+    Mutation {
+        name: r#"level-reset-outside-derivation"#,
+        file: r#"src/thresholds.rs"#,
+        find: r#"        if metrics.num_macro <= MIN_NUM_MACROS_FOR_MULTILEVEL {
+            max_level = 1;
+        }"#,
+        replace: r#"    }
+    if metrics.num_macro <= MIN_NUM_MACROS_FOR_MULTILEVEL {
+        max_level = 1;
+    }
+    if false {"#,
+        want: r#"keep_clustering_data2_matches_upstreams_reported_thresholds"#,
+    },
+    Mutation {
+        name: r#"threshold-guard-is-per-field"#,
+        file: r#"src/thresholds.rs"#,
+        find: r#"    if t.max_macro <= 0 || t.min_macro <= 0 || t.max_std_cell <= 0 || t.min_std_cell <= 0 {"#,
+        replace: r#"    if t.max_macro <= 0 && t.min_macro <= 0 && t.max_std_cell <= 0 && t.min_std_cell <= 0 {"#,
+        want: r#"a_partially_supplied_threshold_set_derives_all_four"#,
+    },
+    Mutation {
+        name: r#"std-cell-floor-not-applied"#,
+        file: r#"src/thresholds.rs"#,
+        find: r#"        t.min_std_cell = t.min_std_cell.max(MIN_NUM_STD_CELLS_ALLOWED);"#,
+        replace: r#"        t.min_std_cell = t.min_std_cell.max(1);"#,
+        want: r#"halos1_matches_upstreams_reported_thresholds"#,
+    },
+    Mutation {
+        name: r#"macro-floor-uses-std-cell-constant"#,
+        file: r#"src/thresholds.rs"#,
+        find: r#"        if t.min_macro <= 0 {
+            t.min_macro = 1;
+        }"#,
+        replace: r#"        if t.min_macro <= 0 {
+            t.min_macro = MIN_NUM_STD_CELLS_ALLOWED;
+        }"#,
+        want: r#"the_std_cell_minimum_is_floored_at_1000_and_the_macro_minimum_at_1"#,
+    },
+    Mutation {
+        name: r#"coarsening-uses-max-level-not-minus-one"#,
+        file: r#"src/thresholds.rs"#,
+        find: r#"        let f = (cluster_size_ratio as f64).powi(max_level - 1);"#,
+        replace: r#"        let f = (cluster_size_ratio as f64).powi(max_level);"#,
+        want: r#"keep_clustering_data2_matches_upstreams_reported_thresholds"#,
+    },
+    Mutation {
+        name: r#"fixed-macros-do-not-force-one-level"#,
+        file: r#"src/thresholds.rs"#,
+        find: r#"    if has_fixed_macros {
+        max_level = 1;
+    }"#,
+        replace: r#"    if false {
+        max_level = 1;
+    }"#,
+        want: r#"a_fixed_macro_forces_a_single_level"#,
+    },
+    Mutation {
+        name: r#"per-level-std-floor-is-1000"#,
+        file: r#"src/thresholds.rs"#,
+        find: r#"        t.min_std_cell = 100;"#,
+        replace: r#"        t.min_std_cell = 1000;"#,
+        want: r#"a_degenerate_std_cell_minimum_becomes_one_hundred_not_one_thousand"#,
+    },
+    Mutation {
+        name: r#"per-level-max-not-recomputed"#,
+        file: r#"src/thresholds.rs"#,
+        find: r#"    if t.min_macro <= 0 {
+        t.min_macro = 1;
+        t.max_macro = half_ratio(t.min_macro, cluster_size_ratio);
+    }"#,
+        replace: r#"    if t.min_macro <= 0 {
+        t.min_macro = 1;
+    }"#,
+        want: r#"a_degenerate_macro_minimum_becomes_one_and_recomputes_its_maximum"#,
+    },
+    Mutation {
+        name: r#"half-ratio-rounds-instead-of-truncating"#,
+        file: r#"src/thresholds.rs"#,
+        find: r#"    trunc((base as f32 * ratio) as f64 / 2.0)"#,
+        replace: r#"    (((base as f32 * ratio) as f64 / 2.0).round()) as i32"#,
+        want: r#"an_odd_ratio_truncates_the_half_rather_than_rounding_it"#,
+    },
+    Mutation {
+        name: r#"level-divides-repeatedly"#,
+        file: r#"src/thresholds.rs"#,
+        find: r#"    let coarse_factor = (cluster_size_ratio as f64).powi(level - 1);"#,
+        replace: r#"    let coarse_factor = (cluster_size_ratio as f64) * (level - 1).max(1) as f64;"#,
+        want: r#"each_level_divides_by_the_ratio"#,
+    },
+    Mutation {
+        name: r#"break-uses-and-not-or"#,
+        file: r#"src/cluster.rs"#,
+        find: r#"    cluster.num_std_cell() > max_std_cell || cluster.num_macro() > max_macro"#,
+        replace: r#"    cluster.num_std_cell() > max_std_cell && cluster.num_macro() > max_macro"#,
+        want: r#"breaking_needs_either_count_over_its_maximum"#,
+    },
+    Mutation {
+        name: r#"merge-uses-or-not-and"#,
+        file: r#"src/cluster.rs"#,
+        find: r#"        && cluster.num_std_cell() < min_std_cell
+        && cluster.num_macro() < min_macro"#,
+        replace: r#"        && (cluster.num_std_cell() < min_std_cell
+        || cluster.num_macro() < min_macro)"#,
+        want: r#"merging_needs_both_counts_under_their_minimum"#,
+    },
+    Mutation {
+        name: r#"io-clusters-can-merge"#,
+        file: r#"src/cluster.rs"#,
+        find: r#"    !cluster.is_io_cluster()
+        && cluster.num_std_cell()"#,
+        replace: r#"    true
+        && cluster.num_std_cell()"#,
+        want: r#"an_io_cluster_is_never_a_merge_candidate"#,
+    },
+    Mutation {
+        name: r#"break-is-greater-or-equal"#,
+        file: r#"src/cluster.rs"#,
+        find: r#"    cluster.num_std_cell() > max_std_cell || cluster.num_macro() > max_macro"#,
+        replace: r#"    cluster.num_std_cell() >= max_std_cell || cluster.num_macro() >= max_macro"#,
+        want: r#"breaking_needs_either_count_over_its_maximum"#,
+    },
+    Mutation {
+        name: r#"hard-macro-mask-missing"#,
+        file: r#"src/cluster.rs"#,
+        find: r#"        if self.cluster_type == ClusterType::HardMacro {
+            return 0;
+        }"#,
+        replace: r#"        if false {
+            return 0;
+        }"#,
+        want: r#"a_hard_macro_cluster_reports_no_standard_cells"#,
+    },
+    Mutation {
+        name: r#"std-cell-mask-missing"#,
+        file: r#"src/cluster.rs"#,
+        find: r#"        if self.cluster_type == ClusterType::StdCell {
+            return 0;
+        }"#,
+        replace: r#"        if false {
+            return 0;
+        }"#,
+        want: r#"a_std_cell_cluster_reports_no_macros"#,
+    },
+    Mutation {
+        name: r#"logical-module-allows-glue"#,
+        file: r#"src/cluster.rs"#,
+        find: r#"        self.leaf_std_cells.is_empty() && self.leaf_macros.is_empty() && self.db_modules.len() == 1"#,
+        replace: r#"        self.db_modules.len() == 1"#,
+        want: r#"glue_instances_stop_a_cluster_corresponding_to_a_logical_module"#,
+    },
+    Mutation {
+        name: r#"logical-module-at-least-one"#,
+        file: r#"src/cluster.rs"#,
+        find: r#"&& self.db_modules.len() == 1
+    }"#,
+        replace: r#"&& !self.db_modules.is_empty()
+    }"#,
+        want: r#"two_modules_stop_it_too"#,
+    },
+    Mutation {
+        name: r#"subtree-collapse-is-lifo"#,
+        file: r#"src/cluster.rs"#,
+        find: r#"        if cluster.children.is_empty() {
+            leaves.push(cluster);"#,
+        replace: r#"        if cluster.children.is_empty() {
+            leaves.insert(0, cluster);"#,
+        want: r#"the_collapse_is_breadth_first_not_depth_first"#,
+    },
+    Mutation {
+        name: r#"subtree-pushes-to-front"#,
+        file: r#"src/cluster.rs"#,
+        find: r#"                wavefront.push_back(child);"#,
+        replace: r#"                wavefront.push_front(child);"#,
+        want: r#"the_collapse_is_breadth_first_not_depth_first"#,
+    },
+    Mutation {
+        name: r#"dissolved-ids-not-reported"#,
+        file: r#"src/cluster.rs"#,
+        find: r#"            dissolved.push(cluster.id);"#,
+        replace: r#"            let _ = cluster.id;"#,
+        want: r#"every_dissolved_id_is_reported_so_the_id_map_can_be_pruned"#,
+    },
+    Mutation {
+        name: r#"par-gate-uses-masked-counts"#,
+        file: r#"src/cluster.rs"#,
+        find: r#"        && (cluster.leaf_std_cells.len() as i64 > max_std_cell as i64
+            || cluster.leaf_macros.len() as i64 > max_macro as i64)"#,
+        replace: r#"        && (cluster.num_std_cell() as i64 > max_std_cell as i64
+            || cluster.num_macro() as i64 > max_macro as i64)"#,
+        want: r#"the_par_gate_counts_leaf_vectors_not_the_masked_metrics"#,
+    },
+    Mutation {
+        name: r#"par-gate-ignores-modules"#,
+        file: r#"src/cluster.rs"#,
+        find: r#"    cluster.db_modules.is_empty()
+        && (cluster.leaf_std_cells.len()"#,
+        replace: r#"    true
+        && (cluster.leaf_std_cells.len()"#,
+        want: r#"a_large_flat_cluster_is_one_with_no_modules_and_too_many_leaves"#,
+    },
+    Mutation {
+        name: r#"par-refusal-not-collected"#,
+        file: r#"src/cluster.rs"#,
+        find: r#"        .filter(|c| is_large_flat_cluster(c, max_std_cell, max_macro))"#,
+        replace: r#"        .filter(|_c| false)"#,
+        want: r#"a_resulting_child_needing_the_partitioner_is_reported_not_approximated"#,
+    },
+    Mutation {
+        name: r#"blockage-cleanup-runs-forwards"#,
+        file: r#"src/apply.rs"#,
+        find: r#"    (baseline.blockages..now).rev().collect()"#,
+        replace: r#"    (baseline.blockages..now).collect()"#,
+        want: r#"destruction_runs_highest_index_first"#,
+    },
+    Mutation {
+        name: r#"blockage-cleanup-endpoints-swapped"#,
+        file: r#"src/apply.rs"#,
+        find: r#"    (baseline.blockages..now).rev().collect()"#,
+        replace: r#"    (now..baseline.blockages).rev().collect()"#,
+        want: r#"a_shrunken_count_asks_for_nothing_rather_than_producing_garbage_indices"#,
+    },
+    Mutation {
+        name: r#"refusal-commits"#,
+        file: r#"src/apply.rs"#,
+        find: r#"    if kept {
+        Settlement::Committed
+    } else {
+        Settlement::RolledBack
+    }"#,
+        replace: r#"    let _ = kept;
+    Settlement::Committed"#,
+        want: r#"only_success_commits"#,
+    },
+    Mutation {
+        name: r#"overlap-includes-touching"#,
+        file: r#"src/design.rs"#,
+        find: r#"        self.x_min < other.x_max
+            && other.x_min < self.x_max"#,
+        replace: r#"        self.x_min <= other.x_max
+            && other.x_min <= self.x_max"#,
+        want: r#"touching_rectangles_do_not_overlap"#,
+    },
+    Mutation {
+        name: r#"ignore-check-before-block"#,
+        file: r#"src/design.rs"#,
+        find: r#"        if inst.is_block {
+            m.num_macro += 1;"#,
+        replace: r#"        if inst.is_block && !is_ignored_inst(inst) {
+            m.num_macro += 1;"#,
+        want: r#"an_ignorable_macro_STILL_counts_as_a_macro"#,
+    },
+    Mutation {
+        name: r#"cover-not-exempt-from-fixed-error"#,
+        file: r#"src/design.rs"#,
+        find: r#"        } else if inst.is_fixed
+            && !inst.master.is_cover"#,
+        replace: r#"        } else if inst.is_fixed
+            && true"#,
+        want: r#"a_fixed_cover_cell_inside_the_area_is_allowed"#,
+    },
+    Mutation {
+        name: r#"fixed-error-ignores-the-area"#,
+        file: r#"src/design.rs"#,
+        find: r#"            && inst.bbox.overlaps(placement_area)"#,
+        replace: r#"            && true"#,
+        want: r#"a_fixed_cell_outside_the_placement_area_is_allowed_and_counted"#,
+    },
+    Mutation {
+        name: r#"ignored-std-cells-counted"#,
+        file: r#"src/design.rs"#,
+        find: r#"        } else if !is_ignored_inst(inst) {"#,
+        replace: r#"        } else if true {"#,
+        want: r#"an_ignored_standard_cell_counts_as_neither"#,
+    },
+    Mutation {
+        name: r#"ignorable-flag-applies-to-std-cells"#,
+        file: r#"src/design.rs"#,
+        find: r#"    if inst.is_block && inst.is_ignorable_macro {"#,
+        replace: r#"    if inst.is_ignorable_macro {"#,
+        want: r#"the_ignorable_flag_only_applies_to_macros"#,
+    },
+    Mutation {
+        name: r#"metrics-do-not-recurse"#,
+        file: r#"src/design.rs"#,
+        find: r#"    for &child in &design.modules[module].children {"#,
+        replace: r#"    for &child in &[] as &[usize] {"#,
+        want: r#"metrics_accumulate_through_the_module_hierarchy"#,
+    },
+    Mutation {
+        name: r#"fence-outside-core-falls-back"#,
+        file: r#"src/design.rs"#,
+        find: r#"    if shape.area() == 0 {
+        None"#,
+        replace: r#"    if false {
+        None"#,
+        want: r#"a_fence_outside_the_core_leaves_nothing_to_place_into"#,
+    },
+    Mutation {
+        name: r#"unfixed-macros-includes-fixed"#,
+        file: r#"src/design.rs"#,
+        find: r#"        .filter(|(_, i)| i.is_block && !i.is_fixed)"#,
+        replace: r#"        .filter(|(_, i)| i.is_block)"#,
+        want: r#"only_unfixed_macros_are_the_placers_to_move"#,
+    },
+    Mutation {
+        name: r#"empty-module-still-clustered"#,
+        file: r#"src/tree.rs"#,
+        find: r#"        if self.module_metrics[module].num_macro == 0
+            && self.module_metrics[module].num_std_cell == 0
+        {
+            return None;
+        }"#,
+        replace: r#"        if false {
+            return None;
+        }"#,
+        want: r#"a_module_with_no_instances_gets_no_cluster"#,
+    },
+    Mutation {
+        name: r#"empty-module-skip-uses-or"#,
+        file: r#"src/tree.rs"#,
+        find: r#"        if self.module_metrics[module].num_macro == 0
+            && self.module_metrics[module].num_std_cell == 0"#,
+        replace: r#"        if self.module_metrics[module].num_macro == 0
+            || self.module_metrics[module].num_std_cell == 0"#,
+        want: r#"a_module_with_only_macros_still_gets_a_cluster"#,
+    },
+    Mutation {
+        name: r#"cluster-named-by-leaf-name"#,
+        file: r#"src/tree.rs"#,
+        find: r#"self.design.modules[module].hierarchical_name.clone()"#,
+        replace: r#"self.design.modules[module].name.clone()"#,
+        want: r#"a_cluster_is_named_by_the_modules_hierarchical_name"#,
+    },
+    Mutation {
+        name: r#"empty-glue-cluster-kept"#,
+        file: r#"src/tree.rs"#,
+        find: r#"        if c.leaf_std_cells.is_empty() && c.leaf_macros.is_empty() {
+            return None;
+        }"#,
+        replace: r#"        if false {
+            return None;
+        }"#,
+        want: r#"a_glue_cluster_with_no_leaves_is_DISCARDED"#,
+    },
+    Mutation {
+        name: r#"glue-name-without-parens"#,
+        file: r#"src/tree.rs"#,
+        find: r#"({parent_name})_glue_logic"#,
+        replace: r#"{parent_name}_glue_logic"#,
+        want: r#"glue_logic_is_named_after_its_parent_in_parentheses"#,
+    },
+    Mutation {
+        name: r#"glue-ignores-the-ignore-check"#,
+        file: r#"src/tree.rs"#,
+        find: r#"            if is_ignored_inst(inst) {
+                continue;
+            }"#,
+        replace: r#"            if false {
+                continue;
+            }"#,
+        want: r#"a_module_of_only_ignored_cells_produces_no_glue_cluster"#,
+    },
+    Mutation {
+        name: r#"glue-files-macros-as-std-cells"#,
+        file: r#"src/tree.rs"#,
+        find: r#"            if inst.is_block {
+                cluster.leaf_macros.push(i);
+            } else {
+                cluster.leaf_std_cells.push(i);
+            }"#,
+        replace: r#"            cluster.leaf_std_cells.push(i);"#,
+        want: r#"glue_leaves_are_filed_by_whether_they_are_macros"#,
+    },
+    Mutation {
+        name: r#"metrics-skip-held-modules"#,
+        file: r#"src/tree.rs"#,
+        find: r#"        for &module in &cluster.db_modules {
+            m.num_std_cell += self.module_metrics[module].num_std_cell;"#,
+        replace: r#"        for &module in &[] as &[usize] {
+            m.num_std_cell += self.module_metrics[module].num_std_cell;"#,
+        want: r#"cluster_metrics_count_both_leaves_and_held_modules"#,
+    },
+    Mutation {
+        name: r#"macro-clusters-not-typed-hard"#,
+        file: r#"src/tree.rs"#,
+        find: r#"            c.cluster_type = ClusterType::HardMacro;"#,
+        replace: r#"            c.cluster_type = ClusterType::Mixed;"#,
+        want: r#"each_macro_becomes_its_own_hard_macro_cluster"#,
+    },
+    Mutation {
+        name: r#"macro-per-cluster-includes-ignored"#,
+        file: r#"src/tree.rs"#,
+        find: r#"            if is_ignored_inst(inst) || !inst.is_block {"#,
+        replace: r#"            if !inst.is_block {"#,
+        want: r#"an_ignored_macro_does_not_become_its_own_cluster"#,
+    },
+    Mutation {
+        name: r#"id-not-advanced"#,
+        file: r#"src/tree.rs"#,
+        find: r#"        let id = self.next_id;
+        self.next_id += 1;
+        id"#,
+        replace: r#"        self.next_id"#,
+        want: r#"ids_are_handed_out_in_creation_order"#,
+    },
+    Mutation {
+        name: r#"root-flat-module-absorbed"#,
+        file: r#"src/tree.rs"#,
+        find: r#"                if is_root {"#,
+        replace: r#"                if false {"#,
+        want: r#"a_flat_module_at_the_ROOT_gets_a_glue_child"#,
+    },
+    Mutation {
+        name: r#"nonroot-flat-module-gets-child"#,
+        file: r#"src/tree.rs"#,
+        find: r#"                if is_root {"#,
+        replace: r#"                if true {"#,
+        want: r#"the_SAME_flat_module_below_the_root_is_absorbed_instead"#,
+    },
+    Mutation {
+        name: r#"absorbed-module-not-cleared"#,
+        file: r#"src/tree.rs"#,
+        find: r#"                    parent.db_modules.clear();"#,
+        replace: r#"                    let _ = &parent.db_modules;"#,
+        want: r#"the_SAME_flat_module_below_the_root_is_absorbed_instead"#,
+    },
+    Mutation {
+        name: r#"glue-created-before-child-modules"#,
+        file: r#"src/tree.rs"#,
+        find: r#"            for i in 0..self.design.modules[module].children.len() {"#,
+        replace: r#"            for i in (0..self.design.modules[module].children.len()).rev() {"#,
+        want: r#"a_module_with_children_yields_one_cluster_each_then_the_glue"#,
+    },
+    Mutation {
+        name: r#"merged-cluster-skips-its-modules"#,
+        file: r#"src/tree.rs"#,
+        find: r#"            for i in 0..parent.db_modules.len() {"#,
+        replace: r#"            for i in 0..0 {"#,
+        want: r#"a_merged_cluster_splits_by_module_and_then_by_its_own_leaves"#,
+    },
+    Mutation {
+        name: r#"merged-cluster-skips-its-leaves"#,
+        file: r#"src/tree.rs"#,
+        find: r#"            if !parent.leaf_std_cells.is_empty() || !parent.leaf_macros.is_empty() {"#,
+        replace: r#"            if false {"#,
+        want: r#"a_merged_cluster_splits_by_module_and_then_by_its_own_leaves"#,
+    },
+    Mutation {
+        name: r#"recursion-ignores-module-check"#,
+        file: r#"src/tree.rs"#,
+        find: r#"            if !child.db_modules.is_empty()
+                && crate::cluster::should_break(child, max_std_cell, max_macro)"#,
+        replace: r#"            if crate::cluster::should_break(child, max_std_cell, max_macro)"#,
+        want: r#"a_glue_child_with_no_module_is_never_recursed_into"#,
+    },
+    Mutation {
+        name: r#"recursion-always-descends"#,
+        file: r#"src/tree.rs"#,
+        find: r#"                && crate::cluster::should_break(child, max_std_cell, max_macro)
+            {"#,
+        replace: r#"            {"#,
+        want: r#"a_child_that_fits_is_left_alone"#,
+    },
+    Mutation {
+        name: r#"recursion-passes-is-root"#,
+        file: r#"src/tree.rs"#,
+        find: r#"                self.break_cluster(child, false, max_std_cell, max_macro, min_std_cell, min_macro);"#,
+        replace: r#"                self.break_cluster(child, true, max_std_cell, max_macro, min_std_cell, min_macro);"#,
+        want: r#"a_recursed_child_is_never_treated_as_the_root"#,
+    },
+    Mutation {
+        name: r#"merge-candidates-not-collected"#,
+        file: r#"src/tree.rs"#,
+        find: r#"                .filter(|c| crate::cluster::is_merge_candidate(c, min_std_cell, min_macro))"#,
+        replace: r#"                .filter(|_c| false)"#,
+        want: r#"small_children_are_reported_in_child_order_and_not_merged"#,
+    },
+    Mutation {
+        name: r#"merge-candidates-ignore-thresholds"#,
+        file: r#"src/tree.rs"#,
+        find: r#"                .filter(|c| crate::cluster::is_merge_candidate(c, min_std_cell, min_macro))"#,
+        replace: r#"                .filter(|_c| true)"#,
+        want: r#"a_child_above_the_minimum_is_not_a_merge_candidate"#,
+    },
+    Mutation {
+        name: r#"supply-nets-counted"#,
+        file: r#"src/netlist.rs"#,
+        find: r#"    if net.is_supply {
+        return false;
+    }"#,
+        replace: r#"    if false {
+        return false;
+    }"#,
+        want: r#"a_supply_net_is_never_valid"#,
+    },
+    Mutation {
+        name: r#"ignored-only-nets-counted"#,
+        file: r#"src/netlist.rs"#,
+        find: r#"        .any(|t| !is_ignored_inst(&design.instances[t.inst]))"#,
+        replace: r#"        .any(|_t| true)"#,
+        want: r#"a_net_touching_only_ignored_instances_is_not_valid"#,
+    },
+    Mutation {
+        name: r#"valid-net-needs-all-unignored"#,
+        file: r#"src/netlist.rs"#,
+        find: r#"        .any(|t| !is_ignored_inst(&design.instances[t.inst]))"#,
+        replace: r#"        .all(|t| !is_ignored_inst(&design.instances[t.inst]))"#,
+        want: r#"one_unignored_instance_is_enough_to_make_a_net_valid"#,
+    },
+    Mutation {
+        name: r#"port-input-is-a-load"#,
+        file: r#"src/netlist.rs"#,
+        find: r#"            if p.is_input {
+                driver = Some(id);
+            } else {
+                loads.push(id);
+            }"#,
+        replace: r#"            if p.is_input {
+                loads.push(id);
+            } else {
+                driver = Some(id);
+            }"#,
+        want: r#"a_block_INPUT_port_is_the_driver_the_inverse_of_the_instance_rule"#,
+    },
+    Mutation {
+        name: r#"ports-read-despite-io-pads"#,
+        file: r#"src/netlist.rs"#,
+        find: r#"    if !design_has_io_pads {"#,
+        replace: r#"    if true {"#,
+        want: r#"ports_are_ignored_entirely_when_the_design_has_io_pads"#,
+    },
+    Mutation {
+        name: r#"first-output-wins"#,
+        file: r#"src/netlist.rs"#,
+        find: r#"        if t.is_output {
+            driver = Some(id);"#,
+        replace: r#"        if t.is_output {
+            driver = driver.or(Some(id));"#,
+        want: r#"the_LAST_output_wins_on_a_multiply_driven_net"#,
+    },
+    Mutation {
+        name: r#"large-net-threshold-is-strict"#,
+        file: r#"src/netlist.rs"#,
+        find: r#"    if net.loads.is_empty() || net.loads.len() >= large_net_threshold {"#,
+        replace: r#"    if net.loads.is_empty() || net.loads.len() > large_net_threshold {"#,
+        want: r#"a_large_net_is_dropped_at_the_threshold_not_past_it"#,
+    },
+    Mutation {
+        name: r#"self-connection-kept"#,
+        file: r#"src/netlist.rs"#,
+        find: r#"        .filter(|&&load| load != driver)"#,
+        replace: r#"        .filter(|&&_load| true)"#,
+        want: r#"a_load_in_the_drivers_own_cluster_is_skipped"#,
+    },
+    Mutation {
+        name: r#"loads-deduplicated"#,
+        file: r#"src/netlist.rs"#,
+        find: r#"    net.loads
+        .iter()
+        .filter(|&&load| load != driver)"#,
+        replace: r#"    let mut ded = net.loads.clone(); ded.sort_unstable(); ded.dedup();
+    ded
+        .iter()
+        .filter(|&&load| load != driver)"#,
+        want: r#"duplicate_loads_are_NOT_deduplicated"#,
+    },
+    Mutation {
+        name: r#"connection-is-one-sided"#,
+        file: r#"src/netlist.rs"#,
+        find: r#"        *self.per_cluster.entry(b).or_default().entry(a).or_insert(0.0) += weight;"#,
+        replace: r#"        let _ = b;"#,
+        want: r#"a_connection_is_recorded_on_both_clusters"#,
+    },
+    Mutation {
+        name: r#"weights-overwrite-not-accumulate"#,
+        file: r#"src/netlist.rs"#,
+        find: r#"        *self.per_cluster.entry(a).or_default().entry(b).or_insert(0.0) += weight;"#,
+        replace: r#"        self.per_cluster.entry(a).or_default().insert(b, weight);"#,
+        want: r#"weights_accumulate_across_nets"#,
+    },
+    Mutation {
+        name: r#"strong-conn-no-subtraction"#,
+        file: r#"src/merge.rs"#,
+        find: r#"    let total = all_connections_weight(conns, a) + all_connections_weight(conns, b) - weight;"#,
+        replace: r#"    let total = all_connections_weight(conns, a) + all_connections_weight(conns, b);"#,
+        want: r#"the_shared_connection_is_subtracted_from_the_denominator_once"#,
+    },
+    Mutation {
+        name: r#"strong-conn-ratio-strict"#,
+        file: r#"src/merge.rs"#,
+        find: r#"    weight / total >= MINIMUM_CONNECTION_RATIO"#,
+        replace: r#"    weight / total > 1.0"#,
+        want: r#"a_sole_connection_is_always_strong"#,
+    },
+    Mutation {
+        name: r#"neighbors-use-pair-denominator"#,
+        file: r#"src/merge.rs"#,
+        find: r#"    let total = all_connections_weight(conns, target);
+    if total <= 0.0 {
+        return Vec::new();
+    }"#,
+        replace: r#"    let total = all_connections_weight(conns, target) * 100.0;
+    if total <= 0.0 {
+        return Vec::new();
+    }"#,
+        want: r#"neighbors_use_the_targets_own_total_not_the_pairs"#,
+    },
+    Mutation {
+        name: r#"neighbors-keep-the-ignored"#,
+        file: r#"src/merge.rs"#,
+        find: r#"        .filter(|&(id, _)| id != ignored)"#,
+        replace: r#"        .filter(|&(_id, _)| true)"#,
+        want: r#"the_ignored_cluster_is_excluded"#,
+    },
+    Mutation {
+        name: r#"empty-signature-matches"#,
+        file: r#"src/merge.rs"#,
+        find: r#"    if an.is_empty() {
+        return false;
+    }"#,
+        replace: r#"    if false {
+        return false;
+    }"#,
+        want: r#"two_isolated_clusters_do_NOT_share_a_signature"#,
+    },
+    Mutation {
+        name: r#"signature-ignores-order"#,
+        file: r#"src/merge.rs"#,
+        find: r#"    an.sort_unstable();
+    bn.sort_unstable();
+    an == bn"#,
+        replace: r#"    an.sort_unstable();
+    bn.sort_unstable();
+    true"#,
+        want: r#"different_neighbours_are_not_the_same_signature"#,
+    },
+    Mutation {
+        name: r#"max-thresholds-strict"#,
+        file: r#"src/merge.rs"#,
+        find: r#"    (a.num_macro() + b.num_macro()) <= max_macro
+        && (a.num_std_cell() + b.num_std_cell()) <= max_std_cell"#,
+        replace: r#"    (a.num_macro() + b.num_macro()) < max_macro
+        && (a.num_std_cell() + b.num_std_cell()) < max_std_cell"#,
+        want: r#"a_merge_landing_exactly_on_a_maximum_is_allowed"#,
+    },
+    Mutation {
+        name: r#"single-candidate-takes-first"#,
+        file: r#"src/merge.rs"#,
+        find: r#"    if count == 1 {
+        found
+    } else {
+        None
+    }"#,
+        replace: r#"    found"#,
+        want: r#"exactly_one_well_formed_candidate_is_required"#,
+    },
+    Mutation {
+        name: r#"small-candidates-allowed"#,
+        file: r#"src/merge.rs"#,
+        find: r#"        if small_ids.contains(&candidate) {
+            continue;
+        }"#,
+        replace: r#"        if false {
+            continue;
+        }"#,
+        want: r#"a_small_candidate_is_not_well_formed"#,
+    },
+    Mutation {
+        name: r#"io-candidates-allowed"#,
+        file: r#"src/merge.rs"#,
+        find: r#"        if candidate == target || is_io_cluster(candidate) {"#,
+        replace: r#"        if candidate == target {"#,
+        want: r#"an_io_cluster_is_never_the_candidate"#,
+    },
+    Mutation {
+        name: r#"merge-name-not-joined"#,
+        file: r#"src/merge.rs"#,
+        find: r#"    receiver.name = format!("#,
+        replace: r#"    let _unused = format!("#,
+        want: r#"merging_joins_names_with_a_double_pipe"#,
+    },
+    Mutation {
+        name: r#"receiver-with-children-absorbs"#,
+        file: r#"src/merge.rs"#,
+        find: r#"    if !receiver.children.is_empty() {
+        receiver.children.push(incomer);
+        return false;
+    }"#,
+        replace: r#"    if false {
+        return false;
+    }"#,
+        want: r#"a_receiver_with_children_ADOPTS_the_incomer_instead_of_dissolving_it"#,
+    },
+    Mutation {
+        name: r#"dust-allows-a-macro"#,
+        file: r#"src/merge.rs"#,
+        find: r#"    cluster.num_std_cell() <= DUST_CLUSTER_STD_CELL && cluster.num_macro() == 0"#,
+        replace: r#"    cluster.num_std_cell() <= DUST_CLUSTER_STD_CELL"#,
+        want: r#"dust_is_a_few_cells_and_no_macros"#,
+    },
+    Mutation {
+        name: r#"dust-limit-strict"#,
+        file: r#"src/merge.rs"#,
+        find: r#"    cluster.num_std_cell() <= DUST_CLUSTER_STD_CELL &&"#,
+        replace: r#"    cluster.num_std_cell() < DUST_CLUSTER_STD_CELL &&"#,
+        want: r#"dust_is_a_few_cells_and_no_macros"#,
+    },
+    Mutation {
+        name: r#"merge-loop-uses-swap-remove"#,
+        file: r#"src/merge.rs"#,
+        find: r#"    let incomer = parent.children.remove(ii);"#,
+        replace: r#"    let incomer = parent.children.swap_remove(ii);"#,
+        want: r#"merging_preserves_sibling_order"#,
+    },
+    Mutation {
+        name: r#"type1-ignores-max-thresholds"#,
+        file: r#"src/merge.rs"#,
+        find: r#"            if !merge_honors_max_thresholds(
+                &parent.children[ci],
+                &parent.children[si],
+                max_std_cell,
+                max_macro,
+            ) {
+                continue;
+            }"#,
+        replace: r#"            if false {
+                continue;
+            }"#,
+        want: r#"type_1_is_skipped_when_the_merge_would_break_a_maximum"#,
+    },
+    Mutation {
+        name: r#"type1-disabled"#,
+        file: r#"src/merge.rs"#,
+        find: r#"        for i in 0..small.len() {
+            let Some(close) ="#,
+        replace: r#"        for i in 0..0 {
+            let Some(close) ="#,
+        want: r#"a_small_cluster_merges_into_its_single_well_formed_neighbour"#,
+    },
+    Mutation {
+        name: r#"type1-absorbs-into-the-small-one"#,
+        file: r#"src/merge.rs"#,
+        find: r#"            if merge_siblings(parent, close, small[i]) {
+                absorbed[i] = true;
+                report.merged.push((close, small[i]));"#,
+        replace: r#"            if merge_siblings(parent, small[i], close) {
+                absorbed[i] = true;
+                report.merged.push((small[i], close));"#,
+        want: r#"type_1_takes_precedence_over_type_2"#,
+    },
+    Mutation {
+        name: r#"type3-ignores-dust-check"#,
+        file: r#"src/merge.rs"#,
+        find: r#"            if !is_dust(&parent.children[ii]) {
+                continue;
+            }"#,
+        replace: r#"            if false {
+                continue;
+            }"#,
+        want: r#"a_non_dust_receiver_does_not_absorb_dust"#,
+    },
+    Mutation {
+        name: r#"type3-disabled"#,
+        file: r#"src/merge.rs"#,
+        find: r#"            survivors.push(small[i]);
+            let Some(ii) = index_of(parent, small[i]) else { continue };"#,
+        replace: r#"            survivors.push(small[i]);
+            let Some(ii) = index_of(parent, small[i]) else { continue };
+            if true { continue; }"#,
+        want: r#"dust_absorbs_dust_when_nothing_else_applies"#,
+    },
+    Mutation {
+        name: r#"connections-built-once"#,
+        file: r#"src/merge.rs"#,
+        find: r#"        let conns = rebuild_connections(parent);"#,
+        replace: r#"        let conns = Connections::new(); let _ = &rebuild_connections;"#,
+        want: r#"a_small_cluster_merges_into_its_single_well_formed_neighbour"#,
+    },
+    Mutation {
+        name: r#"empty-small-list-still-loops"#,
+        file: r#"src/merge.rs"#,
+        find: r#"    if small.is_empty() {
+        return report;
+    }"#,
+        replace: r#"    if false {
+        return report;
+    }"#,
+        want: r#"no_small_children_means_no_rounds"#,
+    },
+    Mutation {
+        name: r#"dump-drops-macro-trailing-comma"#,
+        file: r#"src/dump.rs"#,
+        find: r#", Macros: {} ({} μ²),"#,
+        replace: r#", Macros: {} ({} μ²)"#,
+        want: r#"the_macro_field_ends_with_a_trailing_comma"#,
+    },
+    Mutation {
+        name: r#"dump-uses-and-not-or"#,
+        file: r#"src/dump.rs"#,
+        find: r#"        if cluster.num_std_cell() != 0 || cluster.std_cell_area() != 0 {"#,
+        replace: r#"        if cluster.num_std_cell() != 0 && cluster.std_cell_area() != 0 {"#,
+        want: r#"a_field_prints_when_the_area_is_nonzero_even_if_the_count_is_zero"#,
+    },
+    Mutation {
+        name: r#"dump-single-space-before-id"#,
+        file: r#"src/dump.rs"#,
+        find: r#"{}  ({}) Type: {}"#,
+        replace: r#"{} ({}) Type: {}"#,
+        want: r#"the_dump_matches_output_captured_from_upstream"#,
+    },
+    Mutation {
+        name: r#"dump-indent-wrong"#,
+        file: r#"src/dump.rs"#,
+        find: r#"        out.push_str("+---");"#,
+        replace: r#"        out.push_str("+--");"#,
+        want: r#"depth_is_marked_with_one_prefix_per_level"#,
+    },
+    Mutation {
+        name: r#"dump-pin-clusters-print-counts"#,
+        file: r#"src/dump.rs"#,
+        find: r#"    if cluster.is_cluster_of_unplaced_io_pins || cluster.is_io_bundle {"#,
+        replace: r#"    if false {"#,
+        want: r#"a_pin_cluster_prints_pins_and_nothing_else"#,
+    },
+    Mutation {
+        name: r#"dump-io-pads-print-counts"#,
+        file: r#"src/dump.rs"#,
+        find: r#"    } else if !cluster.is_io_pad_cluster {"#,
+        replace: r#"    } else if true {"#,
+        want: r#"an_io_pad_cluster_prints_neither_pins_nor_counts"#,
+    },
+    Mutation {
+        name: r#"type-string-ignores-fixed-macro"#,
+        file: r#"src/cluster.rs"#,
+        find: r#"        if self.is_fixed_macro {
+            return "Fixed Macro";
+        }"#,
+        replace: r#"        if false {
+            return "Fixed Macro";
+        }"#,
+        want: r#"the_type_string_checks_io_and_fixed_before_the_ordinary_type"#,
+    },
+    Mutation {
+        name: r#"leaf-string-ignores-children"#,
+        file: r#"src/cluster.rs"#,
+        find: r#"        if !self.is_io_cluster() && self.children.is_empty() {"#,
+        replace: r#"        if !self.is_io_cluster() {"#,
+        want: r#"a_non_leaf_keeps_the_space_before_the_comma"#,
+    },
+    Mutation {
+        name: r#"dump-children-reversed"#,
+        file: r#"src/dump.rs"#,
+        find: r#"    for child in &cluster.children {"#,
+        replace: r#"    for child in cluster.children.iter().rev() {"#,
+        want: r#"children_print_in_order_after_their_parent"#,
+    },
+    Mutation {
+        name: r#"autocluster-else-recurses-children"#,
+        file: r#"src/tree.rs"#,
+        find: r#"            let same = self.multilevel_autocluster(
+                parent,
+                is_root,
+                level,"#,
+        replace: r#"            let same = self.multilevel_autocluster(
+                parent,
+                is_root,
+                level - 1,"#,
+        want: r#"a_cluster_that_fits_descends_a_level_WITHOUT_splitting"#,
+    },
+    Mutation {
+        name: r#"force-split-at-every-level"#,
+        file: r#"src/tree.rs"#,
+        find: r#"        let force_split_root = if level == 0 {"#,
+        replace: r#"        let force_split_root = if true {"#,
+        want: r#"force_split_is_only_considered_at_the_top"#,
+    },
+    Mutation {
+        name: r#"force-split-never"#,
+        file: r#"src/tree.rs"#,
+        find: r#"            parent.num_std_cell() < leaf_max_std_cell"#,
+        replace: r#"            false"#,
+        want: r#"a_root_smaller_than_a_leaf_is_force_split_anyway"#,
+    },
+    Mutation {
+        name: r#"force-split-uses-current-max"#,
+        file: r#"src/tree.rs"#,
+        find: r#"                (base.max_std_cell as f64 / (cluster_size_ratio as f64).powi(max_level - 1)) as i32;"#,
+        replace: r#"                base.max_std_cell;"#,
+        want: r#"force_split_measures_against_the_LEAF_maximum_not_the_base_one"#,
+    },
+    Mutation {
+        name: r#"level-limit-off-by-one"#,
+        file: r#"src/tree.rs"#,
+        find: r#"        if level >= max_level {"#,
+        replace: r#"        if level > max_level {"#,
+        want: r#"a_descent_that_reaches_the_level_limit_stops"#,
+    },
+    Mutation {
+        name: r#"thresholds-before-increment"#,
+        file: r#"src/tree.rs"#,
+        find: r#"        let level = level + 1;
+        let t = crate::thresholds::update_size_thresholds(base, level, cluster_size_ratio);"#,
+        replace: r#"        let t = crate::thresholds::update_size_thresholds(base, level, cluster_size_ratio);
+        let level = level + 1;"#,
+        want: r#"a_flat_cluster_needing_the_partitioner_is_reported_up_the_descent"#,
+    },
+    Mutation {
+        name: r#"children-inherit-is-root"#,
+        file: r#"src/tree.rs"#,
+        find: r#"                let child_outcome = self.multilevel_autocluster(
+                    child,
+                    false,"#,
+        replace: r#"                let child_outcome = self.multilevel_autocluster(
+                    child,
+                    is_root,"#,
+        want: r#"a_recursed_child_that_BREAKS_is_not_treated_as_the_root"#,
+    },
+    Mutation {
+        name: r#"partitioning-not-propagated"#,
+        file: r#"src/tree.rs"#,
+        find: r#"            outcome.needs_partitioning.extend(sub.needs_partitioning);"#,
+        replace: r#"            let _ = &sub.needs_partitioning;"#,
+        want: r#"a_flat_cluster_needing_the_partitioner_is_reported_up_the_descent"#,
+    },
+    Mutation {
+        name: r#"merge-candidates-not-propagated"#,
+        file: r#"src/tree.rs"#,
+        find: r#"            if !breaks.merge_candidates.is_empty() {"#,
+        replace: r#"            if false {"#,
+        want: r#"merge_candidates_are_reported_per_parent"#,
+    },
+    Mutation {
+        name: r#"right-edge-indexes-forward"#,
+        file: r#"src/ioclusters.rs"#,
+        find: r#"        Some(per_edge * 2 + div_floor(die.y_max - y_center, spans.y))"#,
+        replace: r#"        Some(per_edge * 2 + div_floor(y_center - die.y_min, spans.y))"#,
+        want: r#"the_right_edge_indexes_BACKWARD_from_the_top"#,
+    },
+    Mutation {
+        name: r#"bottom-edge-indexes-forward"#,
+        file: r#"src/ioclusters.rs"#,
+        find: r#"        Some(per_edge * 3 + div_floor(die.x_max - x_center, spans.x))"#,
+        replace: r#"        Some(per_edge * 3 + div_floor(x_center - die.x_min, spans.x))"#,
+        want: r#"the_bottom_edge_indexes_BACKWARD_from_the_right"#,
+    },
+    Mutation {
+        name: r#"edge-order-B-before-L"#,
+        file: r#"src/ioclusters.rs"#,
+        find: r#"    if pin.x_min <= die.x_min {"#,
+        replace: r#"    if pin.y_min <= die.y_min {"#,
+        want: r#"the_left_edge_indexes_FORWARD_from_the_bottom"#,
+    },
+    Mutation {
+        name: r#"bundle-order-not-LTRB"#,
+        file: r#"src/ioclusters.rs"#,
+        find: r#"[Boundary::L, Boundary::T, Boundary::R, Boundary::B]"#,
+        replace: r#"[Boundary::L, Boundary::B, Boundary::R, Boundary::T]"#,
+        want: r#"bundles_are_named_and_ordered_L_T_R_B"#,
+    },
+    Mutation {
+        name: r#"offset-uses-wrong-multiplier"#,
+        file: r#"src/ioclusters.rs"#,
+        find: r#"        Some(per_edge + div_floor(x_center - die.x_min, spans.x))"#,
+        replace: r#"        Some(div_floor(x_center - die.x_min, spans.x))"#,
+        want: r#"the_top_edge_indexes_FORWARD_from_the_left"#,
+    },
+    Mutation {
+        name: r#"interior-pin-gets-a-bundle"#,
+        file: r#"src/ioclusters.rs"#,
+        find: r#"    } else {
+        None
+    }
+}"#,
+        replace: r#"    } else {
+        Some(0)
+    }
+}"#,
+        want: r#"a_pin_touching_no_edge_belongs_to_no_bundle"#,
+    },
+    Mutation {
+        name: r#"zero-span-divides"#,
+        file: r#"src/ioclusters.rs"#,
+        find: r#"    if b == 0 {
+        return 0;
+    }"#,
+        replace: r#"    if false {
+        return 0;
+    }"#,
+        want: r#"a_degenerate_span_yields_the_first_bundle_rather_than_a_wild_index"#,
+    },
+    Mutation {
+        name: r#"right-rect-advances"#,
+        file: r#"src/ioclusters.rs"#,
+        find: r#"            y_min: die.y_max - ext * (i + 1),"#,
+        replace: r#"            y_min: die.y_min + ext * i,"#,
+        want: r#"bundle_rectangles_advance_on_the_left_and_retreat_on_the_right"#,
+    },
+    Mutation {
+        name: r#"bottom-rect-advances"#,
+        file: r#"src/ioclusters.rs"#,
+        find: r#"            x_min: die.x_max - ext * (i + 1),"#,
+        replace: r#"            x_min: die.x_min + ext * i,"#,
+        want: r#"bundle_rectangles_advance_on_the_left_and_retreat_on_the_right"#,
+    },
+    Mutation {
+        name: r#"vertical-edge-uses-x-span"#,
+        file: r#"src/ioclusters.rs"#,
+        find: r#"    let ext = if edge.is_vertical() { spans.y } else { spans.x };"#,
+        replace: r#"    let ext = spans.x;"#,
+        want: r#"the_bundles_on_an_edge_tile_it_without_gaps_or_overlap"#,
+    },
+    Mutation {
+        name: r#"left-rect-has-thickness"#,
+        file: r#"src/ioclusters.rs"#,
+        find: r#"            x_max: die.x_min,
+            y_max: die.y_min + ext * i + ext,"#,
+        replace: r#"            x_max: die.x_min + 10,
+            y_max: die.y_min + ext * i + ext,"#,
+        want: r#"a_bundle_rectangle_sits_ON_its_edge_with_no_thickness"#,
+    },
+    Mutation {
+        name: r#"spans-not-divided"#,
+        file: r#"src/ioclusters.rs"#,
+        find: r#"        x: (die.x_max - die.x_min) / IO_BUNDLES_PER_EDGE as i64,"#,
+        replace: r#"        x: (die.x_max - die.x_min),"#,
+        want: r#"the_die_is_divided_into_five_per_edge"#,
+    },
+    Mutation {
+        name: r#"bundles-without-a-fixed-pin"#,
+        file: r#"src/ioclusters.rs"#,
+        find: r#"    if any_fixed {
+        for edge in BUNDLE_EDGE_ORDER {"#,
+        replace: r#"    if true {
+        for edge in BUNDLE_EDGE_ORDER {"#,
+        want: r#"bundles_are_created_only_when_a_pin_is_FIXED"#,
+    },
+    Mutation {
+        name: r#"empty-bundles-kept"#,
+        file: r#"src/ioclusters.rs"#,
+        find: r#"    out.bundles.retain(|b| b.num_io_pins > 0);"#,
+        replace: r#"    out.bundles.retain(|_b| true);"#,
+        want: r#"empty_bundles_are_RELEASED"#,
+    },
+    Mutation {
+        name: r#"bundle-pins-not-counted"#,
+        file: r#"src/ioclusters.rs"#,
+        find: r#"                b.num_io_pins += 1;"#,
+        replace: r#"                let _ = &b.num_io_pins;"#,
+        want: r#"several_pins_in_one_bundle_are_counted"#,
+    },
+    Mutation {
+        name: r#"unconstrained-not-shared"#,
+        file: r#"src/ioclusters.rs"#,
+        find: r#"            None => unconstrained,"#,
+        replace: r#"            None => None,"#,
+        want: r#"every_unconstrained_pin_shares_ONE_cluster"#,
+    },
+    Mutation {
+        name: r#"constraint-matched-by-overlap"#,
+        file: r#"src/ioclusters.rs"#,
+        find: r#"                .find(|c| c.constraint_region.as_ref() == Some(region))"#,
+        replace: r#"                .find(|c| c.constraint_region.is_some())"#,
+        want: r#"pins_with_DIFFERENT_constraints_get_separate_clusters"#,
+    },
+    Mutation {
+        name: r#"constrained-joins-unconstrained"#,
+        file: r#"src/ioclusters.rs"#,
+        find: r#"            None => {
+                c.is_cluster_of_unconstrained_io_pins = true;
+                unconstrained = Some(c.id);
+            }"#,
+        replace: r#"            None => {}"#,
+        want: r#"a_constrained_pin_does_not_join_the_unconstrained_cluster"#,
+    },
+    Mutation {
+        name: r#"no-ports-still-has-io-clusters"#,
+        file: r#"src/ioclusters.rs"#,
+        find: r#"        out.has_io_clusters = false;"#,
+        replace: r#"        out.has_io_clusters = true;"#,
+        want: r#"a_design_with_no_ports_has_no_io_clusters"#,
+    },
+    Mutation {
+        name: r#"pin-cluster-named-by-count"#,
+        file: r#"src/ioclusters.rs"#,
+        find: r#"format!("ios_{}", out.next_id)"#,
+        replace: r#"format!("ios_{}", out.pin_clusters.len())"#,
+        want: r#"a_pin_cluster_is_named_after_its_own_id"#,
+    },
+    Mutation {
+        name: r#"fixed-pins-not-bundled"#,
+        file: r#"src/ioclusters.rs"#,
+        find: r#"        if any_fixed && pin.is_fixed {"#,
+        replace: r#"        if false {"#,
+        want: r#"a_fixed_pin_lands_in_the_bundle_its_position_selects"#,
+    },
+    Mutation {
+        name: r#"size-compares-area"#,
+        file: r#"src/macroclass.rs"#,
+        find: r#"                if class[j] == -1 && sizes[i] == sizes[j] {"#,
+        replace: r#"                if class[j] == -1 && sizes[i].width * sizes[i].height == sizes[j].width * sizes[j].height {"#,
+        want: r#"size_compares_width_AND_height_not_area"#,
+    },
+    Mutation {
+        name: r#"size-assigns-in-first-pass"#,
+        file: r#"src/macroclass.rs"#,
+        find: r#"        .map(|(i, &c)| if c == -1 { i } else { c as usize })"#,
+        replace: r#"        .map(|(_i, &c)| if c == -1 { 0 } else { c as usize })"#,
+        want: r#"an_unmatched_macro_represents_itself"#,
+    },
+    Mutation {
+        name: r#"signature-empty-matches"#,
+        file: r#"src/macroclass.rs"#,
+        find: r#"            if class[j] == -1 && same_connection_signature(conns, ids[i], ids[j]) {"#,
+        replace: r#"            if class[j] == -1 {"#,
+        want: r#"unconnected_macros_do_NOT_share_a_signature"#,
+    },
+    Mutation {
+        name: r#"interconn-scans-only-later"#,
+        file: r#"src/macroclass.rs"#,
+        find: r#"        for j in 0..ids.len() {
+            if i == j {
+                continue;
+            }"#,
+        replace: r#"        for j in (i + 1)..ids.len() {
+            if i == j {
+                continue;
+            }"#,
+        want: r#"the_interconnection_pass_scans_EARLIER_macros_too"#,
+    },
+    Mutation {
+        name: r#"interconn-does-not-adopt"#,
+        file: r#"src/macroclass.rs"#,
+        find: r#"                if class[j] != -1 {
+                    // Adopt the neighbour's group and stop looking.
+                    class[i] = class[j];
+                    break;
+                }"#,
+        replace: r#"                if class[j] != -1 {
+                    break;
+                }"#,
+        want: r#"a_macro_can_ADOPT_a_class_led_by_a_higher_index"#,
+    },
+    Mutation {
+        name: r#"grouping-ignores-size"#,
+        file: r#"src/macroclass.rs"#,
+        find: r#"            if macro_class[j] != -1 || size_class[i] != size_class[j] {"#,
+        replace: r#"            if macro_class[j] != -1 {"#,
+        want: r#"a_merge_ALWAYS_requires_the_same_size"#,
+    },
+    Mutation {
+        name: r#"grouping-does-not-clear-interconn"#,
+        file: r#"src/macroclass.rs"#,
+        find: r#"                interconn[i] = -1;"#,
+        replace: r#"                let _ = &interconn;"#,
+        want: r#"meeting_a_different_interconnection_CLEARS_the_leaders_own_class"#,
+    },
+    Mutation {
+        name: r#"grouping-signature-not-checked"#,
+        file: r#"src/macroclass.rs"#,
+        find: r#"                if signature_class[i] == signature_class[j] {"#,
+        replace: r#"                if false {"#,
+        want: r#"same_size_and_same_signature_merges_when_the_interconnection_differs"#,
+    },
+    Mutation {
+        name: r#"grouping-interconn-not-checked"#,
+        file: r#"src/macroclass.rs"#,
+        find: r#"            if interconn[i] == interconn[j] {"#,
+        replace: r#"            if false {"#,
+        want: r#"same_size_and_same_interconnection_makes_an_interconnected_array"#,
+    },
+    Mutation {
+        name: r#"single-macro-is-an-array"#,
+        file: r#"src/macroclass.rs"#,
+        find: r#"    Grouping { macro_class: vec![0], interconn_class: vec![-1], merges: Vec::new() }"#,
+        replace: r#"    Grouping { macro_class: vec![0], interconn_class: vec![0], merges: Vec::new() }"#,
+        want: r#"a_single_movable_macro_is_never_an_array_of_one"#,
+    },
+    Mutation {
+        name: r#"fixed-macros-classified"#,
+        file: r#"src/macroclass.rs"#,
+        find: r#"    let movable: Vec<&MacroCluster> = macros.iter().filter(|m| !m.is_fixed).collect();"#,
+        replace: r#"    let movable: Vec<&MacroCluster> = macros.iter().collect();"#,
+        want: r#"a_FIXED_macro_is_never_folded_into_an_array"#,
+    },
+    Mutation {
+        name: r#"fixed-clusters-not-separated"#,
+        file: r#"src/macroclass.rs"#,
+        find: r#"        macros.iter().filter(|m| m.is_fixed).map(|m| m.id).collect();"#,
+        replace: r#"        Vec::new();"#,
+        want: r#"a_FIXED_macro_is_never_folded_into_an_array"#,
+    },
+    Mutation {
+        name: r#"single-macro-not-special-cased"#,
+        file: r#"src/macroclass.rs"#,
+        find: r#"    let grouping = if movable.len() == 1 {"#,
+        replace: r#"    let grouping = if false {"#,
+        want: r#"a_single_movable_macro_is_not_an_interconnected_array"#,
+    },
+    Mutation {
+        name: r#"non-leaders-survive"#,
+        file: r#"src/macroclass.rs"#,
+        find: r#"        if grouping.macro_class.get(i) != Some(&i) {
+            continue;
+        }"#,
+        replace: r#"        if false {
+            continue;
+        }"#,
+        want: r#"merged_macros_contribute_ONE_virtual_connection_not_one_each"#,
+    },
+    Mutation {
+        name: r#"interconnected-flag-inverted"#,
+        file: r#"src/macroclass.rs"#,
+        find: r#"            is_interconnected_array: grouping.interconn_class.get(i).copied().unwrap_or(-1) != -1,"#,
+        replace: r#"            is_interconnected_array: grouping.interconn_class.get(i).copied().unwrap_or(-1) == -1,"#,
+        want: r#"a_wired_group_is_marked_as_an_interconnected_array"#,
+    },
+    Mutation {
+        name: r#"std-cell-cluster-not-connected"#,
+        file: r#"src/macroclass.rs"#,
+        find: r#"    let mut virtual_members = vec![mixed_leaf];"#,
+        replace: r#"    let mut virtual_members: Vec<ClusterId> = vec![];"#,
+        want: r#"virtual_connections_join_every_pair"#,
+    },
+    Mutation {
+        name: r#"virtual-pairs-only-adjacent"#,
+        file: r#"src/macroclass.rs"#,
+        find: r#"        for j in (i + 1)..virtual_members.len() {"#,
+        replace: r#"        for j in (i + 1)..(i + 2).min(virtual_members.len()) {"#,
+        want: r#"virtual_connections_join_every_pair"#,
+    },
+    Mutation {
+        name: r#"fixed-clusters-not-virtually-connected"#,
+        file: r#"src/macroclass.rs"#,
+        find: r#"    virtual_members.extend(fixed_clusters.iter().copied());"#,
+        replace: r#"    let _ = &fixed_clusters;"#,
+        want: r#"virtual_connections_join_every_pair"#,
+    },
+    Mutation {
+        name: r#"a-stage-dropped-from-order"#,
+        file: r#"src/pipeline.rs"#,
+        find: r#"    StageId::ComputeWireLength,
+];"#,
+        replace: r#"];"#,
+        want: r#"the_pipeline_matches_the_spec_table"#,
+    },
+    Mutation {
+        name: r#"macros-of-drops-own-leaf-macros"#,
+        file: r#"src/tree.rs"#,
+        find: r#"    let mut out = cluster.leaf_macros.clone();
+    for &m in &cluster.db_modules {"#,
+        replace: r#"    let mut out = Vec::new();
+    for &m in &cluster.db_modules {"#,
+        want: r#"a_clusters_macros_are_its_own_then_its_modules_depth_first"#,
+    },
+    Mutation {
+        name: r#"module-children-not-walked"#,
+        file: r#"src/tree.rs"#,
+        find: r#"        hard_macros_of_module(c, design, out);"#,
+        replace: r#"        let _ = c;"#,
+        want: r#"a_clusters_macros_are_its_own_then_its_modules_depth_first"#,
+    },
+    Mutation {
+        name: r#"std-cell-cluster-claims-macros"#,
+        file: r#"src/tree.rs"#,
+        find: r#"        if !include_macro && inst.is_block {"#,
+        replace: r#"        if false && inst.is_block {"#,
+        want: r#"a_std_cell_cluster_never_claims_a_macro_in_its_module"#,
+    },
+    Mutation {
+        name: r#"fixed-macro-not-lifted-to-root"#,
+        file: r#"src/tree.rs"#,
+        find: r#"            if c.is_fixed_macro && !is_root {"#,
+        replace: r#"            if false {"#,
+        want: r#"a_fixed_macro_is_lifted_to_the_root_rather_than_left_beside_its_siblings"#,
+    },
+    Mutation {
+        name: r#"merged-name-uses-ids"#,
+        file: r#"src/tree.rs"#,
+        find: r#"                    .map(|d| d.name.clone())"#,
+        replace: r#"                    .map(|d| d.id.to_string())"#,
+        want: r#"merged_macros_leave_one_cluster_carrying_both_names_and_both_areas"#,
+    },
+    Mutation {
+        name: r#"merged-macro-count-not-summed"#,
+        file: r#"src/tree.rs"#,
+        find: r#"                    c.metrics.num_macro += 1;"#,
+        replace: r#"                    c.metrics.num_macro = 1;"#,
+        want: r#"merged_macros_leave_one_cluster_carrying_both_names_and_both_areas"#,
+    },
+    Mutation {
+        name: r#"mixed-leaf-not-retyped"#,
+        file: r#"src/tree.rs"#,
+        find: r#"        child.cluster_type = ClusterType::StdCell;
+        child.metrics.num_macro = 0;"#,
+        replace: r#"        child.metrics.num_macro = 0;"#,
+        want: r#"a_mixed_leaf_becomes_a_std_cell_cluster_and_its_macros_become_siblings"#,
+    },
+    Mutation {
+        name: r#"absorbed-cluster-kept-in-tree"#,
+        file: r#"src/tree.rs"#,
+        find: r#"            if !survivors.contains(&c.id) {
+                continue;
+            }"#,
+        replace: r#"            if false {
+                continue;
+            }"#,
+        want: r#"merged_macros_leave_one_cluster_carrying_both_names_and_both_areas"#,
+    },
+    Mutation {
+        name: r#"blockages-summed-not-unioned"#,
+        file: r#"src/feasibility.rs"#,
+        find: r#"    occupied += union_area(&clipped);"#,
+        replace: r#"    occupied += clipped.iter().map(|r| r.area()).sum::<i64>();"#,
+        want: r#"overlapping_blockages_are_unioned_by_the_fit_test_itself"#,
+    },
+    Mutation {
+        name: r#"fixed-cell-counted-whole"#,
+        file: r#"src/feasibility.rs"#,
+        find: r#"            occupied += intersection(&inst.bbox, area).map_or(0, |r| r.area());"#,
+        replace: r#"            occupied += inst.bbox.area();"#,
+        want: r#"a_fixed_cell_outside_the_area_contributes_only_the_part_inside"#,
+    },
+    Mutation {
+        name: r#"fixed-cell-skipped-entirely"#,
+        file: r#"src/feasibility.rs"#,
+        find: r#"            occupied += intersection(&inst.bbox, area).map_or(0, |r| r.area());
+            continue;"#,
+        replace: r#"            continue;"#,
+        want: r#"a_fixed_cell_INSIDE_the_area_still_occupies_it"#,
+    },
+    Mutation {
+        name: r#"macro-measured-without-halo"#,
+        file: r#"src/feasibility.rs"#,
+        find: r#"        occupied += if inst.is_block { macro_area_with_halo(i) } else { inst.bbox.area() };"#,
+        replace: r#"        occupied += inst.bbox.area();"#,
+        want: r#"an_unfixed_macro_is_measured_with_its_halo_not_its_box"#,
+    },
+    Mutation {
+        name: r#"fit-test-is-strict"#,
+        file: r#"src/feasibility.rs"#,
+        find: r#"    occupied <= area.area()"#,
+        replace: r#"    occupied < area.area()"#,
+        want: r#"exactly_filling_the_area_still_fits"#,
+    },
+    Mutation {
+        name: r#"blockages-not-clipped"#,
+        file: r#"src/feasibility.rs"#,
+        find: r#"    let clipped: Vec<Rect> = blockages.iter().filter_map(|b| intersection(b, area)).collect();"#,
+        replace: r#"    let clipped: Vec<Rect> = blockages.to_vec();"#,
+        want: r#"blockages_are_clipped_to_the_placement_area_before_they_count"#,
+    },
+    Mutation {
+        name: r#"core-fit-is-strict"#,
+        file: r#"src/feasibility.rs"#,
+        find: r#"    width_with_halo <= core.x_max - core.x_min && height_with_halo <= core.y_max - core.y_min"#,
+        replace: r#"    width_with_halo < core.x_max - core.x_min && height_with_halo < core.y_max - core.y_min"#,
+        want: r#"a_macro_exactly_as_wide_as_the_core_fits"#,
+    },
+    Mutation {
+        name: r#"core-fit-ignores-height"#,
+        file: r#"src/feasibility.rs"#,
+        find: r#"    width_with_halo <= core.x_max - core.x_min && height_with_halo <= core.y_max - core.y_min"#,
+        replace: r#"    width_with_halo <= core.x_max - core.x_min"#,
+        want: r#"the_core_test_uses_both_dimensions_independently"#,
+    },
+    Mutation {
+        name: r#"halo-area-drops-std-cells"#,
+        file: r#"src/feasibility.rs"#,
+        find: r#"    let inst_area_with_halos = macro_with_halo_area as f32 + std_cell_area as f32;"#,
+        replace: r#"    let inst_area_with_halos = macro_with_halo_area as f32;"#,
+        want: r#"the_halo_area_test_adds_the_macros_to_the_standard_cells"#,
+    },
+    Mutation {
+        name: r#"union-ignores-x-spans"#,
+        file: r#"src/feasibility.rs"#,
+        find: r#"        total += covered * (x1 - x0);"#,
+        replace: r#"        total += covered;"#,
+        want: r#"disjoint_blockages_add_up"#,
+    },
+    Mutation {
+        name: r#"tilings-skip-the-last-factor"#,
+        file: r#"src/shaping.rs"#,
+        find: r#"    for cols in 1..=number_of_macros {"#,
+        replace: r#"    for cols in 1..number_of_macros {"#,
+        want: r#"every_factorisation_that_fits_is_a_tiling_in_column_order"#,
+    },
+    Mutation {
+        name: r#"tilings-ignore-non-divisors"#,
+        file: r#"src/shaping.rs"#,
+        find: r#"        if number_of_macros % cols != 0 {"#,
+        replace: r#"        if false {"#,
+        want: r#"every_factorisation_that_fits_is_a_tiling_in_column_order"#,
+    },
+    Mutation {
+        name: r#"tiling-fit-checks-width-only"#,
+        file: r#"src/shaping.rs"#,
+        find: r#"        if w <= outline.x_max - outline.x_min && h <= outline.y_max - outline.y_min {"#,
+        replace: r#"        if w <= outline.x_max - outline.x_min {"#,
+        want: r#"a_tiling_must_fit_in_BOTH_dimensions"#,
+    },
+    Mutation {
+        name: r#"tiling-fit-is-strict"#,
+        file: r#"src/shaping.rs"#,
+        find: r#"        if w <= outline.x_max - outline.x_min && h <= outline.y_max - outline.y_min {"#,
+        replace: r#"        if w < outline.x_max - outline.x_min && h < outline.y_max - outline.y_min {"#,
+        want: r#"a_tiling_exactly_filling_the_outline_is_kept"#,
+    },
+    Mutation {
+        name: r#"tiling-rows-and-cols-swapped"#,
+        file: r#"src/shaping.rs"#,
+        find: r#"        let (w, h) = (cols * macro_width, rows * macro_height);"#,
+        replace: r#"        let (w, h) = (rows * macro_width, cols * macro_height);"#,
+        want: r#"every_factorisation_that_fits_is_a_tiling_in_column_order"#,
+    },
+    Mutation {
+        name: r#"no-retry-with-one-more-macro"#,
+        file: r#"src/shaping.rs"#,
+        find: r#"    if tilings.is_empty() {
+        tilings = generate_tilings_for_macro_cluster("#,
+        replace: r#"    if false {
+        tilings = generate_tilings_for_macro_cluster("#,
+        want: r#"when_nothing_fits_the_search_is_retried_with_one_more_macro"#,
+    },
+    Mutation {
+        name: r#"retry-runs-unconditionally"#,
+        file: r#"src/shaping.rs"#,
+        find: r#"    let mut tilings =
+        generate_tilings_for_macro_cluster(macro_width, macro_height, number_of_macros, outline);
+    if tilings.is_empty() {"#,
+        replace: r#"    let mut tilings: Vec<Tiling> = Vec::new();
+    if tilings.is_empty() {"#,
+        want: r#"the_retry_is_only_reached_when_the_first_search_found_nothing"#,
+    },
+    Mutation {
+        name: r#"unshapeable-reports-the-retried-count"#,
+        file: r#"src/shaping.rs"#,
+        find: r#"        return Err(Unshapeable { macro_width, macro_height, number_of_macros });"#,
+        replace: r#"        return Err(Unshapeable { macro_width, macro_height, number_of_macros: number_of_macros + 1 });"#,
+        want: r#"a_cluster_that_fits_neither_count_is_unshapeable"#,
+    },
+    Mutation {
+        name: r#"intervals-not-degenerate"#,
+        file: r#"src/shaping.rs"#,
+        find: r#"        tilings.iter().map(|t| Interval { min: t.width, max: t.width }).collect();"#,
+        replace: r#"        tilings.iter().map(|t| Interval { min: t.width, max: t.height }).collect();"#,
+        want: r#"each_tiling_becomes_one_degenerate_interval_sorted_by_width"#,
+    },
+    Mutation {
+        name: r#"intervals-unsorted"#,
+        file: r#"src/shaping.rs"#,
+        find: r#"    out.sort_by_key(|i| i.min);"#,
+        replace: r#"    out.reverse();"#,
+        want: r#"each_tiling_becomes_one_degenerate_interval_sorted_by_width"#,
+    },
+    Mutation {
+        name: r#"aspect-ratio-inverted"#,
+        file: r#"src/shaping.rs"#,
+        find: r#"        self.height as f32 / self.width as f32"#,
+        replace: r#"        self.width as f32 / self.height as f32"#,
+        want: r#"aspect_ratio_is_height_over_width"#,
+    },
+    Mutation {
+        name: r#"root-width-from-height"#,
+        file: r#"src/shaping.rs"#,
+        find: r#"    let width = floorplan.x_max - floorplan.x_min;"#,
+        replace: r#"    let width = floorplan.y_max - floorplan.y_min;"#,
+        want: r#"the_root_takes_the_floorplan_shape_exactly"#,
+    },
+    Mutation {
+        name: r#"shaping-base-case-is-leafness"#,
+        file: r#"src/shaping.rs"#,
+        find: r#"    if parent.num_macro() == 0 {
+        return Ok(());
+    }"#,
+        replace: r#"    if parent.children.is_empty() && parent.leaf_macros.is_empty() {
+        return Ok(());
+    }"#,
+        want: r#"a_cluster_with_no_macros_is_not_shaped_and_neither_is_anything_below_it"#,
+    },
+    Mutation {
+        name: r#"fixed-macro-cluster-is-shaped"#,
+        file: r#"src/shaping.rs"#,
+        find: r#"    if cluster.is_fixed_macro {
+        return Ok(());
+    }"#,
+        replace: r#"    if false {
+        return Ok(());
+    }"#,
+        want: r#"a_FIXED_macro_cluster_is_left_with_no_tilings"#,
+    },
+    Mutation {
+        name: r#"shortcut-applies-to-any-count"#,
+        file: r#"src/shaping.rs"#,
+        find: r#"    if contributors.len() == 1 {"#,
+        replace: r#"    if contributors.len() <= 2 {"#,
+        want: r#"two_macro_bearing_children_need_the_annealing_search"#,
+    },
+    Mutation {
+        name: r#"parent-shaped-before-its-children"#,
+        file: r#"src/shaping.rs"#,
+        find: r#"            calculate_children_tilings(child, ctx)?;"#,
+        replace: r#"            let _skipped = child;"#,
+        want: r#"children_are_shaped_before_the_parent_reads_them"#,
+    },
+    Mutation {
+        name: r#"macro-cluster-type-ignored"#,
+        file: r#"src/shaping.rs"#,
+        find: r#"    if parent.cluster_type == ClusterType::HardMacro {
+        return macro_cluster_tilings(parent, ctx);
+    }"#,
+        replace: r#"    if false {
+        return macro_cluster_tilings(parent, ctx);
+    }"#,
+        want: r#"a_hard_macro_cluster_gets_the_tilings_of_its_macro_count"#,
+    },
+];

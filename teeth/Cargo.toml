@@ -1,0 +1,15 @@
+[package]
+name = "teeth"
+version = "0.1.0"
+edition = "2021"
+publish = false
+description = "Mutation harness for vyges-mpl: break one rule, name the test that must notice."
+
+# ⛔ NO dependency on the crate under test, and deliberately no dependencies at all. This crate
+# must keep building while `vyges-mpl` is mutated — a harness that cannot run when the code is
+# broken is a harness that reports nothing at the moment it matters most.
+[dependencies]
+
+[[bin]]
+name = "teeth"
+path = "src/main.rs"

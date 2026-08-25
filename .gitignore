@@ -2,3 +2,4 @@ target/
 Cargo.lock
 .teeth.lock/
 tests/fixtures/*.odb
+teeth/target/
