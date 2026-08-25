@@ -211,6 +211,14 @@ mutations() {
 "grouping-signature-not-checked${SEP}src/macroclass.rs${SEP}                if signature_class[i] == signature_class[j] {${SEP}                if false {${SEP}same_size_and_same_signature_merges_when_the_interconnection_differs" \
 "grouping-interconn-not-checked${SEP}src/macroclass.rs${SEP}            if interconn[i] == interconn[j] {${SEP}            if false {${SEP}same_size_and_same_interconnection_makes_an_interconnected_array" \
 "single-macro-is-an-array${SEP}src/macroclass.rs${SEP}    Grouping { macro_class: vec![0], interconn_class: vec![-1], merges: Vec::new() }${SEP}    Grouping { macro_class: vec![0], interconn_class: vec![0], merges: Vec::new() }${SEP}a_single_movable_macro_is_never_an_array_of_one" \
+"fixed-macros-classified${SEP}src/macroclass.rs${SEP}    let movable: Vec<&MacroCluster> = macros.iter().filter(|m| !m.is_fixed).collect();${SEP}    let movable: Vec<&MacroCluster> = macros.iter().collect();${SEP}a_FIXED_macro_is_never_folded_into_an_array" \
+"fixed-clusters-not-separated${SEP}src/macroclass.rs${SEP}        macros.iter().filter(|m| m.is_fixed).map(|m| m.id).collect();${SEP}        Vec::new();${SEP}a_FIXED_macro_is_never_folded_into_an_array" \
+"single-macro-not-special-cased${SEP}src/macroclass.rs${SEP}    let grouping = if movable.len() == 1 {${SEP}    let grouping = if false {${SEP}a_single_movable_macro_is_not_an_interconnected_array" \
+"non-leaders-survive${SEP}src/macroclass.rs${SEP}        if grouping.macro_class.get(i) != Some(&i) {\n            continue;\n        }${SEP}        if false {\n            continue;\n        }${SEP}merged_macros_contribute_ONE_virtual_connection_not_one_each" \
+"interconnected-flag-inverted${SEP}src/macroclass.rs${SEP}            is_interconnected_array: grouping.interconn_class.get(i).copied().unwrap_or(-1) != -1,${SEP}            is_interconnected_array: grouping.interconn_class.get(i).copied().unwrap_or(-1) == -1,${SEP}a_wired_group_is_marked_as_an_interconnected_array" \
+"std-cell-cluster-not-connected${SEP}src/macroclass.rs${SEP}    let mut virtual_members = vec![mixed_leaf];${SEP}    let mut virtual_members: Vec<ClusterId> = vec![];${SEP}virtual_connections_join_every_pair" \
+"virtual-pairs-only-adjacent${SEP}src/macroclass.rs${SEP}        for j in (i + 1)..virtual_members.len() {${SEP}        for j in (i + 1)..(i + 2).min(virtual_members.len()) {${SEP}virtual_connections_join_every_pair" \
+"fixed-clusters-not-virtually-connected${SEP}src/macroclass.rs${SEP}    virtual_members.extend(fixed_clusters.iter().copied());${SEP}    let _ = &fixed_clusters;${SEP}virtual_connections_join_every_pair" \
 "a-stage-dropped-from-order${SEP}src/pipeline.rs${SEP}    StageId::ComputeWireLength,\n];${SEP}];${SEP}the_pipeline_matches_the_spec_table"
 }
 

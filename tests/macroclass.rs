@@ -178,3 +178,124 @@ fn a_macro_already_merged_is_not_considered_again() {
     assert_eq!(g.macro_class, vec![0, 0, 0], "both followers went to 0");
     assert_eq!(g.merges.len(), 2, "and 1 was not then re-merged into 2");
 }
+
+// ------------------------------------------------------------------ breakMixedLeaf
+
+use vyges_mpl::macroclass::{break_mixed_leaf, MacroCluster};
+
+fn mc(id: i32, name: &str, inst: usize, fixed: bool, w: i64, h: i64) -> MacroCluster {
+    MacroCluster { id, name: name.into(), inst, is_fixed: fixed, size: sz(w, h) }
+}
+
+#[test]
+fn every_macro_becomes_its_own_cluster_and_the_leaf_keeps_the_cells() {
+    let macros = [mc(10, "M1", 0, false, 5, 5), mc(11, "M2", 1, false, 9, 9)];
+    let plan = break_mixed_leaf(1, &macros, &Connections::new());
+    assert_eq!(plan.std_cell_cluster, 1, "the mixed leaf survives as the standard-cell cluster");
+    assert_eq!(plan.arrays.len(), 2, "different sizes, so neither merged");
+}
+
+/// Two macros wired to a common third cluster, so their SIGNATURES match. ⚠️ Needed for any
+/// merge test: same size alone does NOT merge — see `same_size_alone_does_NOT_merge`.
+fn shared_signature(ids: &[i32]) -> Connections {
+    let mut c = Connections::new();
+    for &id in ids {
+        c.connect(id, 99, 5.0);
+    }
+    c
+}
+
+#[test]
+fn a_FIXED_macro_is_never_folded_into_an_array() {
+    // 🔑 It cannot move to join one. Only the movable macros are classified at all.
+    let macros = [
+        mc(10, "M1", 0, false, 5, 5),
+        mc(11, "M2", 1, true, 5, 5),
+        mc(12, "M3", 2, false, 5, 5),
+    ];
+    let plan = break_mixed_leaf(1, &macros, &shared_signature(&[10, 12]));
+    assert_eq!(plan.fixed_clusters, vec![11], "the fixed one stands alone");
+    assert_eq!(plan.arrays.len(), 1, "the two movable ones merged");
+    assert_eq!(plan.arrays[0].members, vec![10, 12], "and the fixed one is not among them");
+}
+
+#[test]
+fn same_size_alone_does_NOT_merge() {
+    // ⚠️ The correction that cost three tests. "Same size is required" is true and is NOT
+    // sufficient: the grouping needs size AND (same interconnection OR same signature). Two
+    // identical macros wired to nothing share neither, because an empty neighbour set is
+    // deliberately not a signature match -- so they stay apart.
+    let macros = [mc(10, "M1", 0, false, 5, 5), mc(11, "M2", 1, false, 5, 5)];
+    let plan = break_mixed_leaf(1, &macros, &Connections::new());
+    assert_eq!(plan.arrays.len(), 2, "identical size, no connections, no merge");
+}
+
+#[test]
+fn same_sized_movable_macros_merge_into_one_array() {
+    let macros = [mc(10, "M1", 0, false, 5, 5), mc(11, "M2", 1, false, 5, 5)];
+    let plan = break_mixed_leaf(1, &macros, &shared_signature(&[10, 11]));
+    assert_eq!(plan.arrays.len(), 1);
+    assert_eq!(plan.arrays[0].id, 10, "the leader keeps its id");
+    assert_eq!(plan.arrays[0].members, vec![10, 11]);
+}
+
+#[test]
+fn a_single_movable_macro_is_not_an_interconnected_array() {
+    let macros = [mc(10, "M1", 0, false, 5, 5), mc(11, "M2", 1, true, 5, 5)];
+    let plan = break_mixed_leaf(1, &macros, &Connections::new());
+    assert_eq!(plan.arrays.len(), 1);
+    assert!(!plan.arrays[0].is_interconnected_array, "one macro is not an array");
+}
+
+#[test]
+fn a_wired_group_is_marked_as_an_interconnected_array() {
+    let mut c = Connections::new();
+    c.connect(10, 11, 5.0);
+    let macros = [mc(10, "M1", 0, false, 5, 5), mc(11, "M2", 1, false, 5, 5)];
+    let plan = break_mixed_leaf(1, &macros, &c);
+    assert_eq!(plan.arrays.len(), 1);
+    assert!(plan.arrays[0].is_interconnected_array);
+}
+
+// ------------------------------------------------------------------ virtual connections
+
+#[test]
+fn virtual_connections_join_every_pair() {
+    // 🔑 The std-cell cluster, each surviving array and each fixed cluster are all joined, so the
+    // annealer knows they came from one place. Three members means three pairs.
+    let macros = [mc(10, "M1", 0, false, 5, 5), mc(11, "M2", 1, true, 9, 9)];
+    let plan = break_mixed_leaf(1, &macros, &Connections::new());
+    assert_eq!(
+        plan.virtual_connections,
+        vec![(1, 10), (1, 11), (10, 11)],
+        "std-cell first, then the array, then the fixed cluster"
+    );
+}
+
+#[test]
+fn a_leaf_with_one_macro_still_joins_it_to_the_cells() {
+    let macros = [mc(10, "M1", 0, false, 5, 5)];
+    let plan = break_mixed_leaf(1, &macros, &Connections::new());
+    assert_eq!(plan.virtual_connections, vec![(1, 10)]);
+}
+
+#[test]
+fn merged_macros_contribute_ONE_virtual_connection_not_one_each() {
+    // ⚠️ Only the surviving leaders take part. Counting every macro would over-connect the
+    // annealer's view by exactly the number of merges.
+    let macros = [
+        mc(10, "M1", 0, false, 5, 5),
+        mc(11, "M2", 1, false, 5, 5),
+        mc(12, "M3", 2, false, 5, 5),
+    ];
+    let plan = break_mixed_leaf(1, &macros, &shared_signature(&[10, 11, 12]));
+    assert_eq!(plan.arrays.len(), 1, "all three merged");
+    assert_eq!(plan.virtual_connections, vec![(1, 10)], "one array, one connection");
+}
+
+#[test]
+fn a_leaf_with_no_macros_has_no_connections_to_make() {
+    let plan = break_mixed_leaf(1, &[], &Connections::new());
+    assert!(plan.arrays.is_empty() && plan.fixed_clusters.is_empty());
+    assert!(plan.virtual_connections.is_empty());
+}

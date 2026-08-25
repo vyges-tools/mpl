@@ -170,3 +170,105 @@ pub fn group_single_macro_clusters(
 pub fn single_macro_grouping() -> Grouping {
     Grouping { macro_class: vec![0], interconn_class: vec![-1], merges: Vec::new() }
 }
+
+/// One macro that `breakMixedLeaf` turned into its own cluster.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct MacroCluster {
+    pub id: ClusterId,
+    /// Upstream names the cluster after the macro instance itself.
+    pub name: String,
+    pub inst: usize,
+    pub is_fixed: bool,
+    pub size: MacroSize,
+}
+
+/// A surviving group of movable macros.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct MacroArray {
+    pub id: ClusterId,
+    /// ⚠️ Set only when the group's interconnection class survived the grouping. It is what
+    /// distinguishes a genuinely interconnected array from macros merely sharing a signature.
+    pub is_interconnected_array: bool,
+    /// The macro clusters folded into this one, the leader first.
+    pub members: Vec<ClusterId>,
+}
+
+/// What `breakMixedLeaf` decided.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct MixedLeafPlan {
+    /// The mixed leaf itself, retyped as a standard-cell cluster with its macros removed.
+    pub std_cell_cluster: ClusterId,
+    pub arrays: Vec<MacroArray>,
+    /// 🔑 **Parented to the ROOT, not to the mixed leaf's parent.** A fixed macro is not the
+    /// placer's to move, so it is lifted out of the local hierarchy entirely.
+    pub fixed_clusters: Vec<ClusterId>,
+    /// Every pair among the std-cell cluster, the arrays and the fixed clusters.
+    pub virtual_connections: Vec<(ClusterId, ClusterId)>,
+}
+
+/// Upstream `breakMixedLeaf`: split a cluster holding both macros and standard cells.
+///
+/// The order is upstream's, and two steps of it are structural rather than cosmetic:
+///
+/// 1. **Every macro becomes its own cluster**, named after the instance. ⚠️ A **fixed** macro's
+///    cluster is parented to the **root**; a movable one to the mixed leaf's parent.
+/// 2. The macros are then classified and grouped — but only the **movable** ones. A fixed macro
+///    is never folded into an array, because it cannot move to join one.
+/// 3. The mixed leaf keeps its standard cells and becomes a `StdCellCluster`.
+/// 4. **Virtual connections join every pair** among the std-cell cluster, the surviving arrays and
+///    the fixed clusters — so the annealer knows they came from one place.
+pub fn break_mixed_leaf(
+    mixed_leaf: ClusterId,
+    macros: &[MacroCluster],
+    conns: &Connections,
+) -> MixedLeafPlan {
+    let movable: Vec<&MacroCluster> = macros.iter().filter(|m| !m.is_fixed).collect();
+    let fixed_clusters: Vec<ClusterId> =
+        macros.iter().filter(|m| m.is_fixed).map(|m| m.id).collect();
+
+    let grouping = if movable.len() == 1 {
+        // ⚠️ Special-cased before any classification: one macro is not an array of one.
+        single_macro_grouping()
+    } else {
+        let ids: Vec<ClusterId> = movable.iter().map(|m| m.id).collect();
+        let sizes: Vec<MacroSize> = movable.iter().map(|m| m.size).collect();
+        let size_class = classify_by_size(&sizes);
+        let signature_class = classify_by_conn_signature(conns, &ids);
+        let interconn_class = classify_by_interconn(conns, &ids);
+        group_single_macro_clusters(&size_class, &signature_class, &interconn_class)
+    };
+
+    // Only the group LEADERS survive; the rest were folded in.
+    let mut arrays = Vec::new();
+    for (i, m) in movable.iter().enumerate() {
+        if grouping.macro_class.get(i) != Some(&i) {
+            continue;
+        }
+        let members = movable
+            .iter()
+            .enumerate()
+            .filter(|(j, _)| grouping.macro_class.get(*j) == Some(&i))
+            .map(|(_, mc)| mc.id)
+            .collect();
+        arrays.push(MacroArray {
+            id: m.id,
+            is_interconnected_array: grouping.interconn_class.get(i).copied().unwrap_or(-1) != -1,
+            members,
+        });
+    }
+
+    // 🔑 The std-cell cluster comes FIRST, then the arrays, then the fixed clusters — the order
+    // upstream builds the list in, and the pairs below follow it.
+    let mut virtual_members = vec![mixed_leaf];
+    virtual_members.extend(arrays.iter().map(|a| a.id));
+    virtual_members.extend(fixed_clusters.iter().copied());
+
+    let mut virtual_connections = Vec::new();
+    for i in 0..virtual_members.len() {
+        for j in (i + 1)..virtual_members.len() {
+            virtual_connections.push((virtual_members[i], virtual_members[j]));
+        }
+    }
+
+    MixedLeafPlan { std_cell_cluster: mixed_leaf, arrays, fixed_clusters, virtual_connections }
+}
