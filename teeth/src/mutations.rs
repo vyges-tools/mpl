@@ -1757,4 +1757,105 @@ pub const MUTATIONS: &[Mutation] = &[
     }"#,
         want: r#"a_hard_macro_cluster_gets_the_tilings_of_its_macro_count"#,
     },
+    Mutation {
+        name: r#"boundary-height-tested-first"#,
+        file: r#"src/regions.rs"#,
+        find: r#"    if region.x_max - region.x_min == 0 {"#,
+        replace: r#"    if region.y_max - region.y_min == 0 && false {"#,
+        want: r#"width_is_tested_before_height"#,
+    },
+    Mutation {
+        name: r#"boundary-left-and-right-swapped"#,
+        file: r#"src/regions.rs"#,
+        find: r#"        return if region.x_min == die.x_min { Boundary::L } else { Boundary::R };"#,
+        replace: r#"        return if region.x_min == die.x_min { Boundary::R } else { Boundary::L };"#,
+        want: r#"a_zero_width_region_is_left_only_at_the_left_edge"#,
+    },
+    Mutation {
+        name: r#"boundary-bottom-and-top-swapped"#,
+        file: r#"src/regions.rs"#,
+        find: r#"    if region.y_min == die.y_min {
+        Boundary::B
+    } else {
+        Boundary::T
+    }"#,
+        replace: r#"    if region.y_min == die.y_min {
+        Boundary::T
+    } else {
+        Boundary::B
+    }"#,
+        want: r#"a_zero_height_region_is_bottom_only_at_the_bottom_edge"#,
+    },
+    Mutation {
+        name: r#"boundary-rect-left-collapses-to-the-far-side"#,
+        file: r#"src/regions.rs"#,
+        find: r#"        Boundary::L => r.x_max = die.x_min,"#,
+        replace: r#"        Boundary::L => r.x_min = die.x_max,"#,
+        want: r#"each_boundary_rect_is_the_whole_edge_collapsed_to_a_line"#,
+    },
+    Mutation {
+        name: r#"boundary-rect-top-uses-the-bottom"#,
+        file: r#"src/regions.rs"#,
+        find: r#"        Boundary::T => r.y_min = die.y_max,"#,
+        replace: r#"        Boundary::T => r.y_max = die.y_min,"#,
+        want: r#"each_boundary_rect_is_the_whole_edge_collapsed_to_a_line"#,
+    },
+    Mutation {
+        name: r#"subtract-cuts-the-wrong-axis"#,
+        file: r#"src/regions.rs"#,
+        find: r#"    if boundary.is_vertical() {
+        a.y_max = overlay.y_min;
+        b.y_min = overlay.y_max;
+    } else {
+        a.x_max = overlay.x_min;
+        b.x_min = overlay.x_max;
+    }"#,
+        replace: r#"    if boundary.is_vertical() {
+        a.x_max = overlay.x_min;
+        b.x_min = overlay.x_max;
+    } else {
+        a.y_max = overlay.y_min;
+        b.y_min = overlay.y_max;
+    }"#,
+        want: r#"a_horizontal_edge_is_cut_along_x_and_a_vertical_one_along_y"#,
+    },
+    Mutation {
+        name: r#"subtract-drops-every-line"#,
+        file: r#"src/regions.rs"#,
+        find: r#"        if piece.x_max - piece.x_min != 0 || piece.y_max - piece.y_min != 0 {"#,
+        replace: r#"        if piece.x_max - piece.x_min != 0 && piece.y_max - piece.y_min != 0 {"#,
+        want: r#"a_zero_width_piece_is_kept_because_the_test_is_an_OR"#,
+    },
+    Mutation {
+        name: r#"subtract-across-boundaries-allowed"#,
+        file: r#"src/regions.rs"#,
+        find: r#"    if boundary != boundary_of(die, overlay) {
+        return None;
+    }"#,
+        replace: r#"    if false {
+        return None;
+    }"#,
+        want: r#"subtracting_across_boundaries_is_refused"#,
+    },
+    Mutation {
+        name: r#"available-boundary-order-changed"#,
+        file: r#"src/regions.rs"#,
+        find: r#"pub const BOUNDARY_ORDER: [Boundary; 4] = [Boundary::B, Boundary::L, Boundary::T, Boundary::R];"#,
+        replace: r#"pub const BOUNDARY_ORDER: [Boundary; 4] = [Boundary::L, Boundary::B, Boundary::T, Boundary::R];"#,
+        want: r#"with_nothing_blocked_every_edge_is_available_in_enum_order"#,
+    },
+    Mutation {
+        name: r#"available-subtracts-on-overlap"#,
+        file: r#"src/regions.rs"#,
+        find: r#"                match contains(region, block).then(|| subtract_overlap(die, region, block)) {"#,
+        replace: r#"                match true.then(|| subtract_overlap(die, region, block)) {"#,
+        want: r#"a_region_that_only_OVERLAPS_is_left_alone"#,
+    },
+    Mutation {
+        name: r#"contains-is-strict"#,
+        file: r#"src/regions.rs"#,
+        find: r#"    outer.x_min <= inner.x_min"#,
+        replace: r#"    outer.x_min < inner.x_min"#,
+        want: r#"a_blocked_region_flush_with_the_edge_start_is_still_contained"#,
+    },
 ];

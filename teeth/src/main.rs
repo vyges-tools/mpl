@@ -446,7 +446,10 @@ const BATCHES: &[(&str, &[&str])] = &[
             "dump.rs",
         ],
     ),
-    ("shaping", &["shaping.rs", "feasibility.rs", "apply.rs", "engine.rs", "report.rs"]),
+    (
+        "shaping",
+        &["shaping.rs", "feasibility.rs", "regions.rs", "apply.rs", "engine.rs", "report.rs"],
+    ),
 ];
 
 fn batch_of(m: &Mutation) -> &'static str {
