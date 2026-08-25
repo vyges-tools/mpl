@@ -2074,4 +2074,60 @@ pub const MUTATIONS: &[Mutation] = &[
 }"#,
         want: r#"placement_blockages_are_taken_as_they_stand"#,
     },
+    Mutation {
+        name: r#"only-macros-does-not-return"#,
+        file: r#"src/shaping.rs"#,
+        find: r#"    if input.has_only_macros {
+        root.cluster_type = ClusterType::HardMacro;"#,
+        replace: r#"    if false {
+        root.cluster_type = ClusterType::HardMacro;"#,
+        want: r#"a_design_of_only_macros_stops_after_the_root_shape"#,
+    },
+    Mutation {
+        name: r#"only-macros-does-not-retype"#,
+        file: r#"src/shaping.rs"#,
+        find: r#"        root.cluster_type = ClusterType::HardMacro;
+        return Ok(CoarseShaping {"#,
+        replace: r#"        return Ok(CoarseShaping {"#,
+        want: r#"a_design_of_only_macros_stops_after_the_root_shape"#,
+    },
+    Mutation {
+        name: r#"io-pads-still-get-blockages"#,
+        file: r#"src/shaping.rs"#,
+        find: r#"    if input.has_io_pads || input.top_std_cell_area == 0 {"#,
+        replace: r#"    if input.top_std_cell_area == 0 {"#,
+        want: r#"a_design_with_io_pads_casts_no_pin_access_blockages"#,
+    },
+    Mutation {
+        name: r#"zero-std-cell-area-still-gets-blockages"#,
+        file: r#"src/shaping.rs"#,
+        find: r#"    if input.has_io_pads || input.top_std_cell_area == 0 {"#,
+        replace: r#"    if input.has_io_pads {"#,
+        want: r#"a_design_with_no_standard_cells_casts_no_pin_access_blockages"#,
+    },
+    Mutation {
+        name: r#"builders-run-in-the-wrong-order"#,
+        file: r#"src/shaping.rs"#,
+        find: r#"    let mut out = crate::regions::blockages_for_regions(
+        input.io_bundles,
+        input.fixed_ios,"#,
+        replace: r#"    let mut out = crate::regions::blockages_for_regions(
+        input.constrained_regions,
+        input.fixed_ios,"#,
+        want: r#"the_three_builders_append_in_upstreams_order"#,
+    },
+    Mutation {
+        name: r#"root-shape-from-the-die-not-the-floorplan"#,
+        file: r#"src/shaping.rs"#,
+        find: r#"    let root_shape = root_shape(&input.floorplan);"#,
+        replace: r#"    let root_shape = root_shape(&input.die);"#,
+        want: r#"the_root_takes_the_FLOORPLAN_shape_not_the_die"#,
+    },
+    Mutation {
+        name: r#"placement-blockages-dropped"#,
+        file: r#"src/shaping.rs"#,
+        find: r#"        placement_blockages: placement_blockages(input.blockages),"#,
+        replace: r#"        placement_blockages: Vec::new(),"#,
+        want: r#"the_placement_blockages_come_through_untouched"#,
+    },
 ];

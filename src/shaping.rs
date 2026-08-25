@@ -313,3 +313,111 @@ pub fn pin_access_base_depth(
 pub fn placement_blockages(blockages: &[Rect]) -> Vec<Rect> {
     blockages.to_vec()
 }
+
+// ---------------------------------------------------------------- the composer
+
+/// Everything `runCoarseShaping` reads that does not live on the tree.
+pub struct CoarseInput<'a> {
+    pub die: Rect,
+    pub floorplan: Rect,
+    /// ⚠️ MPL-27: the whole stage returns after the root's shape when this is set.
+    pub has_only_macros: bool,
+    /// A design with IO pads casts no pin-access blockages at all.
+    pub has_io_pads: bool,
+    /// The top module's standard-cell area. Zero means every blockage would have zero depth.
+    pub top_std_cell_area: i64,
+    pub blockages: &'a [Rect],
+    /// A macro's dimensions **with halo**, by instance.
+    pub macro_dims: &'a dyn Fn(usize) -> (i64, i64),
+    pub io_bundles: &'a [crate::regions::IoRegion],
+    pub fixed_ios: i64,
+    pub constrained_regions: &'a [crate::regions::IoRegion],
+    pub unfixed_ios: i64,
+    pub available_regions: &'a [crate::regions::BoundaryRegion],
+    pub any_blocked_regions: bool,
+    /// `computePinAccessBaseDepth`, which needs tree state this function does not carry.
+    pub base_depth: &'a dyn Fn(i64) -> i64,
+}
+
+/// What the stage produced.
+#[derive(Debug, Clone, PartialEq)]
+pub struct CoarseShaping {
+    /// The root's single width interval and its area.
+    pub root_shape: (Interval, i64),
+    pub depth_limits: DepthLimits,
+    /// ⚠️ In creation order: bundles, then available regions, then constraint regions. Upstream
+    /// appends to one list in that sequence and the placer reads it in order.
+    pub io_blockages: Vec<Rect>,
+    pub placement_blockages: Vec<Rect>,
+}
+
+/// Upstream `runCoarseShaping`, minus the annealing tiling search.
+///
+/// 🔑 **The order is the algorithm.** The root's shape is set first because everything downstream
+/// measures against the ROOT's bounding box; the tilings come next because the depth limits read
+/// the root's first tiling; the blockages last because they are clamped by those limits.
+pub fn run_coarse_shaping(
+    root: &mut Cluster,
+    input: &CoarseInput,
+) -> Result<CoarseShaping, ShapingRefusal> {
+    let root_shape = root_shape(&input.floorplan);
+
+    // ⚠️ MPL-27, and it returns: a design of nothing but macros gets its root retyped and no
+    // tilings, no pin-access blockages and no placement blockages at all.
+    if input.has_only_macros {
+        root.cluster_type = ClusterType::HardMacro;
+        return Ok(CoarseShaping {
+            root_shape,
+            depth_limits: DepthLimits::default(),
+            io_blockages: Vec::new(),
+            placement_blockages: Vec::new(),
+        });
+    }
+
+    let ctx = ShapingCtx { outline: input.floorplan, macro_dims: input.macro_dims };
+    calculate_children_tilings(root, &ctx)?;
+
+    let io_blockages = pin_access_blockages(root, input);
+    Ok(CoarseShaping {
+        root_shape,
+        depth_limits: depth_limits_for(root, input).unwrap_or_default(),
+        io_blockages,
+        placement_blockages: placement_blockages(input.blockages),
+    })
+}
+
+/// The limits, or `None` when the stage does not reach them.
+fn depth_limits_for(root: &Cluster, input: &CoarseInput) -> Option<DepthLimits> {
+    if input.has_io_pads || input.top_std_cell_area == 0 {
+        return None;
+    }
+    // ⚠️ Upstream reads `getTilings().front()` unguarded. A root with no tilings would be a
+    // read past the end there; here it is simply no limits, and therefore no blockages.
+    Some(pin_access_depth_limits(&input.die, *root.tilings.first()?))
+}
+
+/// Upstream `createPinAccessBlockages`: two guards, then the three builders in order.
+fn pin_access_blockages(root: &Cluster, input: &CoarseInput) -> Vec<Rect> {
+    let Some(limits) = depth_limits_for(root, input) else {
+        return Vec::new();
+    };
+    let mut out = crate::regions::blockages_for_regions(
+        input.io_bundles,
+        input.fixed_ios,
+        input.base_depth,
+        &limits,
+    );
+    out.extend(crate::regions::blockages_for_available_regions(
+        input.available_regions,
+        input.any_blocked_regions,
+        input.base_depth,
+        &limits,
+    ));
+    out.extend(crate::regions::blockages_for_regions(
+        input.constrained_regions,
+        input.unfixed_ios,
+        input.base_depth,
+        &limits,
+    ));
+    out
+}

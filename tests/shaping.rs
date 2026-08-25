@@ -325,3 +325,171 @@ fn macro_dominance_is_SQUARED_so_it_bites_hard() {
 fn a_root_of_zero_area_is_refused_rather_than_divided_by() {
     assert_eq!(pin_access_base_depth(1000, 0, 0, 0, 10), Err(vyges_mpl::shaping::RootAreaIsZero));
 }
+
+// ------------------------------------------------------------------ the composer
+
+use vyges_mpl::regions::{BoundaryRegion, IoRegion};
+use vyges_mpl::halo::Boundary;
+use vyges_mpl::shaping::{run_coarse_shaping, CoarseInput};
+
+const DIE: Rect = Rect { x_min: 0, y_min: 0, x_max: 1000, y_max: 1000 };
+
+fn base(die: Rect) -> CoarseInput<'static> {
+    CoarseInput {
+        die,
+        floorplan: die,
+        has_only_macros: false,
+        has_io_pads: false,
+        top_std_cell_area: 5_000,
+        blockages: &[],
+        macro_dims: &|_| (100, 100),
+        io_bundles: &[],
+        fixed_ios: 1,
+        constrained_regions: &[],
+        unfixed_ios: 1,
+        available_regions: &[],
+        any_blocked_regions: false,
+        base_depth: &|_| 50,
+    }
+}
+
+fn root_with_one_macro_child() -> Cluster {
+    let mut root = Cluster::new(0, "root");
+    root.metrics.num_macro = 4;
+    root.children.push(macro_cluster(1, "M", &[0, 1, 2, 3]));
+    root
+}
+
+#[test]
+fn the_root_takes_the_FLOORPLAN_shape_not_the_die() {
+    // ⛔ A fixture with `floorplan == die` cannot tell these apart, and a global fence is exactly
+    // the case where they differ — the fence reaches the whole stage only through this.
+    let mut root = root_with_one_macro_child();
+    let mut input = base(DIE);
+    let fenced = Rect { x_min: 100, y_min: 100, x_max: 700, y_max: 900 };
+    input.floorplan = fenced;
+    let got = run_coarse_shaping(&mut root, &input).expect("shapeable");
+    assert_eq!(
+        got.root_shape,
+        (vyges_mpl::shaping::Interval { min: 600, max: 600 }, 480_000),
+        "the fenced width and area, not the die's 1000 and 1,000,000"
+    );
+}
+
+#[test]
+fn a_design_of_only_macros_stops_after_the_root_shape() {
+    // 🔑 MPL-27 RETURNS. No tilings, no blockages of either kind — and the root is retyped.
+    let mut root = root_with_one_macro_child();
+    let mut input = base(DIE);
+    input.has_only_macros = true;
+    input.blockages = &[Rect { x_min: 0, y_min: 0, x_max: 10, y_max: 10 }];
+    let got = run_coarse_shaping(&mut root, &input).expect("not an error");
+    assert_eq!(root.cluster_type, ClusterType::HardMacro, "the root is retyped");
+    assert!(root.children[0].tilings.is_empty(), "and nothing was shaped");
+    assert!(got.placement_blockages.is_empty(), "not even the placement blockages");
+}
+
+#[test]
+fn the_tilings_reach_the_root_before_the_depth_limits_read_them() {
+    // The limits are derived from the root's FIRST tiling, so a composer that computed them
+    // before the descent would read an empty list.
+    let mut root = root_with_one_macro_child();
+    let got = run_coarse_shaping(&mut root, &base(DIE)).expect("shapeable");
+    assert!(!root.tilings.is_empty(), "the shortcut carried the child's tilings up");
+    assert_eq!(got.depth_limits.x_max, 100, "and the limits were computed from the die");
+}
+
+#[test]
+fn a_design_with_io_pads_casts_no_pin_access_blockages() {
+    let mut root = root_with_one_macro_child();
+    let mut input = base(DIE);
+    input.has_io_pads = true;
+    input.available_regions = &[BoundaryRegion {
+        line: Rect { x_min: 0, y_min: 0, x_max: 0, y_max: 1000 },
+        boundary: Boundary::L,
+    }];
+    input.any_blocked_regions = true;
+    let got = run_coarse_shaping(&mut root, &input).expect("shapeable");
+    assert!(got.io_blockages.is_empty(), "the pads carry the connectivity instead");
+}
+
+#[test]
+fn a_design_with_no_standard_cells_casts_no_pin_access_blockages() {
+    // ⚠️ Upstream's reason, verbatim: it avoids creating blockages with zero depth.
+    let mut root = root_with_one_macro_child();
+    let mut input = base(DIE);
+    input.top_std_cell_area = 0;
+    input.any_blocked_regions = true;
+    input.available_regions = &[BoundaryRegion {
+        line: Rect { x_min: 0, y_min: 0, x_max: 0, y_max: 1000 },
+        boundary: Boundary::L,
+    }];
+    let got = run_coarse_shaping(&mut root, &input).expect("shapeable");
+    assert!(got.io_blockages.is_empty());
+}
+
+#[test]
+fn the_three_builders_append_in_upstreams_order() {
+    // ⚠️ Bundles, then available regions, then constraint regions. The placer reads the list in
+    // order, so this is output, not bookkeeping.
+    let bundle = IoRegion {
+        region: BoundaryRegion {
+            // ⛔ Deliberately NOT at the origin. A left edge grown by 100 and a bottom edge
+            // grown by 100 are the SAME square when both start at (0,0), which left the order
+            // unobservable even with whole-rectangle assertions.
+            line: Rect { x_min: 0, y_min: 200, x_max: 0, y_max: 300 },
+            boundary: Boundary::L,
+        },
+        ios: 1,
+    };
+    let avail = BoundaryRegion {
+        line: Rect { x_min: 1000, y_min: 0, x_max: 1000, y_max: 100 },
+        boundary: Boundary::R,
+    };
+    let constrained = IoRegion {
+        region: BoundaryRegion {
+            line: Rect { x_min: 400, y_min: 0, x_max: 500, y_max: 0 },
+            boundary: Boundary::B,
+        },
+        ios: 1,
+    };
+    let mut root = root_with_one_macro_child();
+    let mut input = base(DIE);
+    input.io_bundles = std::slice::from_ref(&bundle);
+    input.available_regions = std::slice::from_ref(&avail);
+    input.any_blocked_regions = true;
+    input.constrained_regions = std::slice::from_ref(&constrained);
+    // ⚠️ A different IO total for the constraint regions, so its depth differs from the bundle's.
+    // With both at 1 the two rectangles come out IDENTICAL and the order is unobservable again.
+    input.unfixed_ios = 4;
+    let got = run_coarse_shaping(&mut root, &input).expect("shapeable");
+    assert_eq!(got.io_blockages.len(), 3);
+    // ⛔ Assert the WHOLE rectangle of each. Checking one coordinate is not enough: the bundle
+    // and the constraint region below both have `x_min == 0`, so swapping the two builders left
+    // the weaker assertions green.
+    assert_eq!(
+        got.io_blockages[0],
+        Rect { x_min: 0, y_min: 200, x_max: 100, y_max: 300 },
+        "the bundle: base 50 doubled by carrying all one fixed IO"
+    );
+    assert_eq!(
+        got.io_blockages[1],
+        Rect { x_min: 950, y_min: 0, x_max: 1000, y_max: 100 },
+        "the available region: base 50, no density factor at all"
+    );
+    assert_eq!(
+        got.io_blockages[2],
+        Rect { x_min: 400, y_min: 0, x_max: 500, y_max: 62 },
+        "the constraint region: base 50 scaled by 1.25 and truncated"
+    );
+}
+
+#[test]
+fn the_placement_blockages_come_through_untouched() {
+    let bs = [Rect { x_min: 0, y_min: 0, x_max: 10, y_max: 10 }];
+    let mut root = root_with_one_macro_child();
+    let mut input = base(DIE);
+    input.blockages = &bs;
+    let got = run_coarse_shaping(&mut root, &input).expect("shapeable");
+    assert_eq!(got.placement_blockages, bs.to_vec());
+}
