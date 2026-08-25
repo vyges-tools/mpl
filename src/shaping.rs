@@ -234,3 +234,73 @@ fn macro_cluster_tilings(
         Err(e) => Err(ShapingRefusal::Unshapeable(cluster.id, e)),
     }
 }
+
+// ---------------------------------------------------------------- pin access depth
+
+/// How deep a pin-access blockage may reach, per axis.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct DepthLimits {
+    pub x_min: i64,
+    pub x_max: i64,
+    pub y_min: i64,
+    pub y_max: i64,
+}
+
+/// Upstream `computePinAccessDepthLimits`.
+///
+/// The limits are proportions of the die — **10% deep at most, 4% at least** — computed in `f32`
+/// and then truncated, which is what the assignment to an `int` does.
+///
+/// 🔑 **The tight-design override is all-or-nothing.** When the root's first tiling leaves less
+/// margin than the minimum on **BOTH** axes, **BOTH** minima are replaced. It is an `&&`, not a
+/// per-axis test: a design tight in one direction only keeps the proportional minimum on both.
+/// Upstream's comment names `MockArray` as the design that forced this.
+///
+/// ⚠️ `(die - tiling) / 2` is integer division, so an odd difference truncates toward zero.
+pub fn pin_access_depth_limits(die: &Rect, root_tiling: Tiling) -> DepthLimits {
+    let (dx, dy) = (die.x_max - die.x_min, die.y_max - die.y_min);
+    let mut limits = DepthLimits {
+        x_max: (0.10_f32 * dx as f32) as i64,
+        y_max: (0.10_f32 * dy as f32) as i64,
+        x_min: (0.04_f32 * dx as f32) as i64,
+        y_min: (0.04_f32 * dy as f32) as i64,
+    };
+    let tiling_min_width = (dx - root_tiling.width) / 2;
+    let tiling_min_height = (dy - root_tiling.height) / 2;
+    if tiling_min_width < limits.x_min && tiling_min_height < limits.y_min {
+        limits.x_min = tiling_min_width;
+        limits.y_min = tiling_min_height;
+    }
+    limits
+}
+
+/// Why the base depth could not be computed.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct RootAreaIsZero;
+
+/// Upstream `computePinAccessBaseDepth`: how deep the blockage for one span of IO should be.
+///
+/// 🔑 **The standard-cell area is taken from the root's STD-CELL children, and only if that comes
+/// to zero is it taken from the MIXED ones.** Two passes, not one condition — a design with both
+/// kinds counts only the std-cell clusters, and the mixed ones do not contribute at all.
+///
+/// ⚠️ **`macro_dominance_factor` squares its complement**: the more of the floorplan the macros
+/// occupy, the sharply shallower the blockage. Dropping the square leaves blockages that eat the
+/// core on a macro-dominated design.
+///
+/// ℹ️ The division is in `f64` and the result truncates to an integer.
+pub fn pin_access_base_depth(
+    std_cell_area_of_children: i64,
+    mixed_area_of_children: i64,
+    macro_with_halo_area: i64,
+    root_area: i64,
+    io_span: i64,
+) -> Result<i64, RootAreaIsZero> {
+    if root_area == 0 {
+        return Err(RootAreaIsZero);
+    }
+    let std_cell_area =
+        if std_cell_area_of_children == 0 { mixed_area_of_children } else { std_cell_area_of_children };
+    let macro_dominance_factor = macro_with_halo_area as f64 / root_area as f64;
+    Ok((std_cell_area as f64 / io_span as f64 * (1.0 - macro_dominance_factor).powi(2)) as i64)
+}

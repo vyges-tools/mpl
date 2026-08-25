@@ -257,3 +257,71 @@ fn an_unshapeable_macro_cluster_names_itself() {
         other => panic!("expected an unshapeable cluster, got {other:?}"),
     }
 }
+
+// ------------------------------------------------------------------ pin access depth
+
+use vyges_mpl::shaping::{pin_access_base_depth, pin_access_depth_limits, DepthLimits};
+
+#[test]
+fn the_depth_limits_are_ten_and_four_percent_of_the_die() {
+    // A tiling that leaves plenty of margin, so the tight-design override does not fire.
+    let got = pin_access_depth_limits(&outline(1000, 2000), t(100, 200));
+    assert_eq!(got, DepthLimits { x_min: 40, x_max: 100, y_min: 80, y_max: 200 });
+}
+
+#[test]
+fn the_limits_are_per_axis_and_a_square_die_hides_that() {
+    // ⚠️ A square die makes the x and y limits equal, so an implementation that computed both
+    // from `dx` would pass. This one is deliberately not square.
+    let got = pin_access_depth_limits(&outline(1000, 5000), t(10, 10));
+    assert_ne!(got.x_max, got.y_max);
+    assert_eq!((got.x_max, got.y_max), (100, 500));
+}
+
+#[test]
+fn a_design_tight_in_BOTH_directions_replaces_BOTH_minima() {
+    // 🔑 The override is all-or-nothing. The tiling leaves 5 on each side of a 1000-wide die,
+    // below the 40 and 80 the proportions would give.
+    let got = pin_access_depth_limits(&outline(1000, 2000), t(990, 1990));
+    assert_eq!(got, DepthLimits { x_min: 5, x_max: 100, y_min: 5, y_max: 200 });
+}
+
+#[test]
+fn a_design_tight_in_ONE_direction_keeps_both_proportional_minima() {
+    // ⛔ It is an `&&`, not a per-axis test. Tight in x only: nothing changes, on either axis.
+    let got = pin_access_depth_limits(&outline(1000, 2000), t(990, 100));
+    assert_eq!(got.x_min, 40, "still the proportional minimum, not the 5 the tiling would give");
+    assert_eq!(got.y_min, 80);
+}
+
+#[test]
+fn the_tiling_margin_truncates_rather_than_rounding() {
+    // (1000 - 991) / 2 = 4, not 4.5.
+    let got = pin_access_depth_limits(&outline(1000, 2000), t(991, 1991));
+    assert_eq!((got.x_min, got.y_min), (4, 4));
+}
+
+#[test]
+fn the_base_depth_comes_from_the_std_cell_children() {
+    // 1000 area over a span of 10, with no macros at all: the factor is 1.
+    assert_eq!(pin_access_base_depth(1000, 0, 0, 500, 10), Ok(100));
+}
+
+#[test]
+fn the_mixed_children_are_used_ONLY_when_there_are_no_std_cell_ones() {
+    // 🔑 Two passes, not one condition. With std-cell children present the mixed ones contribute
+    // nothing; with none, they are the whole of it.
+    assert_eq!(pin_access_base_depth(1000, 9999, 0, 500, 10), Ok(100), "the mixed area is ignored");
+    assert_eq!(pin_access_base_depth(0, 1000, 0, 500, 10), Ok(100), "and used when alone");
+}
+
+#[test]
+fn macro_dominance_is_SQUARED_so_it_bites_hard() {
+    // Half the floorplan taken by macros leaves a QUARTER of the depth, not a half.
+    assert_eq!(pin_access_base_depth(1000, 0, 250, 500, 10), Ok(25));
+}
+
+#[test]
+fn a_root_of_zero_area_is_refused_rather_than_divided_by() {
+    assert_eq!(pin_access_base_depth(1000, 0, 0, 0, 10), Err(vyges_mpl::shaping::RootAreaIsZero));
+}

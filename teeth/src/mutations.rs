@@ -1858,4 +1858,65 @@ pub const MUTATIONS: &[Mutation] = &[
         replace: r#"    outer.x_min < inner.x_min"#,
         want: r#"a_blocked_region_flush_with_the_edge_start_is_still_contained"#,
     },
+    Mutation {
+        name: r#"depth-max-uses-the-min-proportion"#,
+        file: r#"src/shaping.rs"#,
+        find: r#"        x_max: (0.10_f32 * dx as f32) as i64,"#,
+        replace: r#"        x_max: (0.04_f32 * dx as f32) as i64,"#,
+        want: r#"the_depth_limits_are_ten_and_four_percent_of_the_die"#,
+    },
+    Mutation {
+        name: r#"depth-y-computed-from-x"#,
+        file: r#"src/shaping.rs"#,
+        find: r#"        y_max: (0.10_f32 * dy as f32) as i64,"#,
+        replace: r#"        y_max: (0.10_f32 * dx as f32) as i64,"#,
+        want: r#"the_limits_are_per_axis_and_a_square_die_hides_that"#,
+    },
+    Mutation {
+        name: r#"tight-override-is-per-axis"#,
+        file: r#"src/shaping.rs"#,
+        find: r#"    if tiling_min_width < limits.x_min && tiling_min_height < limits.y_min {"#,
+        replace: r#"    if tiling_min_width < limits.x_min || tiling_min_height < limits.y_min {"#,
+        want: r#"a_design_tight_in_ONE_direction_keeps_both_proportional_minima"#,
+    },
+    Mutation {
+        name: r#"tight-override-never-fires"#,
+        file: r#"src/shaping.rs"#,
+        find: r#"    if tiling_min_width < limits.x_min && tiling_min_height < limits.y_min {"#,
+        replace: r#"    if false {"#,
+        want: r#"a_design_tight_in_BOTH_directions_replaces_BOTH_minima"#,
+    },
+    Mutation {
+        name: r#"tiling-margin-not-halved"#,
+        file: r#"src/shaping.rs"#,
+        find: r#"    let tiling_min_width = (dx - root_tiling.width) / 2;"#,
+        replace: r#"    let tiling_min_width = dx - root_tiling.width;"#,
+        want: r#"a_design_tight_in_BOTH_directions_replaces_BOTH_minima"#,
+    },
+    Mutation {
+        name: r#"mixed-area-always-added"#,
+        file: r#"src/shaping.rs"#,
+        find: r#"    let std_cell_area =
+        if std_cell_area_of_children == 0 { mixed_area_of_children } else { std_cell_area_of_children };"#,
+        replace: r#"    let std_cell_area = std_cell_area_of_children + mixed_area_of_children;"#,
+        want: r#"the_mixed_children_are_used_ONLY_when_there_are_no_std_cell_ones"#,
+    },
+    Mutation {
+        name: r#"macro-dominance-not-squared"#,
+        file: r#"src/shaping.rs"#,
+        find: r#"    Ok((std_cell_area as f64 / io_span as f64 * (1.0 - macro_dominance_factor).powi(2)) as i64)"#,
+        replace: r#"    Ok((std_cell_area as f64 / io_span as f64 * (1.0 - macro_dominance_factor)) as i64)"#,
+        want: r#"macro_dominance_is_SQUARED_so_it_bites_hard"#,
+    },
+    Mutation {
+        name: r#"zero-root-area-divided-by"#,
+        file: r#"src/shaping.rs"#,
+        find: r#"    if root_area == 0 {
+        return Err(RootAreaIsZero);
+    }"#,
+        replace: r#"    if false {
+        return Err(RootAreaIsZero);
+    }"#,
+        want: r#"a_root_of_zero_area_is_refused_rather_than_divided_by"#,
+    },
 ];
