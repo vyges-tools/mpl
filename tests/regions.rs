@@ -156,3 +156,120 @@ fn a_blocked_region_flush_with_the_edge_start_is_still_contained() {
     assert!(!got.contains(&r(0, 0, 0, 200)), "the left edge was cut, not left whole");
     assert!(got.contains(&r(0, 60, 0, 200)), "what remains starts where the block ended");
 }
+
+// ------------------------------------------------------------------ pin access blockages
+
+use vyges_mpl::regions::{
+    clamp_depth, io_density_factor, pin_access_blockage, region_length, scale_depth,
+    BoundaryRegion,
+};
+use vyges_mpl::shaping::DepthLimits;
+
+const LIMITS: DepthLimits = DepthLimits { x_min: 10, x_max: 100, y_min: 20, y_max: 200 };
+
+fn region(line: Rect) -> BoundaryRegion {
+    BoundaryRegion { boundary: boundary_of(&DIE, &line), line }
+}
+
+#[test]
+fn a_regions_length_is_the_side_that_is_not_zero() {
+    // ℹ️ Upstream computes `margin() / 2`, which is `dx + dy`; one of them is zero for a line.
+    assert_eq!(region_length(&r(0, 30, 0, 90)), 60);
+    assert_eq!(region_length(&r(30, 0, 90, 0)), 60);
+}
+
+#[test]
+fn a_region_of_zero_length_has_zero_length() {
+    assert_eq!(region_length(&r(0, 40, 0, 40)), 0);
+}
+
+#[test]
+fn a_region_with_none_of_the_ios_still_gets_its_base_depth() {
+    // 🔑 The factor starts at ONE and grows; it is not a share of the depth but an addition to it.
+    assert_eq!(io_density_factor(0, 10), 1.0);
+    assert_eq!(io_density_factor(10, 10), 2.0, "all of them doubles the depth");
+    assert_eq!(io_density_factor(5, 10), 1.5);
+}
+
+#[test]
+fn scaling_a_depth_truncates() {
+    assert_eq!(scale_depth(10, 1.5), 15);
+    assert_eq!(scale_depth(10, 1.19), 11, "11.9 becomes 11, not 12");
+}
+
+// ------------------------------------------------------------------ the clamp
+
+#[test]
+fn a_vertical_boundary_is_clamped_by_the_X_limits() {
+    // 🔑 Reads inverted and is correct: `is_vertical` asks whether the EDGE runs vertically, and
+    // a blockage on the left or right edge grows in x. Swapping the pair changes the depth on
+    // every edge without changing any shape, which is why it needs saying.
+    assert_eq!(clamp_depth(500, Boundary::L, &LIMITS), 100, "the x maximum");
+    assert_eq!(clamp_depth(500, Boundary::B, &LIMITS), 200, "the y maximum");
+    assert_eq!(clamp_depth(1, Boundary::L, &LIMITS), 10, "the x minimum");
+    assert_eq!(clamp_depth(1, Boundary::B, &LIMITS), 20, "the y minimum");
+}
+
+#[test]
+fn a_depth_between_the_limits_is_left_alone() {
+    assert_eq!(clamp_depth(50, Boundary::L, &LIMITS), 50);
+}
+
+#[test]
+fn a_depth_exactly_on_a_limit_is_left_alone() {
+    // ⚠️ The comparisons are strict, so neither endpoint is rewritten to itself.
+    assert_eq!(clamp_depth(100, Boundary::L, &LIMITS), 100);
+    assert_eq!(clamp_depth(10, Boundary::L, &LIMITS), 10);
+}
+
+#[test]
+fn the_clamp_is_an_else_if_and_the_ORDER_of_the_two_tests_shows() {
+    // ⚠️ `if > max … else if < min …`, not two independent clamps. The difference is invisible
+    // while `min <= max`, and the engine never produces anything else — so this pins the
+    // TRANSCRIPTION, with limits chosen to make the order observable.
+    //
+    // ⛔ A depth of 50 would prove nothing: every arrangement of these two tests returns 5 for it.
+    // Three depths are needed, one either side of each limit.
+    let odd = DepthLimits { x_min: 90, x_max: 5, y_min: 0, y_max: 0 };
+    assert_eq!(clamp_depth(50, Boundary::L, &odd), 5, "above the maximum: the first branch");
+    assert_eq!(
+        clamp_depth(3, Boundary::L, &odd),
+        90,
+        "below the maximum, so it falls through to the minimum and is RAISED past the maximum —          clamping min first and max second would give 5"
+    );
+    assert_eq!(
+        clamp_depth(5, Boundary::L, &odd),
+        90,
+        "exactly ON the maximum: `>` is strict, so it falls through — `>=` would give 5"
+    );
+}
+
+// ------------------------------------------------------------------ the blockage itself
+
+#[test]
+fn a_blockage_grows_INWARD_from_its_edge() {
+    // Left grows right, right grows left, bottom grows up, top grows down — always into the core.
+    assert_eq!(pin_access_blockage(&region(r(0, 20, 0, 80)), 30, &LIMITS), r(0, 20, 30, 80));
+    assert_eq!(
+        pin_access_blockage(&region(r(100, 20, 100, 80)), 30, &LIMITS),
+        r(70, 20, 100, 80)
+    );
+    assert_eq!(pin_access_blockage(&region(r(20, 0, 80, 0)), 30, &LIMITS), r(20, 0, 80, 30));
+    assert_eq!(
+        pin_access_blockage(&region(r(20, 200, 80, 200)), 30, &LIMITS),
+        r(20, 170, 80, 200)
+    );
+}
+
+#[test]
+fn a_blockage_keeps_the_length_of_its_region() {
+    // ⚠️ Only the depth direction changes; growing the wrong axis would stretch it along the edge.
+    let b = pin_access_blockage(&region(r(0, 20, 0, 80)), 30, &LIMITS);
+    assert_eq!(b.y_max - b.y_min, 60);
+}
+
+#[test]
+fn a_blockage_is_clamped_before_it_is_drawn() {
+    // The depth asked for is 5000; the x maximum is 100.
+    assert_eq!(pin_access_blockage(&region(r(0, 20, 0, 80)), 5000, &LIMITS), r(0, 20, 100, 80));
+}

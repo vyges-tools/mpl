@@ -1919,4 +1919,101 @@ pub const MUTATIONS: &[Mutation] = &[
     }"#,
         want: r#"a_root_of_zero_area_is_refused_rather_than_divided_by"#,
     },
+    Mutation {
+        name: r#"region-length-halved"#,
+        file: r#"src/regions.rs"#,
+        find: r#"    (line.x_max - line.x_min) + (line.y_max - line.y_min)
+}"#,
+        replace: r#"    ((line.x_max - line.x_min) + (line.y_max - line.y_min)) / 2
+}"#,
+        want: r#"a_regions_length_is_the_side_that_is_not_zero"#,
+    },
+    Mutation {
+        name: r#"density-factor-has-no-base"#,
+        file: r#"src/regions.rs"#,
+        find: r#"    1.0 + (ios_here as f32 / ios_total as f32)"#,
+        replace: r#"    ios_here as f32 / ios_total as f32"#,
+        want: r#"a_region_with_none_of_the_ios_still_gets_its_base_depth"#,
+    },
+    Mutation {
+        name: r#"density-factor-inverted"#,
+        file: r#"src/regions.rs"#,
+        find: r#"    1.0 + (ios_here as f32 / ios_total as f32)"#,
+        replace: r#"    1.0 + (ios_total as f32 / ios_here as f32)"#,
+        want: r#"a_region_with_none_of_the_ios_still_gets_its_base_depth"#,
+    },
+    Mutation {
+        name: r#"scale-depth-rounds"#,
+        file: r#"src/regions.rs"#,
+        find: r#"    (base_depth as f32 * factor) as i64"#,
+        replace: r#"    (base_depth as f32 * factor).round() as i64"#,
+        want: r#"scaling_a_depth_truncates"#,
+    },
+    Mutation {
+        name: r#"clamp-axes-swapped"#,
+        file: r#"src/regions.rs"#,
+        find: r#"    let (min, max) = if boundary.is_vertical() {
+        (limits.x_min, limits.x_max)
+    } else {
+        (limits.y_min, limits.y_max)
+    };"#,
+        replace: r#"    let (min, max) = if boundary.is_vertical() {
+        (limits.y_min, limits.y_max)
+    } else {
+        (limits.x_min, limits.x_max)
+    };"#,
+        want: r#"a_vertical_boundary_is_clamped_by_the_X_limits"#,
+    },
+    Mutation {
+        name: r#"clamp-max-is-inclusive"#,
+        file: r#"src/regions.rs"#,
+        find: r#"    if depth > max {
+        max
+    } else if depth < min {"#,
+        replace: r#"    if depth >= max {
+        max
+    } else if depth <= min {"#,
+        want: r#"the_clamp_is_an_else_if_and_the_ORDER_of_the_two_tests_shows"#,
+    },
+    Mutation {
+        name: r#"clamp-tests-are-independent"#,
+        file: r#"src/regions.rs"#,
+        find: r#"    if depth > max {
+        max
+    } else if depth < min {
+        min
+    } else {
+        depth
+    }"#,
+        replace: r#"    let mut d = depth;
+    if d < min {
+        d = min;
+    }
+    if d > max {
+        d = max;
+    }
+    d"#,
+        want: r#"the_clamp_is_an_else_if_and_the_ORDER_of_the_two_tests_shows"#,
+    },
+    Mutation {
+        name: r#"blockage-left-grows-outward"#,
+        file: r#"src/regions.rs"#,
+        find: r#"        Boundary::L => r.x_max = r.x_min + d,"#,
+        replace: r#"        Boundary::L => r.x_min = r.x_min - d,"#,
+        want: r#"a_blockage_grows_INWARD_from_its_edge"#,
+    },
+    Mutation {
+        name: r#"blockage-top-grows-outward"#,
+        file: r#"src/regions.rs"#,
+        find: r#"        Boundary::T => r.y_min = r.y_max - d,"#,
+        replace: r#"        Boundary::T => r.y_max = r.y_max + d,"#,
+        want: r#"a_blockage_grows_INWARD_from_its_edge"#,
+    },
+    Mutation {
+        name: r#"blockage-not-clamped"#,
+        file: r#"src/regions.rs"#,
+        find: r#"    let d = clamp_depth(depth, region.boundary, limits);"#,
+        replace: r#"    let d = depth;"#,
+        want: r#"a_blockage_is_clamped_before_it_is_drawn"#,
+    },
 ];
