@@ -9,6 +9,8 @@
 #   caught        the named test failed. The rule is pinned.
 #   WRONG TEST    the suite went red but not where predicted. The rule is covered by SOMETHING,
 #                 and our belief about which test covers it was wrong. Fix the expectation.
+#                 ⚠️ Judged by re-running the expected test ALONE whenever the batch run aborted
+#                 -- an abort truncates the log, and the truncation point is not deterministic.
 #   NOT CAUGHT    the suite stayed green. A real hole.
 #   DOES NOT COMPILE
 #                 the mutated source does not build, so NOTHING was measured. Red, and proves
@@ -339,6 +341,22 @@ while IFS="$SEP" read -r name file find replace want; do
     why=$(echo "$out" | grep -m1 -E "^error\[E[0-9]+\]: " | cut -c1-60)
     printf '  %-34s \033[35mDOES NOT COMPILE\033[0m %s\n' "$name" "$why"
     invalid=$((invalid+1))
+  elif [ "$rc" -ne 0 ] && echo "$out" | grep -qE "overflowed its stack|signal: [0-9]+"; then
+    # ⚠️ **An ABORTED test binary truncates its own log.** A stack overflow kills the whole
+    # process, so every test still running -- possibly including the expected one -- never gets
+    # to print its `FAILED` line, and which ones made it is decided by thread scheduling. That
+    # made ONE mutation classify as `caught` in isolation and `WRONG TEST` in a full sweep, on
+    # the same source. Re-run the expected test ALONE, where nothing else can abort the process
+    # first, and judge on its exit code.
+    solo=$(cargo test --offline $(target_flag "$want") -- --exact "$want" 2>&1)
+    if [ $? -ne 0 ]; then
+      printf '  %-34s \033[32mcaught\033[0m by %s (alone; the batch run aborted)\n' "$name" "$want"
+      caught=$((caught+1))
+    else
+      other=$(echo "$out" | grep -E "^test .* FAILED|overflowed its stack" | sed 's/^test //;s/ \.\.\..*//' | paste -sd, - | cut -c1-60)
+      printf '  %-34s \033[33mWRONG TEST\033[0m expected %s, red: %s\n' "$name" "$want" "$other"
+      wrong=$((wrong+1))
+    fi
   elif [ "$rc" -ne 0 ]; then
     other=$(echo "$out" | grep -E "^test .* FAILED|overflowed its stack" | sed 's/^test //;s/ \.\.\..*//' | paste -sd, - | cut -c1-60)
     printf '  %-34s \033[33mWRONG TEST\033[0m expected %s, red: %s\n' "$name" "$want" "$other"
