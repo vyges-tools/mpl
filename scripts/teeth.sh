@@ -10,6 +10,9 @@
 #   WRONG TEST    the suite went red but not where predicted. The rule is covered by SOMETHING,
 #                 and our belief about which test covers it was wrong. Fix the expectation.
 #   NOT CAUGHT    the suite stayed green. A real hole.
+#   DOES NOT COMPILE
+#                 the mutated source does not build, so NOTHING was measured. Red, and proves
+#                 nothing -- the stale pattern's twin. Fix the replacement, do not accept it.
 #
 # Usage:  bash scripts/teeth.sh
 set -uo pipefail
@@ -34,13 +37,22 @@ cleanup() {
 }
 trap cleanup EXIT INT TERM
 
+# ⚠️ A `kill -9` skips the trap entirely, and what it leaves behind is a MUTATED source file that
+# looks like ordinary uncommitted work. On 2026-08-25 that left `src/pipeline.rs` mutated in the
+# working tree. So repair on the way IN as well as on the way out -- the exit trap cannot run for
+# the run that did the damage, but the next one can.
+cleanup
+
 SEP=$'\x1f'   # unit separator: cannot occur in Rust source, unlike | or ,
 
 mutations() {
   # name <SEP> file <SEP> find <SEP> replace <SEP> test-that-must-fail
   #
-  # ⛔ NO DOUBLE QUOTES IN A PATTERN. Each row is one bash double-quoted string, so an
-  # embedded " ends it and the script fails to parse. Anchor on a quote-free fragment
+  # ⛔ ESCAPE EVERY DOUBLE QUOTE AS \" -- a raw one ends the row's bash string early, and the
+  # rest of the row is then word-split into SEPARATE arguments. That does not fail loudly: it
+  # silently truncates the table. On 2026-08-25 it cut a 183-row sweep to 106 and still printed
+  # `0 holes`. The separator-count guard below now refuses to run a table it cannot parse.
+  # Anchoring on a quote-free fragment is still the easier option
   # -- and NO BACKSLASH ESCAPES either: the \n-to-newline expansion below rewrites a
   # literal '\n' inside the code you are anchoring on. Pick a different anchor
   # instead -- it only has to be unique in the file, not complete. Cost an hour twice.
@@ -150,7 +162,7 @@ mutations() {
 "single-candidate-takes-first${SEP}src/merge.rs${SEP}    if count == 1 {\n        found\n    } else {\n        None\n    }${SEP}    found${SEP}exactly_one_well_formed_candidate_is_required" \
 "small-candidates-allowed${SEP}src/merge.rs${SEP}        if small_ids.contains(&candidate) {\n            continue;\n        }${SEP}        if false {\n            continue;\n        }${SEP}a_small_candidate_is_not_well_formed" \
 "io-candidates-allowed${SEP}src/merge.rs${SEP}        if candidate == target || is_io_cluster(candidate) {${SEP}        if candidate == target {${SEP}an_io_cluster_is_never_the_candidate" \
-"merge-name-not-joined${SEP}src/merge.rs${SEP}    receiver.name = format!("{}||{}", receiver.name, incomer.name);${SEP}    let _ = &incomer.name;${SEP}merging_joins_names_with_a_double_pipe" \
+"merge-name-not-joined${SEP}src/merge.rs${SEP}    receiver.name = format!(${SEP}    let _unused = format!(${SEP}merging_joins_names_with_a_double_pipe" \
 "receiver-with-children-absorbs${SEP}src/merge.rs${SEP}    if !receiver.children.is_empty() {\n        receiver.children.push(incomer);\n        return false;\n    }${SEP}    if false {\n        return false;\n    }${SEP}a_receiver_with_children_ADOPTS_the_incomer_instead_of_dissolving_it" \
 "dust-allows-a-macro${SEP}src/merge.rs${SEP}    cluster.num_std_cell() <= DUST_CLUSTER_STD_CELL && cluster.num_macro() == 0${SEP}    cluster.num_std_cell() <= DUST_CLUSTER_STD_CELL${SEP}dust_is_a_few_cells_and_no_macros" \
 "dust-limit-strict${SEP}src/merge.rs${SEP}    cluster.num_std_cell() <= DUST_CLUSTER_STD_CELL &&${SEP}    cluster.num_std_cell() < DUST_CLUSTER_STD_CELL &&${SEP}dust_is_a_few_cells_and_no_macros" \
@@ -165,10 +177,10 @@ mutations() {
 "dump-drops-macro-trailing-comma${SEP}src/dump.rs${SEP}, Macros: {} ({} μ²),${SEP}, Macros: {} ({} μ²)${SEP}the_macro_field_ends_with_a_trailing_comma" \
 "dump-uses-and-not-or${SEP}src/dump.rs${SEP}        if cluster.num_std_cell() != 0 || cluster.std_cell_area() != 0 {${SEP}        if cluster.num_std_cell() != 0 && cluster.std_cell_area() != 0 {${SEP}a_field_prints_when_the_area_is_nonzero_even_if_the_count_is_zero" \
 "dump-single-space-before-id${SEP}src/dump.rs${SEP}{}  ({}) Type: {}${SEP}{} ({}) Type: {}${SEP}the_dump_matches_output_captured_from_upstream" \
-"dump-indent-wrong${SEP}src/dump.rs${SEP}        out.push_str("+---");${SEP}        out.push_str("+--");${SEP}depth_is_marked_with_one_prefix_per_level" \
+"dump-indent-wrong${SEP}src/dump.rs${SEP}        out.push_str(\"+---\");${SEP}        out.push_str(\"+--\");${SEP}depth_is_marked_with_one_prefix_per_level" \
 "dump-pin-clusters-print-counts${SEP}src/dump.rs${SEP}    if cluster.is_cluster_of_unplaced_io_pins || cluster.is_io_bundle {${SEP}    if false {${SEP}a_pin_cluster_prints_pins_and_nothing_else" \
 "dump-io-pads-print-counts${SEP}src/dump.rs${SEP}    } else if !cluster.is_io_pad_cluster {${SEP}    } else if true {${SEP}an_io_pad_cluster_prints_neither_pins_nor_counts" \
-"type-string-ignores-fixed-macro${SEP}src/cluster.rs${SEP}        if self.is_fixed_macro {\n            return "Fixed Macro";\n        }${SEP}        if false {\n            return "Fixed Macro";\n        }${SEP}the_type_string_checks_io_and_fixed_before_the_ordinary_type" \
+"type-string-ignores-fixed-macro${SEP}src/cluster.rs${SEP}        if self.is_fixed_macro {\n            return \"Fixed Macro\";\n        }${SEP}        if false {\n            return \"Fixed Macro\";\n        }${SEP}the_type_string_checks_io_and_fixed_before_the_ordinary_type" \
 "leaf-string-ignores-children${SEP}src/cluster.rs${SEP}        if !self.is_io_cluster() && self.children.is_empty() {${SEP}        if !self.is_io_cluster() {${SEP}a_non_leaf_keeps_the_space_before_the_comma" \
 "dump-children-reversed${SEP}src/dump.rs${SEP}    for child in &cluster.children {${SEP}    for child in cluster.children.iter().rev() {${SEP}children_print_in_order_after_their_parent" \
 "autocluster-else-recurses-children${SEP}src/tree.rs${SEP}            let same = self.multilevel_autocluster(\n                parent,\n                is_root,\n                level,${SEP}            let same = self.multilevel_autocluster(\n                parent,\n                is_root,\n                level - 1,${SEP}a_cluster_that_fits_descends_a_level_WITHOUT_splitting" \
@@ -176,8 +188,8 @@ mutations() {
 "force-split-never${SEP}src/tree.rs${SEP}            parent.num_std_cell() < leaf_max_std_cell${SEP}            false${SEP}a_root_smaller_than_a_leaf_is_force_split_anyway" \
 "force-split-uses-current-max${SEP}src/tree.rs${SEP}                (base.max_std_cell as f64 / (cluster_size_ratio as f64).powi(max_level - 1)) as i32;${SEP}                base.max_std_cell;${SEP}force_split_measures_against_the_LEAF_maximum_not_the_base_one" \
 "level-limit-off-by-one${SEP}src/tree.rs${SEP}        if level >= max_level {${SEP}        if level > max_level {${SEP}a_descent_that_reaches_the_level_limit_stops" \
-"thresholds-before-increment${SEP}src/tree.rs${SEP}        let level = level + 1;\n        let t = crate::thresholds::update_size_thresholds(base, level, cluster_size_ratio);${SEP}        let t = crate::thresholds::update_size_thresholds(base, level, cluster_size_ratio);\n        let level = level + 1;${SEP}a_cluster_over_the_maximum_is_split_and_its_children_visited" \
-"children-inherit-is-root${SEP}src/tree.rs${SEP}                let child_outcome = self.multilevel_autocluster(\n                    child,\n                    false,${SEP}                let child_outcome = self.multilevel_autocluster(\n                    child,\n                    is_root,${SEP}a_cluster_over_the_maximum_is_split_and_its_children_visited" \
+"thresholds-before-increment${SEP}src/tree.rs${SEP}        let level = level + 1;\n        let t = crate::thresholds::update_size_thresholds(base, level, cluster_size_ratio);${SEP}        let t = crate::thresholds::update_size_thresholds(base, level, cluster_size_ratio);\n        let level = level + 1;${SEP}a_flat_cluster_needing_the_partitioner_is_reported_up_the_descent" \
+"children-inherit-is-root${SEP}src/tree.rs${SEP}                let child_outcome = self.multilevel_autocluster(\n                    child,\n                    false,${SEP}                let child_outcome = self.multilevel_autocluster(\n                    child,\n                    is_root,${SEP}a_recursed_child_that_BREAKS_is_not_treated_as_the_root" \
 "partitioning-not-propagated${SEP}src/tree.rs${SEP}            outcome.needs_partitioning.extend(sub.needs_partitioning);${SEP}            let _ = &sub.needs_partitioning;${SEP}a_flat_cluster_needing_the_partitioner_is_reported_up_the_descent" \
 "merge-candidates-not-propagated${SEP}src/tree.rs${SEP}            if !breaks.merge_candidates.is_empty() {${SEP}            if false {${SEP}merge_candidates_are_reported_per_parent" \
 "right-edge-indexes-forward${SEP}src/ioclusters.rs${SEP}        Some(per_edge * 2 + div_floor(die.y_max - y_center, spans.y))${SEP}        Some(per_edge * 2 + div_floor(y_center - die.y_min, spans.y))${SEP}the_right_edge_indexes_BACKWARD_from_the_top" \
@@ -186,7 +198,7 @@ mutations() {
 "bundle-order-not-LTRB${SEP}src/ioclusters.rs${SEP}[Boundary::L, Boundary::T, Boundary::R, Boundary::B]${SEP}[Boundary::L, Boundary::B, Boundary::R, Boundary::T]${SEP}bundles_are_named_and_ordered_L_T_R_B" \
 "offset-uses-wrong-multiplier${SEP}src/ioclusters.rs${SEP}        Some(per_edge + div_floor(x_center - die.x_min, spans.x))${SEP}        Some(div_floor(x_center - die.x_min, spans.x))${SEP}the_top_edge_indexes_FORWARD_from_the_left" \
 "interior-pin-gets-a-bundle${SEP}src/ioclusters.rs${SEP}    } else {\n        None\n    }\n}${SEP}    } else {\n        Some(0)\n    }\n}${SEP}a_pin_touching_no_edge_belongs_to_no_bundle" \
-"zero-span-divides${SEP}src/ioclusters.rs${SEP}    if b == 0 {\n        return 0;\n    }${SEP}    if false {\n        return 0;\n    }${SEP}a_degenerate_span_does_not_divide_by_zero" \
+"zero-span-divides${SEP}src/ioclusters.rs${SEP}    if b == 0 {\n        return 0;\n    }${SEP}    if false {\n        return 0;\n    }${SEP}a_degenerate_span_yields_the_first_bundle_rather_than_a_wild_index" \
 "right-rect-advances${SEP}src/ioclusters.rs${SEP}            y_min: die.y_max - ext * (i + 1),${SEP}            y_min: die.y_min + ext * i,${SEP}bundle_rectangles_advance_on_the_left_and_retreat_on_the_right" \
 "bottom-rect-advances${SEP}src/ioclusters.rs${SEP}            x_min: die.x_max - ext * (i + 1),${SEP}            x_min: die.x_min + ext * i,${SEP}bundle_rectangles_advance_on_the_left_and_retreat_on_the_right" \
 "vertical-edge-uses-x-span${SEP}src/ioclusters.rs${SEP}    let ext = if edge.is_vertical() { spans.y } else { spans.x };${SEP}    let ext = spans.x;${SEP}the_bundles_on_an_edge_tile_it_without_gaps_or_overlap" \
@@ -199,7 +211,7 @@ mutations() {
 "constraint-matched-by-overlap${SEP}src/ioclusters.rs${SEP}                .find(|c| c.constraint_region.as_ref() == Some(region))${SEP}                .find(|c| c.constraint_region.is_some())${SEP}pins_with_DIFFERENT_constraints_get_separate_clusters" \
 "constrained-joins-unconstrained${SEP}src/ioclusters.rs${SEP}            None => {\n                c.is_cluster_of_unconstrained_io_pins = true;\n                unconstrained = Some(c.id);\n            }${SEP}            None => {}${SEP}a_constrained_pin_does_not_join_the_unconstrained_cluster" \
 "no-ports-still-has-io-clusters${SEP}src/ioclusters.rs${SEP}        out.has_io_clusters = false;${SEP}        out.has_io_clusters = true;${SEP}a_design_with_no_ports_has_no_io_clusters" \
-"pin-cluster-named-by-count${SEP}src/ioclusters.rs${SEP}format!("ios_{}", out.next_id)${SEP}format!("ios_{}", out.pin_clusters.len())${SEP}a_pin_cluster_is_named_after_its_own_id" \
+"pin-cluster-named-by-count${SEP}src/ioclusters.rs${SEP}format!(\"ios_{}\", out.next_id)${SEP}format!(\"ios_{}\", out.pin_clusters.len())${SEP}a_pin_cluster_is_named_after_its_own_id" \
 "fixed-pins-not-bundled${SEP}src/ioclusters.rs${SEP}        if any_fixed && pin.is_fixed {${SEP}        if false {${SEP}a_fixed_pin_lands_in_the_bundle_its_position_selects" \
 "size-compares-area${SEP}src/macroclass.rs${SEP}                if class[j] == -1 && sizes[i] == sizes[j] {${SEP}                if class[j] == -1 && sizes[i].width * sizes[i].height == sizes[j].width * sizes[j].height {${SEP}size_compares_width_AND_height_not_area" \
 "size-assigns-in-first-pass${SEP}src/macroclass.rs${SEP}        .map(|(i, &c)| if c == -1 { i } else { c as usize })${SEP}        .map(|(_i, &c)| if c == -1 { 0 } else { c as usize })${SEP}an_unmatched_macro_represents_itself" \
@@ -250,7 +262,21 @@ target_flag() {
   if grep -rqE "fn +${want}\\(" src/ 2>/dev/null; then printf -- "--lib"; fi
 }
 
-caught=0; wrong=0; hole=0; stale=0; total=0
+# ⛔ **The table can TRUNCATE silently.** Each row is one bash double-quoted string, so a `"`
+# inside a pattern ends it early and every LATER row is swallowed as part of that argument. On
+# 2026-08-25 one such row cut a 183-mutation sweep down to 106 and the run still printed
+# `0 holes` -- a green result covering 77 mutations that never executed. The count below is the
+# guard: a probe that cannot fail proves nothing, and neither does a table that cannot be seen.
+bad_rows=$(mutations | awk -v sep="$SEP" '
+  { n = gsub(sep, sep); if (n != 4) print NR": "n" separators" }')
+if [ -n "$bad_rows" ]; then
+  echo "ERROR: malformed mutation rows -- each needs exactly 4 separators:" >&2
+  echo "$bad_rows" >&2
+  echo "       A double quote inside a pattern ends its row early and swallows the next one." >&2
+  exit 2
+fi
+
+caught=0; wrong=0; hole=0; stale=0; invalid=0; total=0
 while IFS="$SEP" read -r name file find replace want; do
   total=$((total+1))
   cp "$file" "$file.teeth-backup"
@@ -283,9 +309,18 @@ while IFS="$SEP" read -r name file find replace want; do
      || { [ "$rc" -ne 0 ] && echo "$out" | grep -qE "\b${want}\b.*(overflowed its stack|panicked)"; }; then
     printf '  %-34s \033[32mcaught\033[0m by %s\n' "$name" "$want"
     caught=$((caught+1))
+  elif echo "$out" | grep -qE "^error\[E[0-9]+\]: |^error: could not compile"; then
+    # ⛔ The mutation did not COMPILE, so nothing was measured. This is the stale pattern's twin:
+    # the suite went red, which reads like the rule is pinned, and the rule was never exercised.
+    # Four mutations sat in this state on 2026-08-25 reported as WRONG TEST.
+    # ⚠️ Match rustc's own errors, NOT `error: test failed, to rerun pass ...` -- cargo prints
+    # that for an ordinary failing test, and treating it as a build failure hides real catches.
+    why=$(echo "$out" | grep -m1 -E "^error\[E[0-9]+\]: " | cut -c1-60)
+    printf '  %-34s \033[35mDOES NOT COMPILE\033[0m %s\n' "$name" "$why"
+    invalid=$((invalid+1))
   elif [ "$rc" -ne 0 ]; then
     other=$(echo "$out" | grep -E "^test .* FAILED|overflowed its stack" | sed 's/^test //;s/ \.\.\..*//' | paste -sd, - | cut -c1-60)
-    printf '  %-34s \033[33mWRONG TEST\033[0m expected %s, red: %s\n' "$name" "$want" "${other:-compile error}"
+    printf '  %-34s \033[33mWRONG TEST\033[0m expected %s, red: %s\n' "$name" "$want" "$other"
     wrong=$((wrong+1))
   else
     printf '  %-34s \033[31mNOT CAUGHT\033[0m -- suite stayed green\n' "$name"
@@ -295,6 +330,6 @@ while IFS="$SEP" read -r name file find replace want; do
 done < <(mutations)
 
 echo
-echo "teeth: $caught caught, $wrong wrong-test, $hole holes, $stale stale, of $total"
+echo "teeth: $caught caught, $wrong wrong-test, $hole holes, $stale stale, $invalid uncompilable, of $total"
 cargo test --offline >/dev/null 2>&1 || { echo "ERROR: suite not green after restore"; exit 2; }
-[ $((hole + stale + wrong)) -eq 0 ] || exit 1
+[ $((hole + stale + wrong + invalid)) -eq 0 ] || exit 1
