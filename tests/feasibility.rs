@@ -77,6 +77,31 @@ fn a_fixed_cell_outside_the_area_contributes_only_the_part_inside() {
 }
 
 #[test]
+fn a_fixed_cell_INSIDE_the_area_still_occupies_it() {
+    // ⛔ The mirror of the test above, and the one that actually pins the rule. Intersecting and
+    // *skipping* a fixed cell give the same answer whenever the design fits either way, so a
+    // test that only checks the outside case passes even if fixed cells are ignored entirely.
+    // Found by mutation on 2026-08-25: `fixed-cell-skipped-entirely` stayed green.
+    let d = design(vec![
+        inst("fixed", false, true, r(0, 0, 10, 10)),
+        inst("cell", false, false, r(0, 0, 1, 1)),
+    ]);
+    assert!(
+        !movable_cells_fit(&d, &r(0, 0, 10, 10), &|_| 0, &[]),
+        "the fixed cell fills the area, so the one movable cell does not fit"
+    );
+}
+
+#[test]
+fn overlapping_blockages_are_unioned_by_the_fit_test_itself() {
+    // ⛔ `union_area` is tested directly above, but the mutation that matters replaces its CALL.
+    // Two blockages covering the same area: unioned they exactly fill it, summed they overflow.
+    let d = design(vec![]);
+    let area = r(0, 0, 10, 10);
+    assert!(movable_cells_fit(&d, &area, &|_| 0, &[r(0, 0, 10, 10), r(0, 0, 10, 10)]));
+}
+
+#[test]
 fn a_fixed_cell_entirely_outside_the_area_contributes_nothing() {
     let d = design(vec![inst("fixed", false, true, r(200, 200, 300, 300))]);
     assert!(movable_cells_fit(&d, &r(0, 0, 10, 10), &|_| 0, &[]));

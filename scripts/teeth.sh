@@ -27,21 +27,32 @@ if ! mkdir "$LOCK" 2>/dev/null; then
   echo "ERROR: another teeth.sh is running (remove $LOCK if that is stale)." >&2
   exit 2
 fi
-cleanup() {
-  rmdir "$LOCK" 2>/dev/null
+restore_leftovers() {
   # Restore anything a kill left mutated, so an interrupted run never leaves a broken tree.
   for b in src/*.teeth-backup tests/*.teeth-backup; do
     [ -e "$b" ] || continue
     mv "$b" "${b%.teeth-backup}"
+    # ⚠️ `mv` restores the backup's OLDER mtime, and cargo would then keep the binary built from
+    # the mutated source. Same trap as `restore` below.
+    touch "${b%.teeth-backup}"
   done
 }
+
+cleanup() {
+  rmdir "$LOCK" 2>/dev/null
+  restore_leftovers
+}
+
 trap cleanup EXIT INT TERM
 
 # ⚠️ A `kill -9` skips the trap entirely, and what it leaves behind is a MUTATED source file that
 # looks like ordinary uncommitted work. On 2026-08-25 that left `src/pipeline.rs` mutated in the
 # working tree. So repair on the way IN as well as on the way out -- the exit trap cannot run for
 # the run that did the damage, but the next one can.
-cleanup
+#
+# ⛔ `restore_leftovers`, NOT `cleanup`: cleanup releases the LOCK, and calling it here dropped
+# the lock this run had just taken, disabling the concurrency guard entirely.
+restore_leftovers
 
 SEP=$'\x1f'   # unit separator: cannot occur in Rust source, unlike | or ,
 
@@ -240,9 +251,9 @@ mutations() {
 "merged-macro-count-not-summed${SEP}src/tree.rs${SEP}                    c.metrics.num_macro += 1;${SEP}                    c.metrics.num_macro = 1;${SEP}merged_macros_leave_one_cluster_carrying_both_names_and_both_areas" \
 "mixed-leaf-not-retyped${SEP}src/tree.rs${SEP}        child.cluster_type = ClusterType::StdCell;\n        child.metrics.num_macro = 0;${SEP}        child.metrics.num_macro = 0;${SEP}a_mixed_leaf_becomes_a_std_cell_cluster_and_its_macros_become_siblings" \
 "absorbed-cluster-kept-in-tree${SEP}src/tree.rs${SEP}            if !survivors.contains(&c.id) {\n                continue;\n            }${SEP}            if false {\n                continue;\n            }${SEP}merged_macros_leave_one_cluster_carrying_both_names_and_both_areas" \
-"blockages-summed-not-unioned${SEP}src/feasibility.rs${SEP}    occupied += union_area(&clipped);${SEP}    occupied += clipped.iter().map(|r| r.area()).sum::<i64>();${SEP}overlapping_blockages_occupy_their_area_once" \
+"blockages-summed-not-unioned${SEP}src/feasibility.rs${SEP}    occupied += union_area(&clipped);${SEP}    occupied += clipped.iter().map(|r| r.area()).sum::<i64>();${SEP}overlapping_blockages_are_unioned_by_the_fit_test_itself" \
 "fixed-cell-counted-whole${SEP}src/feasibility.rs${SEP}            occupied += intersection(&inst.bbox, area).map_or(0, |r| r.area());${SEP}            occupied += inst.bbox.area();${SEP}a_fixed_cell_outside_the_area_contributes_only_the_part_inside" \
-"fixed-cell-skipped-entirely${SEP}src/feasibility.rs${SEP}            occupied += intersection(&inst.bbox, area).map_or(0, |r| r.area());\n            continue;${SEP}            continue;${SEP}a_fixed_cell_outside_the_area_contributes_only_the_part_inside" \
+"fixed-cell-skipped-entirely${SEP}src/feasibility.rs${SEP}            occupied += intersection(&inst.bbox, area).map_or(0, |r| r.area());\n            continue;${SEP}            continue;${SEP}a_fixed_cell_INSIDE_the_area_still_occupies_it" \
 "macro-measured-without-halo${SEP}src/feasibility.rs${SEP}        occupied += if inst.is_block { macro_area_with_halo(i) } else { inst.bbox.area() };${SEP}        occupied += inst.bbox.area();${SEP}an_unfixed_macro_is_measured_with_its_halo_not_its_box" \
 "fit-test-is-strict${SEP}src/feasibility.rs${SEP}    occupied <= area.area()${SEP}    occupied < area.area()${SEP}exactly_filling_the_area_still_fits" \
 "blockages-not-clipped${SEP}src/feasibility.rs${SEP}    let clipped: Vec<Rect> = blockages.iter().filter_map(|b| intersection(b, area)).collect();${SEP}    let clipped: Vec<Rect> = blockages.to_vec();${SEP}blockages_are_clipped_to_the_placement_area_before_they_count" \
