@@ -466,6 +466,80 @@ pub const MUTATIONS: &[Mutation] = &[
         replace: r#"    Some(index)"#,
         want: r#"a_pin_past_the_last_track_steps_back"#,
     },
+    Mutation {
+        name: r#"spiral-negative-first"#,
+        file: r#"src/placement.rs"#,
+        find: r#"    if i % 2 == 1 {
+        (i + 1) / 2
+    } else {
+        -(i / 2)
+    }"#,
+        replace: r#"    if i % 2 == 1 {
+        -((i + 1) / 2)
+    } else {
+        i / 2
+    }"#,
+        want: r#"the_search_spirals_outward_positive_first"#,
+    },
+    Mutation {
+        name: r#"spiral-one-attempt-short"#,
+        file: r#"src/placement.rs"#,
+        find: r#"    for i in 0..=TOTAL_ATTEMPTS {"#,
+        replace: r#"    for i in 0..TOTAL_ATTEMPTS {"#,
+        want: r#"the_last_attempt_reaches_fifty_tracks_below_the_start"#,
+    },
+    Mutation {
+        name: r#"aligned-pins-advance-the-wrong-pointer"#,
+        file: r#"src/placement.rs"#,
+        find: r#"            std::cmp::Ordering::Less => i += 1,
+            std::cmp::Ordering::Greater => j += 1,"#,
+        replace: r#"            std::cmp::Ordering::Less => j += 1,
+            std::cmp::Ordering::Greater => i += 1,"#,
+        want: r#"a_pin_short_of_the_current_track_is_dropped"#,
+    },
+    Mutation {
+        name: r#"aligned-pins-counts-near-misses"#,
+        file: r#"src/placement.rs"#,
+        find: r#"            std::cmp::Ordering::Equal => {
+                aligned += 1;
+                i += 1;
+            }"#,
+        replace: r#"            std::cmp::Ordering::Equal => {
+                aligned += 1;
+                i += 1;
+                j += 1;
+            }"#,
+        want: r#"several_pins_can_share_one_track"#,
+    },
+    Mutation {
+        name: r#"snap-search-does-not-stop-when-complete"#,
+        file: r#"src/placement.rs"#,
+        find: r#"            if best_aligned == total_pins {
+                break;
+            }"#,
+        replace: r#"            if false {
+                break;
+            }"#,
+        want: r#"the_search_stops_once_everything_aligns"#,
+    },
+    Mutation {
+        name: r#"snap-search-tie-goes-later"#,
+        file: r#"src/placement.rs"#,
+        find: r#"        if aligned > best_aligned {"#,
+        replace: r#"        if aligned >= best_aligned {"#,
+        want: r#"a_tie_goes_to_the_earlier_candidate"#,
+    },
+    Mutation {
+        name: r#"snap-search-out-of-range-stops"#,
+        file: r#"src/placement.rs"#,
+        find: r#"        if current < 0 || current >= position_count as i64 {
+            continue;
+        }"#,
+        replace: r#"        if current < 0 || current >= position_count as i64 {
+            break;
+        }"#,
+        want: r#"the_spiral_steps_past_one_end_and_keeps_going"#,
+    },
     // ---------------------------------------------------------------- committing to the database
     Mutation {
         name: r#"location-written-before-orientation"#,

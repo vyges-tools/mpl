@@ -3307,3 +3307,98 @@ pub fn starting_position_index(positions: &[i32], pin_center: i32) -> Option<usi
     let index = positions.partition_point(|&p| p < pin_center);
     Some(if index == positions.len() { index - 1 } else { index })
 }
+
+/// Upstream `attemptSnapToExtraPatterns`' candidate order.
+///
+/// 🔑 **An alternating outward spiral from the starting index, POSITIVE first**: `0, +1, -1, +2,
+/// -2, …`. So a track just after the pin is preferred to the equally-distant one just before it.
+///
+/// ⚠️ **101 attempts, not 100** — the loop is `i <= total_attempts`, so it reaches ±50.
+pub fn spiral_step(i: i32) -> i32 {
+    if i % 2 == 1 {
+        (i + 1) / 2
+    } else {
+        -(i / 2)
+    }
+}
+
+/// Upstream `Snapper::totalAlignedPins`, for one layer.
+///
+/// 🔑 **A two-pointer merge over two ASCENDING lists** — the pins sorted by centre in
+/// `computeLayerDataList`, and the track positions from the grid. A pin that falls short of the
+/// current track can never align with any later one, so it is dropped and the pin pointer advances;
+/// a track that falls short of the current pin is skipped.
+///
+/// ⛔ **It depends on both lists being sorted**, and nothing here re-checks that. Feeding it
+/// unsorted pins silently undercounts rather than failing.
+///
+/// ⛔ **A pin past the LAST track is never examined.** The loop ends as soon as the track pointer
+/// runs out, so unaligned pins at the high end are silently skipped — including for the
+/// `RightWayOnGridOnly` error, which is only ever raised from the falls-short branch.
+pub fn aligned_pins_on_layer(pin_centers: &[i32], positions: &[i32]) -> usize {
+    let mut aligned = 0;
+    let (mut i, mut j) = (0usize, 0usize);
+    while i < pin_centers.len() && j < positions.len() {
+        match pin_centers[i].cmp(&positions[j]) {
+            std::cmp::Ordering::Equal => {
+                aligned += 1;
+                i += 1;
+            }
+            // ⛔ This pin cannot align with any LATER track either, so it is dropped here — and
+            // this is the only branch that ever raises the RightWayOnGridOnly error.
+            std::cmp::Ordering::Less => i += 1,
+            std::cmp::Ordering::Greater => j += 1,
+        }
+    }
+    aligned
+}
+
+/// The result of the extra-pattern search.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct SnapSearch {
+    pub best_index: usize,
+    pub best_aligned: usize,
+    /// ⚠️ Upstream warns MPL-2 when not every pin could be aligned, and re-runs the count with the
+    /// error flag set so a `RightWayOnGridOnly` layer raises MPL-5 first.
+    pub all_aligned: bool,
+}
+
+/// Upstream `Snapper::attemptSnapToExtraPatterns`.
+///
+/// ⛔ **`>`, strictly, from a starting best of ZERO.** So the starting index is not privileged: it
+/// is evaluated like any other candidate at step 0, and a later candidate must strictly beat it.
+/// But if NO candidate aligns a single pin, the search falls back to the starting index with a
+/// score of zero rather than to whatever it tried last.
+///
+/// ⚠️ **An out-of-range candidate is SKIPPED, not a stopping condition** — the spiral keeps
+/// stepping past one end of the track list and continues to explore the other.
+///
+/// ⚠️ **The macro must be re-snapped to the winner afterwards**, because the loop leaves it at the
+/// last candidate tried rather than the best one. That is a real step, not bookkeeping.
+pub fn search_extra_patterns(
+    start_index: usize,
+    position_count: usize,
+    total_pins: usize,
+    aligned_for: &mut dyn FnMut(usize) -> usize,
+) -> SnapSearch {
+    const TOTAL_ATTEMPTS: i32 = 100;
+    let mut best_index = start_index;
+    let mut best_aligned = 0usize;
+
+    for i in 0..=TOTAL_ATTEMPTS {
+        let current = start_index as i64 + spiral_step(i) as i64;
+        if current < 0 || current >= position_count as i64 {
+            continue;
+        }
+        let aligned = aligned_for(current as usize);
+        if aligned > best_aligned {
+            best_aligned = aligned;
+            best_index = current as usize;
+            if best_aligned == total_pins {
+                break;
+            }
+        }
+    }
+
+    SnapSearch { best_index, best_aligned, all_aligned: best_aligned == total_pins }
+}
