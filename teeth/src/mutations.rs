@@ -407,6 +407,76 @@ pub const MUTATIONS: &[Mutation] = &[
     let mut deferred_io: Vec<&AssemblyChild> = Vec::new();"#,
         want: r#"a_blockage_has_no_name"#,
     },
+    // ---------------------------------------------------------------- the boundary push
+    Mutation {
+        name: r#"push-descends-into-std-cell-clusters"#,
+        file: r#"src/placement.rs"#,
+        find: r#"            AreaKind::MixedCluster => {
+                out.extend(fetch_macro_clusters(child, kind_of, children_of));
+            }"#,
+        replace: r#"            AreaKind::MixedCluster | AreaKind::StdCellCluster => {
+                out.extend(fetch_macro_clusters(child, kind_of, children_of));
+            }"#,
+        want: r#"a_macro_cluster_under_a_std_cell_cluster_is_never_fetched"#,
+    },
+    Mutation {
+        name: r#"push-does-not-descend-at-all"#,
+        file: r#"src/placement.rs"#,
+        find: r#"                out.extend(fetch_macro_clusters(child, kind_of, children_of));"#,
+        replace: r#"                let _ = child;"#,
+        want: r#"macro_clusters_are_fetched_depth_first_through_mixed_clusters"#,
+    },
+    Mutation {
+        name: r#"centralized-array-uses-the-cluster-area"#,
+        file: r#"src/placement.rs"#,
+        find: r#"                if soft_macro_area != 0 {
+                    return false;
+                }"#,
+        replace: r#"                let _ = soft_macro_area;"#,
+        want: r#"a_cell_cluster_that_was_not_shrunk_fails_the_test"#,
+    },
+    Mutation {
+        name: r#"centralized-array-allows-a-mixed-cluster"#,
+        file: r#"src/placement.rs"#,
+        find: r#"            AreaKind::MixedCluster => return false,"#,
+        replace: r#"            AreaKind::MixedCluster => {}"#,
+        want: r#"a_mixed_cluster_fails_it_at_once"#,
+    },
+    Mutation {
+        name: r#"centralized-array-allows-two-arrays"#,
+        file: r#"src/placement.rs"#,
+        find: r#"        if macro_cluster_count > 1 {
+            return false;
+        }"#,
+        replace: r#"        if macro_cluster_count > 2 {
+            return false;
+        }"#,
+        want: r#"two_macro_clusters_fail_it"#,
+    },
+    Mutation {
+        name: r#"centralized-array-counts-fixed-macros"#,
+        file: r#"src/placement.rs"#,
+        find: r#"            AreaKind::HardMacroCluster => macro_cluster_count += 1,"#,
+        replace: r#"            AreaKind::HardMacroCluster | AreaKind::FixedMacro => macro_cluster_count += 1,"#,
+        want: r#"io_clusters_and_fixed_macros_are_ignored"#,
+    },
+    Mutation {
+        name: r#"push-guards-in-the-wrong-order"#,
+        file: r#"src/placement.rs"#,
+        find: r#"    if root_kind == AreaKind::HardMacroCluster {
+        return Err(NoPush::DesignIsAllMacros);
+    }
+    if has_single_centralized_macro_array(root_children) {
+        return Err(NoPush::SingleCentralizedMacroArray);
+    }"#,
+        replace: r#"    if has_single_centralized_macro_array(root_children) {
+        return Err(NoPush::SingleCentralizedMacroArray);
+    }
+    if root_kind == AreaKind::HardMacroCluster {
+        return Err(NoPush::DesignIsAllMacros);
+    }"#,
+        want: r#"the_all_macro_guard_is_checked_first"#,
+    },
     // ---------------------------------------------------------------- the hard-macro netlist
     Mutation {
         name: r#"terminals-in-connection-order"#,

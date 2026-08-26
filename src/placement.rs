@@ -2721,3 +2721,98 @@ pub fn build_bundled_nets_for_macros(
     }
     Ok(nets)
 }
+
+// ---------------------------------------------------------------- pushing to the core boundaries
+
+/// Upstream `Pusher::fetchMacroClusters`: the macro clusters the push will consider.
+///
+/// ⚠️ **It descends into MIXED clusters only.** A standard-cell cluster is not entered, so a macro
+/// cluster underneath one would never be fetched. Nothing builds that shape today; the restriction
+/// is the reference's and is reproduced rather than generalised.
+///
+/// 🔑 **Depth-first in child order**, and each cluster's hard macros are flattened into one list as
+/// it is visited — that flat list is what the overlap tests later scan, so its order is part of the
+/// answer.
+pub fn fetch_macro_clusters(
+    root: usize,
+    kind_of: &dyn Fn(usize) -> AreaKind,
+    children_of: &dyn Fn(usize) -> Vec<usize>,
+) -> Vec<usize> {
+    let mut out = Vec::new();
+    for child in children_of(root) {
+        match kind_of(child) {
+            AreaKind::HardMacroCluster => out.push(child),
+            AreaKind::MixedCluster => {
+                out.extend(fetch_macro_clusters(child, kind_of, children_of));
+            }
+            _ => {}
+        }
+    }
+    out
+}
+
+/// Upstream `Pusher::designHasSingleCentralizedMacroArray`.
+///
+/// 🔑 **This is the mirror of `singleArraySingleStdCellCluster`.** That function shrinks the
+/// standard-cell cluster to nothing so a lone macro array can use the whole outline; this one
+/// detects exactly that arrangement afterwards, and declines to push — the array is already where
+/// it was meant to be.
+///
+/// ⛔ **A standard-cell cluster is judged by its SOFT MACRO's area, not the cluster's.** Upstream
+/// says why at the site: `Cluster::getArea()` returns the real standard-cell area, which is never
+/// zero, while the soft macro's is the abstraction — and only the abstraction records that fine
+/// shaping shrank it away. Using the cluster's area here would make this always return false.
+///
+/// ⚠️ **Any MIXED cluster fails it immediately**, before anything is counted.
+///
+/// ⚠️ **The count test is INSIDE the loop**, so a second macro cluster fails it at once rather
+/// than after the whole scan — which matters only if a later child would also have failed it, but
+/// it is the reference's shape.
+///
+/// ℹ️ **A root with no children returns TRUE**, vacuously — zero arrays counts as "a single
+/// centralized macro array" and the push is skipped. Nothing reaches it: a design with no children
+/// under the root has already been refused.
+pub fn has_single_centralized_macro_array(children: &[(AreaKind, i64)]) -> bool {
+    let mut macro_cluster_count = 0;
+    for &(kind, soft_macro_area) in children {
+        match kind {
+            AreaKind::MixedCluster => return false,
+            AreaKind::HardMacroCluster => macro_cluster_count += 1,
+            AreaKind::StdCellCluster => {
+                if soft_macro_area != 0 {
+                    return false;
+                }
+            }
+            // ⚠️ Upstream's `switch` covers only the three cluster types; anything else — an IO
+            // cluster, a fixed macro — falls through it without a case and is simply ignored.
+            _ => {}
+        }
+        if macro_cluster_count > 1 {
+            return false;
+        }
+    }
+    true
+}
+
+/// Why the boundary push declined to run.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum NoPush {
+    /// ⚠️ A design that is nothing but macros — the root itself is a macro cluster.
+    DesignIsAllMacros,
+    /// The arrangement `singleArraySingleStdCellCluster` produced; already where it should be.
+    SingleCentralizedMacroArray,
+}
+
+/// Upstream `Pusher::pushMacrosToCoreBoundaries`' two opening guards.
+pub fn push_decision(
+    root_kind: AreaKind,
+    root_children: &[(AreaKind, i64)],
+) -> Result<(), NoPush> {
+    if root_kind == AreaKind::HardMacroCluster {
+        return Err(NoPush::DesignIsAllMacros);
+    }
+    if has_single_centralized_macro_array(root_children) {
+        return Err(NoPush::SingleCentralizedMacroArray);
+    }
+    Ok(())
+}
