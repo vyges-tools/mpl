@@ -46,7 +46,7 @@ fn reversing_the_negative_sequence_stacks_them() {
 #[test]
 fn a_fixed_macro_keeps_its_position_and_still_displaces_its_neighbour() {
     let mut macros = [
-        SoftMacro { x: 500, y: 300, width: 100, height: 40, fixed: true },
+        SoftMacro { x: 500, y: 300, width: 100, height: 40, fixed: true, ..Default::default() },
         m(30, 70),
     ];
     let (w, _) = pack_floorplan(&mut macros, &sp(&[0, 1], &[0, 1]));
@@ -105,9 +105,9 @@ fn packing_twice_gives_the_same_result() {
     let first = pack_floorplan(&mut a, &pair);
 
     let mut b = [
-        SoftMacro { x: 999, y: 888, width: 40, height: 10, fixed: false },
-        SoftMacro { x: 7, y: 7, width: 60, height: 30, fixed: false },
-        SoftMacro { x: -5, y: -5, width: 100, height: 25, fixed: false },
+        SoftMacro { x: 999, y: 888, width: 40, height: 10, ..Default::default() },
+        SoftMacro { x: 7, y: 7, width: 60, height: 30, ..Default::default() },
+        SoftMacro { x: -5, y: -5, width: 100, height: 25, ..Default::default() },
     ];
     let second = pack_floorplan(&mut b, &pair);
     assert_eq!(first, second);
@@ -405,7 +405,7 @@ fn a_zero_normalisation_factor_drops_its_term() {
 }
 
 fn movable(x: i32, y: i32, width: i32, height: i32) -> SoftMacro {
-    SoftMacro { x, y, width, height, fixed: false }
+    SoftMacro { x, y, width, height, ..Default::default() }
 }
 
 /// The penalty is the overlapping AREA, in microns squared.
@@ -434,7 +434,7 @@ fn a_diagonally_disjoint_macro_is_not_counted() {
 /// ⚠️ A macro that is itself fixed is skipped, so a fixed macro never penalises itself.
 #[test]
 fn a_fixed_macro_does_not_penalise_itself() {
-    let macros = [SoftMacro { x: 0, y: 0, width: 100, height: 100, fixed: true }];
+    let macros = [SoftMacro { x: 0, y: 0, width: 100, height: 100, fixed: true, ..Default::default() }];
     let sp = SequencePair { pos: vec![0], neg: vec![0] };
     let fixed = [(0, 0, 100, 100)];
     assert_eq!(fixed_macros_penalty(&macros, &fixed, &sp, 10), 0.0);
@@ -616,4 +616,225 @@ fn the_recovered_area_ignores_the_chosen_width() {
         40_000,
         "the chosen width times the recovered height is NOT the cluster's area"
     );
+}
+
+
+// ---------------------------------------------------------------- snapping and resizing
+
+use vyges_mpl::anneal::{find_interval_index, resize_one_cluster, set_height, set_width};
+
+fn mixed(width: i32, height: i32, area: i64) -> SoftMacro {
+    SoftMacro { width, height, area, ..Default::default() }
+}
+
+/// ⛔ **`find_interval_index` mutates its value.** Reading it as a pure lookup loses the snap that
+/// `set_width` depends on.
+#[test]
+fn finding_an_interval_snaps_the_value_into_it() {
+    let widths = [Interval { min: 100, max: 200 }, Interval { min: 400, max: 500 }];
+    // A width in the GAP is pulled UP to the next interval's minimum.
+    let mut value = 300;
+    let idx = find_interval_index(&widths, &mut value, true);
+    assert_eq!((idx, value), (1, 400), "snapped up into the second interval");
+
+    // Inside an interval it is left alone.
+    let mut inside = 150;
+    assert_eq!(find_interval_index(&widths, &mut inside, true), 0);
+    assert_eq!(inside, 150);
+}
+
+/// ⚠️ Height intervals run non-increasing, so the search and the snap both reverse.
+#[test]
+fn finding_a_height_interval_snaps_downward() {
+    let heights = [Interval { min: 400, max: 500 }, Interval { min: 100, max: 200 }];
+    let mut value = 300;
+    let idx = find_interval_index(&heights, &mut value, false);
+    assert_eq!((idx, value), (1, 200), "snapped down into the second interval");
+}
+
+/// ⛔ A hard macro cluster refuses both setters — only a random resize moves it.
+#[test]
+fn a_macro_cluster_refuses_to_be_set() {
+    let (curve, ..) = shape_curve_from_tilings(&[(200, 100), (100, 200)]);
+    let mut macro_ = SoftMacro {
+        width: 200,
+        height: 100,
+        area: 20_000,
+        is_macro_cluster: true,
+        ..Default::default()
+    };
+    set_width(&mut macro_, &curve, 150);
+    set_height(&mut macro_, &curve, 150);
+    assert_eq!((macro_.width, macro_.height), (200, 100), "untouched");
+}
+
+/// ⚠️ Below the curve clamps to its narrowest, TALLEST shape; above it clamps to the widest and
+/// shortest. The area is recomputed from the shape landed on.
+#[test]
+fn setting_a_width_outside_the_curve_clamps_to_an_end() {
+    let intervals = [Interval { min: 100, max: 200 }, Interval { min: 400, max: 500 }];
+    let (curve, ..) = shape_curve_from_intervals(&intervals, 40_000).expect("shapeable");
+
+    let mut low = mixed(150, 266, 40_000);
+    set_width(&mut low, &curve, 1);
+    assert_eq!(low.width, 100, "clamped to the narrowest");
+    assert_eq!(low.height, curve.height_intervals[0].max, "and the tallest");
+    assert_eq!(low.area, low.width as i64 * low.height as i64);
+
+    let mut high = mixed(150, 266, 40_000);
+    set_width(&mut high, &curve, 10_000);
+    assert_eq!(high.width, 500, "clamped to the widest");
+    assert_eq!(high.height, curve.height_intervals[1].min, "and the shortest");
+}
+
+/// 🔑 **The interior case uses the OPPOSITE interval corner from a random resize** — `max` width
+/// times `min` height here, `min` width times `max` height there.
+#[test]
+fn setting_a_width_inside_the_curve_uses_the_far_corner() {
+    let intervals = [Interval { min: 100, max: 200 }];
+    let (curve, ..) = shape_curve_from_intervals(&intervals, 40_000).expect("shapeable");
+    // heights: min = 40000/200 = 200, max = 40000/100 = 400.
+    let mut macro_ = mixed(100, 400, 40_000);
+    // A width strictly inside (100, 200) takes the interior branch.
+    set_width(&mut macro_, &curve, 150);
+    assert_eq!(macro_.width, 150, "kept, because it is inside an interval");
+    assert_eq!(macro_.area, 200 * 200, "max width times min height");
+    assert_eq!(macro_.height, 40_000 / 150);
+}
+
+/// ⚠️ A width landing in a GAP is snapped up first, and the area follows the interval it lands in.
+#[test]
+fn a_width_in_a_gap_is_snapped_before_the_area_is_taken() {
+    let intervals = [Interval { min: 100, max: 200 }, Interval { min: 400, max: 500 }];
+    let (curve, ..) = shape_curve_from_intervals(&intervals, 40_000).expect("shapeable");
+    let mut macro_ = mixed(150, 266, 40_000);
+    set_width(&mut macro_, &curve, 300);
+    assert_eq!(macro_.width, 400, "snapped up out of the gap");
+    assert_eq!(macro_.area, 500 * curve.height_intervals[1].min as i64);
+}
+
+fn two_mixed_macros() -> (Vec<SoftMacro>, Vec<ShapeCurve>, SequencePair) {
+    let intervals = [Interval { min: 100, max: 400 }];
+    let (curve, w, h, area) = shape_curve_from_intervals(&intervals, 40_000).expect("shapeable");
+    let macros = vec![
+        SoftMacro { x: 0, y: 0, width: w, height: h, area, ..Default::default() },
+        SoftMacro { x: 500, y: 500, width: w, height: h, area, ..Default::default() },
+    ];
+    (macros, vec![curve.clone(), curve], SequencePair { pos: vec![0, 1], neg: vec![0, 1] })
+}
+
+/// 🔑 **The branch structure IS the randomness budget.** This counts the generator words each
+/// path actually consumes, for both sides of the `< 0.4` roll:
+///   * roll succeeds → index, roll, and a random resize's two draws = **4**
+///   * roll fails    → index, roll, and the option draw = **3**
+///
+/// ⚠️ The roll is consumed either way, which is what makes 3 the floor rather than 2.
+#[test]
+fn each_resize_path_consumes_the_words_its_branch_requires() {
+    /// How many words `run` took from a generator seeded with `seed`.
+    fn consumed(seed: u32, run: &dyn Fn(&mut Mt19937)) -> usize {
+        let mut used = Mt19937::new(seed);
+        run(&mut used);
+        let after = used.next();
+        for n in 0..16 {
+            let mut replay = Mt19937::new(seed);
+            for _ in 0..n {
+                replay.next();
+            }
+            if replay.next() == after {
+                return n;
+            }
+        }
+        panic!("consumed more than 16 words, which no resize path does");
+    }
+
+    // ⛔ **A TWO-interval curve is required for this test to distinguish anything.** With one
+    // interval `uniform_int` is asked for a range of zero and returns without touching the
+    // generator, so a random resize costs ONE word and both branches come to three.
+    fn fixture() -> (Vec<SoftMacro>, Vec<ShapeCurve>, SequencePair) {
+        let intervals = [Interval { min: 100, max: 200 }, Interval { min: 400, max: 500 }];
+        let (curve, w, h, area) =
+            shape_curve_from_intervals(&intervals, 40_000).expect("shapeable");
+        let macros = vec![
+            SoftMacro { x: 0, y: 0, width: w, height: h, area, ..Default::default() },
+            SoftMacro { x: 5_000, y: 5_000, width: w, height: h, area, ..Default::default() },
+        ];
+        (macros, vec![curve.clone(), curve], SequencePair { pos: vec![0, 1], neg: vec![0, 1] })
+    }
+
+    let mut saw_roll_taken = false;
+    let mut saw_roll_declined = false;
+
+    for seed in 0..60u32 {
+        // Replay just far enough to learn which way this seed's roll falls.
+        let mut peek = Mt19937::new(seed);
+        let _index = uniform_int(&mut peek, 2);
+        let roll = vyges_mpl::rng::canonical_f32(&mut peek);
+
+        let words = consumed(seed, &|g: &mut Mt19937| {
+            let (mut macros, curves, sp) = fixture();
+            resize_one_cluster(g, &mut macros, &curves, &sp, 100_000, 100_000);
+        });
+
+        if roll < 0.4 {
+            assert_eq!(words, 4, "seed {seed}: roll {roll} taken, so a random resize follows");
+            saw_roll_taken = true;
+        } else {
+            assert_eq!(words, 3, "seed {seed}: roll {roll} declined, so only the option follows");
+            saw_roll_declined = true;
+        }
+    }
+
+    assert!(saw_roll_taken && saw_roll_declined, "both sides of the roll must be exercised");
+}
+
+/// ⛔ **A macro touching the outline is treated as OUTSIDE** — `>=`, not `>` — so it takes the
+/// random-resize path and consumes a different number of words than the option path would.
+#[test]
+fn a_macro_touching_the_outline_takes_the_random_path() {
+    let (mut macros, curves, sp) = two_mixed_macros();
+    // Make macro 0's right edge land exactly on the outline.
+    macros[0].x = 0;
+    let outline_width = macros[0].width;
+
+    let mut g = Mt19937::new(2);
+    resize_one_cluster(&mut g, &mut macros, &curves, &sp, outline_width, 100_000);
+
+    // The random path is: index, then resize_randomly's two draws. Three words, no 0.4 roll.
+    let mut replay = Mt19937::new(2);
+    let index = uniform_int(&mut replay, 2) as usize;
+    assert_eq!(index, 0, "the fixture needs the touching macro to be the one chosen");
+    let _ = uniform_int(&mut replay, 1);
+    let _ = vyges_mpl::rng::canonical_f32(&mut replay);
+    assert_eq!(g.next(), replay.next(), "index plus a random resize, and no roll");
+}
+
+/// ⚠️ **Widening is unconditional and stretches to the outline when there is no neighbour.**
+#[test]
+fn widening_with_no_neighbour_reaches_the_outline() {
+    let intervals = [Interval { min: 100, max: 400 }];
+    let (curve, ..) = shape_curve_from_intervals(&intervals, 40_000).expect("shapeable");
+    let mut macro_ = mixed(100, 400, 40_000);
+    // The widen branch computes `outline_width - lx` and hands it to set_width.
+    set_width(&mut macro_, &curve, 100_000 - 0);
+    assert_eq!(macro_.width, 400, "clamped to the curve's widest, not the outline");
+}
+
+/// ⛔ **A one-element range costs NOTHING.** Upstream returns the minimum before touching the
+/// generator when `range == 0`, so a shape curve with a single interval makes a random resize
+/// consume one word rather than two. Getting this wrong shifts every later draw.
+#[test]
+fn a_single_choice_consumes_no_generator_word() {
+    let mut g = Mt19937::new(9);
+    assert_eq!(uniform_int(&mut g, 1), 0);
+    let mut fresh = Mt19937::new(9);
+    assert_eq!(g.next(), fresh.next(), "the generator did not advance");
+
+    let (curve, ..) = shape_curve_from_tilings(&[(200, 100)]);
+    let mut h = Mt19937::new(9);
+    let mut macro_ = m(1, 1);
+    resize_randomly(&mut h, &curve, &mut macro_);
+    let mut replay = Mt19937::new(9);
+    let _ = vyges_mpl::rng::canonical_f32(&mut replay);
+    assert_eq!(h.next(), replay.next(), "only the float draw was taken");
 }

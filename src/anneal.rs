@@ -20,6 +20,12 @@ pub struct SoftMacro {
     pub width: i32,
     pub height: i32,
     pub fixed: bool,
+    /// ⚠️ Carried on the macro, not recomputed from `width * height` — the resize paths set it
+    /// from an interval CORNER, so it routinely disagrees with the current shape's product.
+    pub area: i64,
+    /// A cluster of hard macros. ⛔ `set_width`/`set_height` refuse to touch one; only
+    /// [`resize_randomly`] moves it, which is why the resize action tests this first.
+    pub is_macro_cluster: bool,
 }
 
 /// The two orderings that encode a packing.
@@ -597,4 +603,207 @@ pub fn resize_randomly(rng: &mut Mt19937, curve: &ShapeCurve, macro_: &mut SoftM
 /// ℹ️ No randomness at all. The shaping caller never supplies an initial pair.
 pub fn init_sequence_pair(macro_count: usize) -> SequencePair {
     SequencePair { pos: (0..macro_count).collect(), neg: (0..macro_count).collect() }
+}
+
+// ---------------------------------------------------------------- snapping to the curve
+
+/// Upstream `findIntervalIndex`: the interval holding `value`, **snapping `value` into it**.
+///
+/// ⛔ **It MUTATES its argument.** Upstream takes `int&`, and `setWidth` passes `width_` itself —
+/// so the member is snapped inside the call and the area and height that follow are computed from
+/// the snapped number, not the requested one. Reading it as a pure lookup loses that.
+///
+/// ⚠️ A value falling in a GAP between two intervals is pulled to the near edge of the next one:
+/// up for widths, down for heights.
+pub fn find_interval_index(intervals: &[Interval], value: &mut i32, increasing: bool) -> usize {
+    let mut idx = 0;
+    if increasing {
+        while idx < intervals.len() && intervals[idx].max < *value {
+            idx += 1;
+        }
+        // ⛔ Upstream indexes without re-checking, which is out of bounds when the value is past
+        // the last interval. Its callers guarantee the value is in range; clamping here keeps
+        // that guarantee from becoming a panic if a caller ever stops honouring it.
+        let idx = idx.min(intervals.len() - 1);
+        *value = intervals[idx].min.max(*value);
+        idx
+    } else {
+        while idx < intervals.len() && intervals[idx].min > *value {
+            idx += 1;
+        }
+        let idx = idx.min(intervals.len() - 1);
+        *value = intervals[idx].max.min(*value);
+        idx
+    }
+}
+
+/// Upstream `SoftMacro::setWidth`: move along the shape curve to (about) this width.
+///
+/// ⛔ **A hard macro cluster is refused outright**, along with an empty curve and a zero area.
+/// Only [`resize_randomly`] reshapes a macro cluster.
+///
+/// 🔑 **Three cases: below the curve, above it, or inside.** The two ends clamp to a whole
+/// interval and take the area from the shape they land on. The interior case is different — it
+/// keeps the requested width and takes the area from the interval's OPPOSITE corner, `max` width
+/// times `min` height, which is not the corner [`resize_randomly`] uses.
+pub fn set_width(macro_: &mut SoftMacro, curve: &ShapeCurve, width: i32) {
+    if width <= 0
+        || macro_.area == 0
+        || curve.width_intervals.len() != curve.height_intervals.len()
+        || curve.width_intervals.is_empty()
+        || macro_.is_macro_cluster
+    {
+        return;
+    }
+    let first_w = curve.width_intervals[0];
+    let last_w = curve.width_intervals[curve.width_intervals.len() - 1];
+    if width <= first_w.min {
+        macro_.width = first_w.min;
+        macro_.height = curve.height_intervals[0].max;
+        macro_.area = macro_.width as i64 * macro_.height as i64;
+    } else if width >= last_w.max {
+        macro_.width = last_w.max;
+        macro_.height = curve.height_intervals[curve.height_intervals.len() - 1].min;
+        macro_.area = macro_.width as i64 * macro_.height as i64;
+    } else {
+        macro_.width = width;
+        let idx = find_interval_index(&curve.width_intervals, &mut macro_.width, true);
+        macro_.area = curve.width_intervals[idx].max as i64
+            * curve.height_intervals[idx].min as i64;
+        macro_.height = (macro_.area / macro_.width as i64) as i32;
+    }
+}
+
+/// Upstream `SoftMacro::setHeight`, the mirror of [`set_width`].
+///
+/// ⚠️ **The height intervals run in NON-INCREASING order**, because they were built by inverting
+/// the widths — so "the first" is the tallest and the comparisons are reversed.
+pub fn set_height(macro_: &mut SoftMacro, curve: &ShapeCurve, height: i32) {
+    if height <= 0
+        || macro_.area == 0
+        || curve.width_intervals.len() != curve.height_intervals.len()
+        || curve.width_intervals.is_empty()
+        || macro_.is_macro_cluster
+    {
+        return;
+    }
+    let first_h = curve.height_intervals[0];
+    let last_h = curve.height_intervals[curve.height_intervals.len() - 1];
+    if height >= first_h.max {
+        macro_.height = first_h.max;
+        macro_.width = curve.width_intervals[0].min;
+        macro_.area = macro_.width as i64 * macro_.height as i64;
+    } else if height <= last_h.min {
+        macro_.height = last_h.min;
+        macro_.width = curve.width_intervals[curve.width_intervals.len() - 1].max;
+        macro_.area = macro_.width as i64 * macro_.height as i64;
+    } else {
+        macro_.height = height;
+        let idx = find_interval_index(&curve.height_intervals, &mut macro_.height, false);
+        macro_.area = curve.width_intervals[idx].max as i64
+            * curve.height_intervals[idx].min as i64;
+        macro_.width = (macro_.area / macro_.height as i64) as i32;
+    }
+}
+
+// ---------------------------------------------------------------- the resize action
+
+/// Upstream `SACoreSoftMacro::resizeOneCluster`.
+///
+/// 🔑 **The branch structure IS the randomness budget.** Every path draws a different number of
+/// generator words, so getting a branch wrong desynchronises everything after it even when the
+/// resulting shape happens to look reasonable:
+///
+/// | path | words |
+/// | --- | --- |
+/// | macro cluster | 1 index + a `resize_randomly` |
+/// | already outside the outline | 1 index + a `resize_randomly` |
+/// | the `< 0.4` roll succeeds | 1 index + 1 roll + a `resize_randomly` |
+/// | otherwise | 1 index + 1 roll + 1 option |
+///
+/// ⚠️ **The `< 0.4` roll is drawn either way** — it is consumed before its own test, so the
+/// branch it does not take still pays for it.
+///
+/// ⚠️ **`>=` against the outline, not `>`.** A macro whose far edge lands exactly on the outline
+/// counts as outside and is resized at random.
+///
+/// ⚠️ The four option branches split at 0.25 / 0.5 / 0.75 with `<=`, and the two GROW branches
+/// (wider, taller) are unconditional while the two SHRINK branches only act if they found an edge
+/// strictly inside. A grow that finds no neighbour stretches to the outline.
+pub fn resize_one_cluster(
+    rng: &mut Mt19937,
+    macros: &mut [SoftMacro],
+    curves: &[ShapeCurve],
+    sp: &SequencePair,
+    outline_width: i32,
+    outline_height: i32,
+) -> usize {
+    debug_assert!(!sp.pos.is_empty(), "upstream raises MPL-51 on an empty sequence");
+    let index = uniform_int(rng, sp.len() as u32) as usize;
+
+    if macros[index].is_macro_cluster {
+        resize_randomly(rng, &curves[index], &mut macros[index]);
+        return index;
+    }
+
+    let (lx, ly, ux, uy) = macros[index].bbox();
+    // ⚠️ `>=`: touching the outline counts as outside.
+    if ux >= outline_width || uy >= outline_height {
+        resize_randomly(rng, &curves[index], &mut macros[index]);
+        return index;
+    }
+
+    // ⚠️ Drawn unconditionally, then tested.
+    if canonical_f32(rng) < 0.4 {
+        resize_randomly(rng, &curves[index], &mut macros[index]);
+        return index;
+    }
+
+    let option = canonical_f32(rng);
+    if option <= 0.25 {
+        // Widen to the nearest right edge STRICTLY beyond this macro's, else to the outline.
+        let mut edge = outline_width;
+        for &id in &sp.pos {
+            let x2 = macros[id].x + macros[id].width;
+            if x2 > ux && x2 < edge {
+                edge = x2;
+            }
+        }
+        set_width(&mut macros[index], &curves[index], edge - lx);
+    } else if option <= 0.5 {
+        // Narrow to the nearest right edge strictly before this macro's.
+        let mut edge = lx;
+        for &id in &sp.pos {
+            let x2 = macros[id].x + macros[id].width;
+            if x2 < ux && x2 > edge {
+                edge = x2;
+            }
+        }
+        // ⚠️ Guarded, unlike the widen branch: with no neighbour the macro is left alone rather
+        // than collapsed to zero width.
+        if edge > lx {
+            set_width(&mut macros[index], &curves[index], edge - lx);
+        }
+    } else if option <= 0.75 {
+        let mut edge = outline_height;
+        for &id in &sp.pos {
+            let y2 = macros[id].y + macros[id].height;
+            if y2 > uy && y2 < edge {
+                edge = y2;
+            }
+        }
+        set_height(&mut macros[index], &curves[index], edge - ly);
+    } else {
+        let mut edge = ly;
+        for &id in &sp.pos {
+            let y2 = macros[id].y + macros[id].height;
+            if y2 < uy && y2 > edge {
+                edge = y2;
+            }
+        }
+        if edge > ly {
+            set_height(&mut macros[index], &curves[index], edge - ly);
+        }
+    }
+    index
 }
