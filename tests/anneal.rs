@@ -1149,3 +1149,116 @@ fn the_search_improves_on_the_opening_row() {
     let best = s.fast_sa(&mut g, &params, t, false);
     assert!(best.cost < opening, "opening {opening}, best {}", best.cost);
 }
+
+// ---------------------------------------------------------------- the driver
+
+use vyges_mpl::anneal::{search_tilings, TilingSearch};
+
+/// ⚠️ **The first factor is the FULL outline** and the list never reaches zero.
+#[test]
+fn the_vary_factors_start_at_one_and_shrink() {
+    let f = TilingSearch::default().vary_factors();
+    assert_eq!(f.len(), 10);
+    assert_eq!(f[0], 1.0);
+    assert!((f[1] - 0.9).abs() < 1e-6, "{}", f[1]);
+    assert!(f[9] > 0.0 && f[9] < 0.2, "the last factor is small but positive: {}", f[9]);
+}
+
+fn two_macro_inputs() -> (Vec<SoftMacro>, Vec<ShapeCurve>) {
+    let (curve, w, h, area) = shape_curve_from_tilings(&[(2_000, 1_000), (1_000, 2_000)]);
+    let macros = vec![
+        SoftMacro { width: w, height: h, area, is_macro_cluster: true, ..Default::default() },
+        SoftMacro { width: w, height: h, area, is_macro_cluster: true, ..Default::default() },
+    ];
+    (macros, vec![curve.clone(), curve])
+}
+
+fn quick_search() -> TilingSearch {
+    TilingSearch { sa: SaParameters { max_num_step: 20, ..SaParameters::default() }, ..TilingSearch::default() }
+}
+
+/// 🔑 The search returns tilings that actually fit the outline it was given.
+#[test]
+fn every_returned_tiling_fits_the_outline() {
+    let (macros, curves) = two_macro_inputs();
+    let probabilities = ActionProbabilities::normalized(0.2, 0.2, 0.2, 0.2, 0.2);
+    let tilings =
+        search_tilings(&macros, &curves, 5_000, 5_000, 2000, probabilities, &quick_search())
+            .expect("shapeable");
+    assert!(!tilings.is_empty());
+    for (w, h) in &tilings {
+        assert!(*w <= 5_000 && *h <= 5_000, "{w} x {h} does not fit");
+    }
+}
+
+/// ⚠️ **Ordered by AREA, then by width** — a total order, so this is exact rather than "some
+/// reasonable order".
+#[test]
+fn the_tilings_come_back_ordered_by_area_then_width() {
+    let (macros, curves) = two_macro_inputs();
+    let probabilities = ActionProbabilities::normalized(0.2, 0.2, 0.2, 0.2, 0.2);
+    let tilings =
+        search_tilings(&macros, &curves, 5_000, 5_000, 2000, probabilities, &quick_search())
+            .expect("shapeable");
+    for pair in tilings.windows(2) {
+        let (a, b) = (pair[0], pair[1]);
+        let (area_a, area_b) = (a.0 as i64 * a.1 as i64, b.0 as i64 * b.1 as i64);
+        assert!(
+            area_a < area_b || (area_a == area_b && a.0 <= b.0),
+            "{a:?} then {b:?} is out of order"
+        );
+    }
+}
+
+/// ⚠️ **Duplicates collapse.** Neighbouring outline factors frequently anneal to the same answer,
+/// so the twenty runs usually yield far fewer than twenty tilings.
+#[test]
+fn duplicate_results_are_collapsed() {
+    let (macros, curves) = two_macro_inputs();
+    let probabilities = ActionProbabilities::normalized(0.2, 0.2, 0.2, 0.2, 0.2);
+    let tilings =
+        search_tilings(&macros, &curves, 5_000, 5_000, 2000, probabilities, &quick_search())
+            .expect("shapeable");
+    let mut unique = tilings.clone();
+    unique.sort_unstable();
+    unique.dedup();
+    assert_eq!(unique.len(), tilings.len(), "no duplicates survive");
+    assert!(tilings.len() <= 20, "at most one per run");
+}
+
+/// 🔑 **The whole search is reproducible.** Every run is seeded identically and differs only by
+/// outline, so the answer is a pure function of the inputs.
+#[test]
+fn the_tiling_search_is_reproducible() {
+    let (macros, curves) = two_macro_inputs();
+    let probabilities = ActionProbabilities::normalized(0.2, 0.2, 0.2, 0.2, 0.2);
+    let run = || {
+        search_tilings(&macros, &curves, 5_000, 5_000, 2000, probabilities, &quick_search())
+            .expect("shapeable")
+    };
+    assert_eq!(run(), run());
+}
+
+/// ⛔ **An outline nothing can fit yields MPL-3, not an empty list.** Silence would read as "this
+/// cluster has no shape", which is a different statement.
+#[test]
+fn an_impossible_outline_is_an_error() {
+    let (macros, curves) = two_macro_inputs();
+    let probabilities = ActionProbabilities::normalized(0.2, 0.2, 0.2, 0.2, 0.2);
+    let result = search_tilings(&macros, &curves, 10, 10, 2000, probabilities, &quick_search());
+    assert!(result.is_err(), "nothing can fit a 10 x 10 outline");
+}
+
+/// ⚠️ **The aspect-ratio filter keeps everything when it would otherwise keep nothing.** A band
+/// that excludes every tiling must not empty the list.
+#[test]
+fn an_impossible_aspect_ratio_band_keeps_the_tilings_anyway() {
+    let (macros, curves) = two_macro_inputs();
+    let probabilities = ActionProbabilities::normalized(0.2, 0.2, 0.2, 0.2, 0.2);
+    // A band of [0.999, 1.001] that essentially nothing will satisfy.
+    let strict = TilingSearch { min_ar: 0.999, ..quick_search() };
+    let tilings =
+        search_tilings(&macros, &curves, 5_000, 5_000, 2000, probabilities, &strict)
+            .expect("shapeable");
+    assert!(!tilings.is_empty(), "the filter must not empty the list");
+}

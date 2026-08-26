@@ -1231,3 +1231,177 @@ impl Search {
         best
     }
 }
+
+// ---------------------------------------------------------------- the driver
+
+/// How the tiling search is driven.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct TilingSearch {
+    /// How many outlines to try per axis.
+    pub num_runs: i32,
+    /// ⚠️ **Every run uses the SAME seed.** The runs differ only in their outline, never in their
+    /// randomness — so two runs given the same outline would produce identical answers.
+    pub random_seed: u32,
+    /// The aspect-ratio band a tiling must fall in to survive the final filter.
+    pub min_ar: f32,
+    pub sa: SaParameters,
+}
+
+impl Default for TilingSearch {
+    fn default() -> Self {
+        Self { num_runs: 10, random_seed: 0, min_ar: 0.3, sa: SaParameters::default() }
+    }
+}
+
+impl TilingSearch {
+    /// Upstream's `vary_factor_list`: `1.0`, then `1 - i/num_runs` down to `1/num_runs`.
+    ///
+    /// ⚠️ **The first entry is the FULL outline**, and the rest shrink. The list is exactly
+    /// `num_runs` long and never reaches zero.
+    pub fn vary_factors(&self) -> Vec<f32> {
+        let step = 1.0 / self.num_runs as f32;
+        let mut factors = vec![1.0f32];
+        for i in 1..self.num_runs {
+            factors.push(1.0 - i as f32 * step);
+        }
+        factors
+    }
+}
+
+/// No tiling survived — upstream raises MPL-3.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct NoValidTilings;
+
+/// Upstream's tiling search: vary the outline, anneal against each, keep what fits.
+///
+/// 🔑 **Two passes of `num_runs`, one per axis.** The width is varied with the height held, then
+/// the height with the width held — 20 runs in all at the default. The run counter is reset
+/// between the passes, so both walk the same factor list from the start.
+///
+/// ⛔ **`fits_in` is tested against the ORIGINAL outline, not the varied one.** A run given a
+/// shrunken outline that overflows it can still contribute, so long as the result fits the real
+/// one. That is the point of shrinking: it pushes the annealer into tighter packings whose
+/// results are then judged against the true outline.
+///
+/// ⚠️ **Results go into a SET keyed on `(width, height)`** — duplicates collapse, which they
+/// frequently do, since neighbouring outline factors often anneal to the same answer.
+///
+/// ⚠️ The final ordering is by AREA and then by width — a total order, so there is no ambiguity
+/// to reproduce.
+///
+/// ⚠️ **The aspect-ratio filter is applied only if something survives it.** A run whose every
+/// tiling is too extreme keeps them all rather than returning nothing.
+#[allow(clippy::too_many_arguments)]
+pub fn search_tilings(
+    macros: &[SoftMacro],
+    curves: &[ShapeCurve],
+    outline_width: i32,
+    outline_height: i32,
+    dbu_per_micron: i32,
+    probabilities: ActionProbabilities,
+    search: &TilingSearch,
+) -> Result<Vec<(i32, i32)>, NoValidTilings> {
+    let factors = search.vary_factors();
+    let mut found: Vec<(i32, i32)> = Vec::new();
+
+    let mut run_one = |width: i32, height: i32, found: &mut Vec<(i32, i32)>| {
+        let mut state = new_search(
+            macros,
+            curves,
+            width,
+            height,
+            dbu_per_micron,
+            probabilities,
+        );
+        let fixed_present = !state.fixed_bboxes.is_empty();
+        let mut rng = Mt19937::new(search.random_seed);
+        let temperature = state.initialize(&mut rng, &search.sa);
+        state.fast_sa(&mut rng, &search.sa, temperature, fixed_present);
+        // ⛔ Against the ORIGINAL outline.
+        if state.width <= outline_width && state.height <= outline_height {
+            found.push((state.width, state.height));
+        }
+    };
+
+    // Vary the width, holding the height.
+    for &factor in &factors {
+        // ⚠️ `int * float` narrowed back to `int`, so this truncates.
+        let varied = (outline_width as f32 * factor) as i32;
+        run_one(varied, outline_height, &mut found);
+    }
+    // Vary the height, holding the width. ⚠️ The factor list restarts from the beginning.
+    for &factor in &factors {
+        let varied = (outline_height as f32 * factor) as i32;
+        run_one(outline_width, varied, &mut found);
+    }
+
+    // The set: dedup on the pair, ordered by width then height.
+    found.sort_unstable_by(|a, b| a.0.cmp(&b.0).then(a.1.cmp(&b.1)));
+    found.dedup();
+    if found.is_empty() {
+        return Err(NoValidTilings);
+    }
+
+    // ⚠️ `isAreaSmaller`: area, then width. A total order, so ties are decided too.
+    found.sort_by(|a, b| {
+        let (area_a, area_b) = (a.0 as i64 * a.1 as i64, b.0 as i64 * b.1 as i64);
+        area_a.cmp(&area_b).then(a.0.cmp(&b.0))
+    });
+
+    let aspect_ratio = |t: &(i32, i32)| t.1 as f32 / t.0 as f32;
+    let filtered: Vec<(i32, i32)> = found
+        .iter()
+        .copied()
+        .filter(|t| {
+            let ratio = aspect_ratio(t);
+            ratio >= search.min_ar && ratio <= 1.0 / search.min_ar
+        })
+        .collect();
+
+    // ⚠️ Only if something survived; otherwise the extreme tilings are kept.
+    Ok(if filtered.is_empty() { found } else { filtered })
+}
+
+/// A search over a fresh copy of the macros, packed from the identity sequence pair.
+///
+/// ⚠️ **Each run starts from the SAME macro shapes.** The reference passes the macro list by
+/// const reference and the core copies it, so one run's resizing never reaches the next.
+fn new_search(
+    macros: &[SoftMacro],
+    curves: &[ShapeCurve],
+    outline_width: i32,
+    outline_height: i32,
+    dbu_per_micron: i32,
+    probabilities: ActionProbabilities,
+) -> Search {
+    let mut state = Search {
+        macros: macros.to_vec(),
+        curves: curves.to_vec(),
+        sp: init_sequence_pair(macros.len()),
+        width: 0,
+        height: 0,
+        outline_penalty: 0.0,
+        fixed_macros_penalty: 0.0,
+        outline_width,
+        outline_height,
+        dbu_per_micron,
+        fixed_bboxes: Vec::new(),
+        weights: ShapingWeights::default(),
+        normalization: Normalization::default(),
+        probabilities,
+        action: None,
+    };
+    // Upstream `findFixedMacros`, which walks the positive sequence.
+    state.fixed_bboxes = state
+        .sp
+        .pos
+        .iter()
+        .filter(|&&id| state.macros[id].fixed)
+        .map(|&id| state.macros[id].bbox())
+        .collect();
+    let (width, height) = pack_floorplan(&mut state.macros, &state.sp);
+    state.width = width;
+    state.height = height;
+    state.cal_penalty();
+    state
+}
