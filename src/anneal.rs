@@ -807,3 +807,170 @@ pub fn resize_one_cluster(
     }
     index
 }
+
+// ---------------------------------------------------------------- the search state
+
+/// The annealer's working state for one tiling run.
+///
+/// 🔑 **Mirrors the members of upstream's core rather than a tidier arrangement**, because the
+/// save/restore pair below is defined in terms of exactly which members it copies — and it does
+/// not copy all of them.
+#[derive(Debug, Clone)]
+pub struct Search {
+    pub macros: Vec<SoftMacro>,
+    pub curves: Vec<ShapeCurve>,
+    pub sp: SequencePair,
+    pub width: i32,
+    pub height: i32,
+    pub outline_penalty: f32,
+    /// ⛔ **Deliberately outside the saved set** — see [`Search::restore_state`].
+    pub fixed_macros_penalty: f32,
+    pub outline_width: i32,
+    pub outline_height: i32,
+    pub dbu_per_micron: i32,
+    /// The bounding boxes of the fixed macros, taken once before the search starts.
+    pub fixed_bboxes: Vec<(i32, i32, i32, i32)>,
+    pub weights: ShapingWeights,
+    pub normalization: Normalization,
+    pub probabilities: ActionProbabilities,
+    /// The action the last `perturb` chose. ⚠️ Restoring reads this, so it must survive the call.
+    pub action: Option<Action>,
+}
+
+/// What `saveState` copies.
+///
+/// ⛔ **`fixed_macros_penalty` is NOT here, and that is upstream's own omission**: `saveState`
+/// lists seven penalties and leaves that one out, and `restoreState` leaves it out to match. A
+/// restore therefore keeps the *rejected* state's fixed-macro penalty until the next `perturb`
+/// recomputes it. Adding it to the saved set would be more correct and would not reproduce the
+/// reference.
+#[derive(Debug, Clone)]
+pub struct Saved {
+    macros: Vec<SoftMacro>,
+    pos: Vec<usize>,
+    neg: Vec<usize>,
+    width: i32,
+    height: i32,
+    outline_penalty: f32,
+}
+
+impl Search {
+    pub fn outline_area(&self) -> i64 {
+        self.outline_width as i64 * self.outline_height as i64
+    }
+
+    /// Upstream `getAreaPenalty`, from the current packing.
+    pub fn area_penalty(&self) -> f32 {
+        area_penalty(self.width, self.height, self.outline_area(), self.dbu_per_micron)
+    }
+
+    /// Upstream `calPenalty`, reduced to the terms shaping leaves alive.
+    ///
+    /// ℹ️ Boundary, soft-blockage and notch all early-return on a zero weight without touching
+    /// anything else, and wirelength does the same — so for a tiling run they are permanently
+    /// zero and are not modelled.
+    pub fn cal_penalty(&mut self) {
+        self.outline_penalty =
+            outline_penalty(self.width, self.height, self.outline_width, self.outline_height);
+        self.fixed_macros_penalty = fixed_macros_penalty(
+            &self.macros,
+            &self.fixed_bboxes,
+            &self.sp,
+            self.dbu_per_micron,
+        );
+    }
+
+    /// Upstream `SACoreSoftMacro::calNormCost`.
+    pub fn norm_cost(&self) -> f32 {
+        norm_cost(
+            &Penalties {
+                area: self.area_penalty(),
+                outline: self.outline_penalty,
+                fixed_macros: self.fixed_macros_penalty,
+            },
+            &self.weights,
+            &self.normalization,
+        )
+    }
+
+    /// Upstream `resultFitsInOutline`.
+    pub fn fits_in_outline(&self) -> bool {
+        self.width <= self.outline_width && self.height <= self.outline_height
+    }
+
+    /// Upstream `saveState`. ⚠️ A run with no macros saves nothing at all.
+    pub fn save_state(&self) -> Option<Saved> {
+        if self.macros.is_empty() {
+            return None;
+        }
+        Some(Saved {
+            macros: self.macros.clone(),
+            pos: self.sp.pos.clone(),
+            neg: self.sp.neg.clone(),
+            width: self.width,
+            height: self.height,
+            outline_penalty: self.outline_penalty,
+        })
+    }
+
+    /// Upstream `restoreState`.
+    ///
+    /// ⛔ **Which sequences come back depends on the ACTION that was taken.** A positive-sequence
+    /// swap restores only the positive sequence, a negative-sequence swap only the negative, a
+    /// double swap and an exchange both, and a **resize restores neither** — it never touched
+    /// them. Restoring both unconditionally would be harmless for correctness and would still be
+    /// a different program.
+    ///
+    /// ⚠️ **The packing is NOT recomputed.** Upstream says so at the site: the width and height
+    /// are copied back instead, and a final `packFloorplan` at the end of the search puts the
+    /// macros where the restored sequences say they belong.
+    pub fn restore_state(&mut self, saved: &Saved) {
+        if self.macros.is_empty() {
+            return;
+        }
+        match self.action {
+            Some(Action::SwapPositive) => self.sp.pos.clone_from(&saved.pos),
+            Some(Action::SwapNegative) => self.sp.neg.clone_from(&saved.neg),
+            Some(Action::SwapBoth) | Some(Action::Exchange) => {
+                self.sp.pos.clone_from(&saved.pos);
+                self.sp.neg.clone_from(&saved.neg);
+            }
+            // ⚠️ Resize, or no action yet: the sequences are left as they are.
+            _ => {}
+        }
+        self.macros.clone_from(&saved.macros);
+        self.width = saved.width;
+        self.height = saved.height;
+        self.outline_penalty = saved.outline_penalty;
+    }
+
+    /// Upstream `SACoreSoftMacro::perturb`: choose an action, take it, repack, rescore.
+    ///
+    /// ⛔ **An empty macro list returns before the draw**, leaving the generator untouched.
+    pub fn perturb(&mut self, rng: &mut Mt19937) {
+        let Some(action) = choose_action(rng, &self.probabilities, self.macros.len()) else {
+            return;
+        };
+        self.action = Some(action);
+        match action {
+            Action::SwapPositive => single_seq_swap(rng, &mut self.sp, true),
+            Action::SwapNegative => single_seq_swap(rng, &mut self.sp, false),
+            Action::SwapBoth => double_seq_swap(rng, &mut self.sp),
+            Action::Exchange => exchange_macros(rng, &mut self.sp),
+            Action::Resize => {
+                resize_one_cluster(
+                    rng,
+                    &mut self.macros,
+                    &self.curves,
+                    &self.sp,
+                    self.outline_width,
+                    self.outline_height,
+                );
+            }
+        }
+        let (width, height) = pack_floorplan(&mut self.macros, &self.sp);
+        self.width = width;
+        self.height = height;
+        self.cal_penalty();
+    }
+}

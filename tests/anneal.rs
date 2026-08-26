@@ -838,3 +838,150 @@ fn a_single_choice_consumes_no_generator_word() {
     let _ = vyges_mpl::rng::canonical_f32(&mut replay);
     assert_eq!(h.next(), replay.next(), "only the float draw was taken");
 }
+
+// ---------------------------------------------------------------- save and restore
+
+use vyges_mpl::anneal::Search;
+
+fn search_with(n: usize) -> Search {
+    let intervals = [Interval { min: 100, max: 200 }, Interval { min: 400, max: 500 }];
+    let (curve, w, h, area) = shape_curve_from_intervals(&intervals, 40_000).expect("shapeable");
+    let macros: Vec<SoftMacro> = (0..n)
+        .map(|_| SoftMacro { width: w, height: h, area, ..Default::default() })
+        .collect();
+    let mut s = Search {
+        curves: vec![curve; n],
+        macros,
+        sp: init_sequence_pair(n),
+        width: 0,
+        height: 0,
+        outline_penalty: 0.0,
+        fixed_macros_penalty: 0.0,
+        outline_width: 100_000,
+        outline_height: 100_000,
+        dbu_per_micron: 2000,
+        fixed_bboxes: Vec::new(),
+        weights: ShapingWeights::default(),
+        normalization: Normalization::default(),
+        probabilities: ActionProbabilities::normalized(0.2, 0.2, 0.2, 0.2, 0.2),
+        action: None,
+    };
+    let (w, h) = pack_floorplan(&mut s.macros, &s.sp);
+    s.width = w;
+    s.height = h;
+    s.cal_penalty();
+    s
+}
+
+/// 🔑 **Which sequences come back depends on the action taken.** A positive-sequence swap must
+/// leave a separately-modified negative sequence alone — restoring both would erase work the
+/// action never did.
+#[test]
+fn restoring_returns_only_the_sequences_the_action_touched() {
+    let mut s = search_with(4);
+    let saved = s.save_state().expect("has macros");
+
+    // Pretend the action was a positive-sequence swap, and dirty BOTH sequences.
+    s.action = Some(Action::SwapPositive);
+    s.sp.pos = vec![3, 2, 1, 0];
+    s.sp.neg = vec![3, 2, 1, 0];
+    s.restore_state(&saved);
+    assert_eq!(s.sp.pos, vec![0, 1, 2, 3], "the positive sequence came back");
+    assert_eq!(s.sp.neg, vec![3, 2, 1, 0], "the negative one did NOT");
+
+    // A negative-sequence swap is the mirror.
+    let mut s = search_with(4);
+    let saved = s.save_state().expect("has macros");
+    s.action = Some(Action::SwapNegative);
+    s.sp.pos = vec![3, 2, 1, 0];
+    s.sp.neg = vec![3, 2, 1, 0];
+    s.restore_state(&saved);
+    assert_eq!(s.sp.pos, vec![3, 2, 1, 0], "the positive one did NOT come back");
+    assert_eq!(s.sp.neg, vec![0, 1, 2, 3]);
+}
+
+/// ⚠️ **A resize restores NEITHER sequence** — it never touched them.
+#[test]
+fn restoring_after_a_resize_leaves_both_sequences_alone() {
+    let mut s = search_with(4);
+    let saved = s.save_state().expect("has macros");
+    s.action = Some(Action::Resize);
+    s.sp.pos = vec![3, 2, 1, 0];
+    s.sp.neg = vec![3, 2, 1, 0];
+    s.restore_state(&saved);
+    assert_eq!(s.sp.pos, vec![3, 2, 1, 0]);
+    assert_eq!(s.sp.neg, vec![3, 2, 1, 0]);
+    assert_eq!(s.macros.len(), 4, "but the macros themselves did come back");
+}
+
+/// A double swap and an exchange both restore the pair.
+#[test]
+fn restoring_after_a_double_swap_or_exchange_returns_both() {
+    for action in [Action::SwapBoth, Action::Exchange] {
+        let mut s = search_with(4);
+        let saved = s.save_state().expect("has macros");
+        s.action = Some(action);
+        s.sp.pos = vec![3, 2, 1, 0];
+        s.sp.neg = vec![3, 2, 1, 0];
+        s.restore_state(&saved);
+        assert_eq!(s.sp.pos, vec![0, 1, 2, 3], "{action:?}");
+        assert_eq!(s.sp.neg, vec![0, 1, 2, 3], "{action:?}");
+    }
+}
+
+/// ⛔ **The fixed-macro penalty is neither saved nor restored.** Upstream's `saveState` lists
+/// seven penalties and omits this one; a restore therefore keeps the rejected state's value until
+/// the next `perturb` recomputes it. Reproduced deliberately.
+#[test]
+fn the_fixed_macro_penalty_survives_a_restore() {
+    let mut s = search_with(2);
+    s.outline_penalty = 1.0;
+    s.fixed_macros_penalty = 2.0;
+    let saved = s.save_state().expect("has macros");
+
+    s.action = Some(Action::SwapPositive);
+    s.outline_penalty = 99.0;
+    s.fixed_macros_penalty = 99.0;
+    s.restore_state(&saved);
+
+    assert_eq!(s.outline_penalty, 1.0, "the outline penalty is in the saved set");
+    assert_eq!(s.fixed_macros_penalty, 99.0, "the fixed-macro one is not, so the rejected value stands");
+}
+
+/// ⛔ A search with no macros saves nothing and restores nothing.
+#[test]
+fn an_empty_search_has_no_state_to_save() {
+    let mut s = search_with(0);
+    assert!(s.save_state().is_none());
+    s.restore_state(&search_with(1).save_state().expect("has macros"));
+    assert!(s.macros.is_empty(), "restoring into an empty search does nothing");
+}
+
+/// ⛔ A perturb on an empty search consumes no randomness.
+#[test]
+fn perturbing_an_empty_search_draws_nothing() {
+    let mut s = search_with(0);
+    let mut g = Mt19937::new(6);
+    s.perturb(&mut g);
+    let mut fresh = Mt19937::new(6);
+    assert_eq!(g.next(), fresh.next());
+    assert_eq!(s.action, None, "and no action was recorded");
+}
+
+/// 🔑 A packing that fits scores only its area; one that overhangs pays a thousand times the
+/// overhang ratio, which is what drives the search inward.
+#[test]
+fn the_cost_is_dominated_by_the_outline_once_it_overhangs() {
+    let mut s = search_with(2);
+    s.outline_width = 100_000;
+    s.outline_height = 100_000;
+    s.width = 1_000;
+    s.height = 1_000;
+    s.cal_penalty();
+    let inside = s.norm_cost();
+
+    s.width = 200_000;
+    s.cal_penalty();
+    let outside = s.norm_cost();
+    assert!(outside > inside * 100.0, "inside {inside}, outside {outside}");
+}
