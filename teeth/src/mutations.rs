@@ -407,6 +407,55 @@ pub const MUTATIONS: &[Mutation] = &[
     let mut deferred_io: Vec<&AssemblyChild> = Vec::new();"#,
         want: r#"a_blockage_has_no_name"#,
     },
+    // ---------------------------------------------------------------- the hard-macro netlist
+    Mutation {
+        name: r#"terminals-in-connection-order"#,
+        file: r#"src/placement.rs"#,
+        find: r#"    let unique: std::collections::BTreeSet<i32> = connected_ids.iter().copied().collect();
+    unique.into_iter().filter(|id| !is_already_a_macro(*id)).collect()"#,
+        replace: r#"    let mut seen = std::collections::BTreeSet::new();
+    connected_ids
+        .iter()
+        .copied()
+        .filter(|id| seen.insert(*id))
+        .filter(|id| !is_already_a_macro(*id))
+        .collect()"#,
+        want: r#"terminals_are_created_in_ascending_cluster_id_order"#,
+    },
+    Mutation {
+        name: r#"placed-cluster-also-made-a-terminal"#,
+        file: r#"src/placement.rs"#,
+        find: r#"    unique.into_iter().filter(|id| !is_already_a_macro(*id)).collect()"#,
+        replace: r#"    unique.into_iter().collect()"#,
+        want: r#"a_cluster_already_being_placed_is_not_a_terminal"#,
+    },
+    Mutation {
+        name: r#"hard-nets-halved-by-an-id-filter"#,
+        file: r#"src/placement.rs"#,
+        find: r#"            nets.push(BundledNet { source, target, weight });"#,
+        replace: r#"            if *cluster_id > target_id {
+                nets.push(BundledNet { source, target, weight });
+            }"#,
+        want: r#"every_connection_is_emitted_from_both_ends"#,
+    },
+    Mutation {
+        name: r#"hard-nets-drop-self-connections"#,
+        file: r#"src/placement.rs"#,
+        find: r#"        for &(target_id, weight) in connections {"#,
+        replace: r#"        for &(target_id, weight) in connections.iter().filter(|c| c.0 != *cluster_id) {"#,
+        want: r#"a_self_connection_survives"#,
+    },
+    Mutation {
+        name: r#"unmapped-cluster-skipped-not-refused"#,
+        file: r#"src/placement.rs"#,
+        find: r#"            let Some(target) = macro_of(target_id) else {
+                return Err(UnmappedCluster(target_id));
+            };"#,
+        replace: r#"            let Some(target) = macro_of(target_id) else {
+                continue;
+            };"#,
+        want: r#"a_cluster_missing_from_the_macro_map_is_an_error"#,
+    },
     // ---------------------------------------------------------------- the hard-macro core
     Mutation {
         name: r#"hard-cost-includes-the-soft-penalties"#,

@@ -434,3 +434,78 @@ fn a_hard_cores_sampled_width_makes_a_lossy_round_trip() {
     assert_eq!(hard_sampled_extent(16_777_217), 16_777_216, "one unit lost");
     assert_eq!(hard_sampled_extent(20_000_001), 20_000_000, "10 mm at 2000 units per micron");
 }
+
+// ---------------------------------------------------------------- the hard-macro netlist
+
+use vyges_mpl::placement::{
+    build_bundled_nets_for_macros, hard_terminal_cluster_ids, BundledNet, UnmappedCluster,
+};
+
+/// 🔑 **Terminals are created in ascending CLUSTER-ID order, not connection order** — upstream
+/// gathers the ids into a `std::set`, which both sorts and deduplicates. Iterating the connections
+/// directly would give every terminal a different id.
+#[test]
+fn terminals_are_created_in_ascending_cluster_id_order() {
+    let connected = [9, 3, 7, 3, 9];
+    let got = hard_terminal_cluster_ids(&connected, &|_| false);
+    assert_eq!(got, vec![3, 7, 9], "sorted, and deduplicated");
+}
+
+/// ⚠️ A cluster already among the macros being placed is not also a terminal.
+#[test]
+fn a_cluster_already_being_placed_is_not_a_terminal() {
+    let connected = [1, 2, 3, 4];
+    let got = hard_terminal_cluster_ids(&connected, &|id| id == 2 || id == 4);
+    assert_eq!(got, vec![1, 3]);
+}
+
+/// ⛔ **Every connection is emitted TWICE, once from each end** — the `>` id filter that halves
+/// them on the cluster path is simply absent here.
+#[test]
+fn every_connection_is_emitted_from_both_ends() {
+    let clusters = [(1i32, vec![(2i32, 4.0f32)]), (2, vec![(1, 4.0)])];
+    let macro_of = |id: i32| Some((id - 1) as usize);
+    let got = build_bundled_nets_for_macros(&clusters, &macro_of).unwrap();
+    assert_eq!(
+        got,
+        vec![
+            BundledNet { source: 0, target: 1, weight: 4.0 },
+            BundledNet { source: 1, target: 0, weight: 4.0 },
+        ],
+        "both directions, not one"
+    );
+}
+
+/// ⛔ **No virtual connections at all**, unlike the cluster path which emits them first at weight
+/// ten. Nothing here can produce one.
+#[test]
+fn there_are_no_virtual_connections() {
+    let clusters = [(1i32, Vec::new())];
+    let got = build_bundled_nets_for_macros(&clusters, &|id| Some(id as usize)).unwrap();
+    assert!(got.is_empty(), "a cluster with no connections contributes nothing");
+}
+
+/// ⚠️ **A self-connection survives**, since nothing compares the two ids.
+#[test]
+fn a_self_connection_survives() {
+    let clusters = [(1i32, vec![(1i32, 2.0f32)])];
+    let got = build_bundled_nets_for_macros(&clusters, &|id| Some(id as usize)).unwrap();
+    assert_eq!(got, vec![BundledNet { source: 1, target: 1, weight: 2.0 }]);
+}
+
+/// ⚠️ The emission order is cluster order, then connection order within each cluster.
+#[test]
+fn nets_follow_cluster_order_then_connection_order() {
+    let clusters = [(0i32, vec![(1i32, 1.0f32), (2, 2.0)]), (1, vec![(0, 1.0)])];
+    let got = build_bundled_nets_for_macros(&clusters, &|id| Some(id as usize)).unwrap();
+    let weights: Vec<f32> = got.iter().map(|n| n.weight).collect();
+    assert_eq!(weights, vec![1.0, 2.0, 1.0]);
+}
+
+/// ⛔ Upstream indexes with `std::map::at`, so a cluster missing from the macro map THROWS.
+#[test]
+fn a_cluster_missing_from_the_macro_map_is_an_error() {
+    let clusters = [(1i32, vec![(99i32, 1.0f32)])];
+    let got = build_bundled_nets_for_macros(&clusters, &|id| (id != 99).then_some(id as usize));
+    assert_eq!(got, Err(UnmappedCluster(99)));
+}

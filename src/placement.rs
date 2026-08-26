@@ -2663,3 +2663,61 @@ pub fn init_temperature(costs: &[f32], init_prob: f32) -> f32 {
 pub fn hard_sampled_extent(extent: i32) -> i32 {
     extent as f32 as i32
 }
+
+// ---------------------------------------------------------------- the hard-macro netlist
+
+/// Upstream `createFixedTerminals`' terminal set, for macro placement.
+///
+/// 🔑 **Ascending CLUSTER-ID order, not connection order.** Upstream gathers the ids into a
+/// `std::set<int>`, which both deduplicates and sorts — so the terminal ids depend only on which
+/// clusters are connected, never on the order the connections were discovered. Iterating the
+/// connections directly would give a different id for every terminal.
+///
+/// ⚠️ **A cluster already in the macro map is skipped**, because it is one of the macros being
+/// placed rather than a terminal.
+pub fn hard_terminal_cluster_ids(
+    connected_ids: &[i32],
+    is_already_a_macro: &dyn Fn(i32) -> bool,
+) -> Vec<i32> {
+    let unique: std::collections::BTreeSet<i32> = connected_ids.iter().copied().collect();
+    unique.into_iter().filter(|id| !is_already_a_macro(*id)).collect()
+}
+
+/// A cluster missing from the macro map — upstream's `std::map::at` throws.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct UnmappedCluster(pub i32);
+
+/// Upstream `buildBundledNets` for MACRO placement — the second overload.
+///
+/// ⛔ **It has NO virtual connections.** The soft overload emits the parent's virtual connections
+/// first, each at weight `10.0`; this one does not emit them at all.
+///
+/// ⛔ **And it has NO `>` id filter, so every connection is emitted TWICE** — once from each end.
+/// The soft overload halves them with `child->getId() > target->getId()` and says why at the site:
+/// connections are undirected and exist in both directions. That guard is simply absent here.
+///
+/// 🔑 **Doubling is not always a no-op.** The wirelength is normalised by the total weight, so a
+/// symmetric pair cancels out — but [`compute_nets_wire_length`] tests only the TARGET for being a
+/// cluster of unplaced IO pins, so `(macro, io)` and `(io, macro)` take DIFFERENT paths. Where a
+/// terminal is an unplaced-IO cluster, emitting both directions changes the answer rather than
+/// scaling it.
+///
+/// ⚠️ **A self-connection survives**, since nothing compares the two ids.
+pub fn build_bundled_nets_for_macros(
+    clusters: &[(i32, Vec<(i32, f32)>)],
+    macro_of: &dyn Fn(i32) -> Option<usize>,
+) -> Result<Vec<BundledNet>, UnmappedCluster> {
+    let mut nets = Vec::new();
+    for (cluster_id, connections) in clusters {
+        let Some(source) = macro_of(*cluster_id) else {
+            return Err(UnmappedCluster(*cluster_id));
+        };
+        for &(target_id, weight) in connections {
+            let Some(target) = macro_of(target_id) else {
+                return Err(UnmappedCluster(target_id));
+            };
+            nets.push(BundledNet { source, target, weight });
+        }
+    }
+    Ok(nets)
+}
