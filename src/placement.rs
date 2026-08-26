@@ -2265,3 +2265,175 @@ pub fn update_children_shapes_and_locations(
     }
     Ok(out)
 }
+
+// ---------------------------------------------------------------- configuring a macro-placement run
+
+/// The four move probabilities a hard-macro annealer is built with.
+///
+/// ⛔ **There is no RESIZE.** A hard macro has one shape; the fifth action the soft annealer has
+/// does not exist here, and it is absent from the normalising sum as well.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct HardActionProbabilities {
+    pub pos_swap: f32,
+    pub neg_swap: f32,
+    pub double_swap: f32,
+    pub exchange: f32,
+}
+
+/// Upstream `placeMacros`' probability setup.
+///
+/// 🔑 **Exchange is scaled by how much MASTER SHARING there is.** Upstream says why at the site:
+/// exchanging two macros is only useful when they might be interchangeable, so the raw exchange
+/// probability is multiplied by `5 * (1 - masters/macros)`. Every macro having its own master
+/// makes that factor exactly **zero** and switches exchange off entirely; every macro sharing one
+/// master drives it to nearly `5`.
+///
+/// ⛔ **The single-sequence swaps are scaled by TEN and the double swap is NOT.** So relative to
+/// cluster placement, a hard-macro run is pushed hard towards single swaps, and the double swap —
+/// which the soft annealer weights equally with the others — becomes rare.
+///
+/// ⚠️ Every step is `f32`: `exchange * 5` is `float * int`, and `masters / macros` is
+/// `size_t / (float)size_t`, which C++ evaluates in `float`.
+///
+/// ⚠️ **The sum is formed from the SCALED values**, so the four results are a normalised
+/// distribution even though the inputs are not.
+pub fn macro_placement_probabilities(
+    pos_swap: f32,
+    neg_swap: f32,
+    double_swap: f32,
+    exchange: f32,
+    master_count: usize,
+    macro_count: usize,
+) -> HardActionProbabilities {
+    // ⚠️ `masters.size() / (float) hard_macros.size()` — the division is in `f32`.
+    let sharing = 1.0 - (master_count as f32 / macro_count as f32);
+    let exchange = exchange * 5.0 * sharing;
+
+    // ⛔ Ten on the single swaps, nothing on the double swap.
+    let action_sum = pos_swap * 10.0 + neg_swap * 10.0 + double_swap + exchange;
+
+    HardActionProbabilities {
+        pos_swap: pos_swap * 10.0 / action_sum,
+        neg_swap: neg_swap * 10.0 / action_sum,
+        double_swap: double_swap / action_sum,
+        exchange: exchange / action_sum,
+    }
+}
+
+/// Upstream `placeMacros`' perturbation count.
+///
+/// ⛔ **The floor is a TENTH of the configured count**, by integer division — `500 / 10` is `50`.
+/// A cluster with fewer macros than that still gets the floor, so a two-macro cluster is perturbed
+/// fifty times a step.
+///
+/// ⚠️ **A "large" cluster is one with MORE macros than the floor**, and it is perturbed once per
+/// macro — so past the floor the count tracks the problem size rather than a constant.
+///
+/// 🔑 **A large macro ARRAY is the exception and gets the FULL count**, not a tenth. Upstream says
+/// why: large arrays need more steps to converge.
+pub fn macro_perturbations_per_step(
+    num_perturb_per_step: i32,
+    macro_count: i32,
+    is_macro_array: bool,
+) -> i32 {
+    let minimum = num_perturb_per_step / 10;
+    let large = macro_count > minimum;
+    if is_macro_array && large {
+        return num_perturb_per_step;
+    }
+    if large {
+        macro_count
+    } else {
+        minimum
+    }
+}
+
+/// What a macro ARRAY does to the run's configuration.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct MacroArraySetup {
+    pub probabilities: HardActionProbabilities,
+    /// ⛔ **The ONLY place `disallowInvalidStates` is called in the whole engine.** Every other
+    /// annealer — coarse shaping and cluster placement included — leaves invalid states allowed.
+    pub invalid_states_allowed: bool,
+}
+
+/// Upstream `placeMacros`' macro-array branch.
+///
+/// 🔑 **An array with no empty space does not need to explore shapes at all**, so every swap
+/// probability is zeroed and exchange is set to `1.0` — the run does nothing but swap macros
+/// around a fixed arrangement, looking for the best wirelength.
+///
+/// ⛔ **An array WITH empty space instead disallows invalid states**, which is the one place in the
+/// engine that flag is ever set. It leaves the probabilities alone.
+///
+/// ⚠️ A cluster that is not an array keeps its probabilities and allows invalid states.
+pub fn macro_array_setup(
+    probabilities: HardActionProbabilities,
+    is_macro_array: bool,
+    array_has_empty_space: bool,
+) -> MacroArraySetup {
+    if !is_macro_array {
+        return MacroArraySetup { probabilities, invalid_states_allowed: true };
+    }
+    if array_has_empty_space {
+        return MacroArraySetup { probabilities, invalid_states_allowed: false };
+    }
+    MacroArraySetup {
+        probabilities: HardActionProbabilities {
+            pos_swap: 0.0,
+            neg_swap: 0.0,
+            double_swap: 0.0,
+            exchange: 1.0,
+        },
+        invalid_states_allowed: true,
+    }
+}
+
+/// Upstream `placeMacros`' per-run weights.
+///
+/// 🔑 **Each run is a HARDER version of the last.** The outline weight is multiplied by
+/// `(run_id + 1) * 10` and the wirelength weight divided by `(run_id + 1)`, so the first run is
+/// free to spread out while the tenth is squeezed into the outline almost regardless of wire
+/// length. Ten runs is not ten samples of one problem; it is a ramp.
+///
+/// ⛔ **These weights are RESET before the runs are compared** — see [`best_macro_run`]. The
+/// escalation shapes the search and then has no say in which search won.
+///
+/// ⚠️ `float *= int` and `float /= int`, so both stay in `f32`.
+pub fn macro_run_weights(base: crate::anneal::SoftWeights, run_id: i32) -> crate::anneal::SoftWeights {
+    let mut w = base;
+    w.outline *= ((run_id + 1) * 10) as f32;
+    w.wirelength /= (run_id + 1) as f32;
+    w
+}
+
+/// Upstream `placeMacros`' seed for one run.
+///
+/// ⛔ **Each run gets a DIFFERENT seed**, unlike the tiling search — where every run in a batch
+/// shares one seed and differs only in its outline. Here the seed and the weights both move.
+pub fn macro_run_seed(random_seed: u32, run_id: i32) -> u32 {
+    random_seed.wrapping_add(run_id as u32)
+}
+
+/// Upstream `placeMacros`' run selection.
+///
+/// ⛔ **The BEST cost wins, not the first valid one** — the opposite of cluster placement, which
+/// takes the first valid run in index order and stops. Here every run is annealed and then scored
+/// on the COMMON weighting, because each ran under its own escalated one.
+///
+/// ⚠️ **`<`, strictly**, so a tie goes to the LOWEST run id — the run that was least squeezed.
+///
+/// ⚠️ An invalid run is never a candidate, whatever it cost.
+pub fn best_macro_run(costs: &[(bool, f32)]) -> Option<usize> {
+    let mut best: Option<(usize, f32)> = None;
+    for (run_id, &(is_valid, cost)) in costs.iter().enumerate() {
+        if !is_valid {
+            continue;
+        }
+        match best {
+            Some((_, best_cost)) if cost >= best_cost => {}
+            _ => best = Some((run_id, cost)),
+        }
+    }
+    best.map(|(id, _)| id)
+}

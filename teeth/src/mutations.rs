@@ -407,6 +407,142 @@ pub const MUTATIONS: &[Mutation] = &[
     let mut deferred_io: Vec<&AssemblyChild> = Vec::new();"#,
         want: r#"a_blockage_has_no_name"#,
     },
+    // ---------------------------------------------------------------- macro-placement runs
+    Mutation {
+        name: r#"exchange-not-scaled-by-master-sharing"#,
+        file: r#"src/placement.rs"#,
+        find: r#"    let exchange = exchange * 5.0 * sharing;"#,
+        replace: r#"    let exchange = exchange * 5.0;"#,
+        want: r#"exchange_is_switched_off_when_no_master_is_shared"#,
+    },
+    Mutation {
+        name: r#"double-swap-scaled-by-ten-too"#,
+        file: r#"src/placement.rs"#,
+        find: r#"    let action_sum = pos_swap * 10.0 + neg_swap * 10.0 + double_swap + exchange;"#,
+        replace: r#"    let action_sum = pos_swap * 10.0 + neg_swap * 10.0 + double_swap * 10.0 + exchange;"#,
+        want: r#"the_double_swap_is_ten_times_rarer_than_a_single_one"#,
+    },
+    Mutation {
+        name: r#"single-swaps-not-scaled"#,
+        file: r#"src/placement.rs"#,
+        find: r#"        pos_swap: pos_swap * 10.0 / action_sum,"#,
+        replace: r#"        pos_swap: pos_swap / action_sum,"#,
+        want: r#"the_double_swap_is_ten_times_rarer_than_a_single_one"#,
+    },
+    Mutation {
+        name: r#"perturbation-floor-not-a-tenth"#,
+        file: r#"src/placement.rs"#,
+        find: r#"    let minimum = num_perturb_per_step / 10;"#,
+        replace: r#"    let minimum = num_perturb_per_step;"#,
+        want: r#"a_small_cluster_gets_the_floor_not_its_macro_count"#,
+    },
+    Mutation {
+        name: r#"large-cluster-still-takes-the-floor"#,
+        file: r#"src/placement.rs"#,
+        find: r#"    if large {
+        macro_count
+    } else {
+        minimum
+    }"#,
+        replace: r#"    minimum"#,
+        want: r#"a_large_cluster_is_perturbed_once_per_macro"#,
+    },
+    Mutation {
+        name: r#"large-array-gets-no-exception"#,
+        file: r#"src/placement.rs"#,
+        find: r#"    if is_macro_array && large {
+        return num_perturb_per_step;
+    }"#,
+        replace: r#"    if false {
+        return num_perturb_per_step;
+    }"#,
+        want: r#"a_large_macro_array_gets_the_full_count"#,
+    },
+    Mutation {
+        name: r#"full-array-keeps-its-probabilities"#,
+        file: r#"src/placement.rs"#,
+        find: r#"    MacroArraySetup {
+        probabilities: HardActionProbabilities {
+            pos_swap: 0.0,
+            neg_swap: 0.0,
+            double_swap: 0.0,
+            exchange: 1.0,
+        },
+        invalid_states_allowed: true,
+    }"#,
+        replace: r#"    MacroArraySetup { probabilities, invalid_states_allowed: true }"#,
+        want: r#"a_full_array_only_exchanges"#,
+    },
+    Mutation {
+        name: r#"empty-space-array-still-allows-invalid"#,
+        file: r#"src/placement.rs"#,
+        find: r#"    if array_has_empty_space {
+        return MacroArraySetup { probabilities, invalid_states_allowed: false };
+    }"#,
+        replace: r#"    if array_has_empty_space {
+        return MacroArraySetup { probabilities, invalid_states_allowed: true };
+    }"#,
+        want: r#"an_array_with_empty_space_disallows_invalid_states"#,
+    },
+    Mutation {
+        name: r#"non-array-cluster-treated-as-an-array"#,
+        file: r#"src/placement.rs"#,
+        find: r#"    if !is_macro_array {
+        return MacroArraySetup { probabilities, invalid_states_allowed: true };
+    }"#,
+        replace: r#"    if false {
+        return MacroArraySetup { probabilities, invalid_states_allowed: true };
+    }"#,
+        want: r#"a_non_array_cluster_is_untouched"#,
+    },
+    Mutation {
+        name: r#"run-ramp-off-by-one"#,
+        file: r#"src/placement.rs"#,
+        find: r#"    w.outline *= ((run_id + 1) * 10) as f32;"#,
+        replace: r#"    w.outline *= (run_id * 10) as f32;"#,
+        want: r#"each_run_is_a_harder_version_of_the_last"#,
+    },
+    Mutation {
+        name: r#"run-ramp-multiplies-wirelength"#,
+        file: r#"src/placement.rs"#,
+        find: r#"    w.wirelength /= (run_id + 1) as f32;"#,
+        replace: r#"    w.wirelength *= (run_id + 1) as f32;"#,
+        want: r#"each_run_is_a_harder_version_of_the_last"#,
+    },
+    Mutation {
+        name: r#"every-run-shares-one-seed"#,
+        file: r#"src/placement.rs"#,
+        find: r#"    random_seed.wrapping_add(run_id as u32)"#,
+        replace: r#"    random_seed"#,
+        want: r#"each_run_gets_its_own_seed"#,
+    },
+    Mutation {
+        name: r#"first-valid-macro-run-wins"#,
+        file: r#"src/placement.rs"#,
+        find: r#"            Some((_, best_cost)) if cost >= best_cost => {}"#,
+        replace: r#"            Some(_) => {}"#,
+        want: r#"the_cheapest_valid_run_wins"#,
+    },
+    Mutation {
+        name: r#"macro-run-tie-goes-to-the-later-run"#,
+        file: r#"src/placement.rs"#,
+        find: r#"            Some((_, best_cost)) if cost >= best_cost => {}"#,
+        replace: r#"            Some((_, best_cost)) if cost > best_cost => {}"#,
+        want: r#"a_tie_goes_to_the_earlier_run"#,
+    },
+    Mutation {
+        name: r#"invalid-macro-run-can-win"#,
+        file: r#"src/placement.rs"#,
+        find: r#"        if !is_valid {
+            continue;
+        }
+        match best {"#,
+        replace: r#"        if false {
+            continue;
+        }
+        match best {"#,
+        want: r#"an_invalid_run_is_never_chosen"#,
+    },
     // ---------------------------------------------------------------- closing out a parent
     Mutation {
         name: r#"leaf-tested-before-macro-cluster"#,
