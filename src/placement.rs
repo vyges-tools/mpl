@@ -3402,3 +3402,95 @@ pub fn search_extra_patterns(
 
     SnapSearch { best_index, best_aligned, all_aligned: best_aligned == total_pins }
 }
+
+/// One `(iterm, mpin)` pairing, as `computeLayerDataList` sees it before filtering.
+///
+/// ⛔ **One entry per MPIN, not per terminal.** A terminal with several master pins on matching
+/// layers is pushed into the list once for EACH of them — so it appears more than once, inflating
+/// the total pin count and counting more than once towards alignment.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct SnapPinCandidate {
+    pub iterm: usize,
+    /// ⚠️ Only `SIGNAL` terminals are considered — power and ground are skipped.
+    pub is_signal: bool,
+    /// ⚠️ The layer of the pin's FIRST geometry. A master pin with geometry on several layers is
+    /// judged by whichever the iterator yields first, not by the lowest or the widest.
+    pub layer: usize,
+    pub layer_number: i32,
+    pub layer_is_vertical: bool,
+    pub has_track_grid: bool,
+    pub center: i32,
+}
+
+/// One layer's worth of snapping data.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SnapLayerData {
+    pub layer: usize,
+    pub layer_number: i32,
+    /// The terminals on this layer, **sorted by centre**.
+    pub pins: Vec<usize>,
+}
+
+/// A layer with no track grid — upstream MPL-39.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct MissingTrackGrid(pub usize);
+
+/// Upstream `Snapper::computeLayerDataList`, less the database.
+///
+/// 🔑 **The layers come out sorted by LAYER NUMBER**, and that sort is what makes the result
+/// deterministic: upstream groups the pins in a `std::map` keyed by track-grid POINTER, whose
+/// iteration order is the pointers' and therefore arbitrary. The sort washes that out. Grouping
+/// without sorting would be a different answer on every run.
+///
+/// 🔑 **`layers_data[0].pins[0]` is what drives the whole snap** — the lowest layer's lowest-centred
+/// pin. Everything else is only scored against it.
+///
+/// ⛔ **A terminal appears once per matching MPIN.** Two master pins on the same layer put the same
+/// terminal in the list twice, and both count.
+///
+/// ⚠️ **Only pins whose layer runs in the pass's direction are kept** — a vertical pass sees only
+/// pins on vertical layers.
+///
+/// ⚠️ **The pin sort is not stable and pins CAN share a centre**, so which of two equally-centred
+/// pins ends up first is unspecified. That matters: if the tie is at position 0 of the lowest
+/// layer, the two pins can have different master-terminal offsets and so snap the macro to
+/// different origins.
+pub fn snap_layer_data(
+    candidates: &[SnapPinCandidate],
+    axis: SnapAxis,
+) -> Result<Vec<SnapLayerData>, MissingTrackGrid> {
+    let want_vertical = axis == SnapAxis::Vertical;
+    let mut grouped: std::collections::BTreeMap<usize, (i32, Vec<(i32, usize)>)> =
+        std::collections::BTreeMap::new();
+
+    for c in candidates {
+        if !c.is_signal {
+            continue;
+        }
+        if c.layer_is_vertical != want_vertical {
+            continue;
+        }
+        if !c.has_track_grid {
+            return Err(MissingTrackGrid(c.layer));
+        }
+        grouped.entry(c.layer).or_insert((c.layer_number, Vec::new())).1.push((c.center, c.iterm));
+    }
+
+    let mut out: Vec<SnapLayerData> = grouped
+        .into_iter()
+        .map(|(layer, (layer_number, mut pins))| {
+            // ⚠️ Sorted by CENTRE. Upstream's comparator looks at the centre alone, so equal
+            // centres are left in an unspecified order.
+            pins.sort_by_key(|(center, _)| *center);
+            SnapLayerData {
+                layer,
+                layer_number,
+                pins: pins.into_iter().map(|(_, iterm)| iterm).collect(),
+            }
+        })
+        .collect();
+
+    // 🔑 By LAYER NUMBER — the sort that makes the pointer-keyed grouping deterministic.
+    out.sort_by_key(|d| d.layer_number);
+    Ok(out)
+}

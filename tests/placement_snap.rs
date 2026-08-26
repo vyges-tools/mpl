@@ -296,3 +296,128 @@ fn no_positions_evaluates_nothing() {
     assert_eq!(calls, 0);
     assert_eq!(got.best_index, 0);
 }
+
+// ---------------------------------------------------------------- gathering the layers
+
+use vyges_mpl::placement::{snap_layer_data, MissingTrackGrid, SnapLayerData, SnapPinCandidate};
+
+fn candidate(iterm: usize, layer: usize, layer_number: i32, vertical: bool, center: i32) -> SnapPinCandidate {
+    SnapPinCandidate {
+        iterm,
+        is_signal: true,
+        layer,
+        layer_number,
+        layer_is_vertical: vertical,
+        has_track_grid: true,
+        center,
+    }
+}
+
+/// 🔑 **Layers come out sorted by LAYER NUMBER**, and that sort is what makes the result
+/// deterministic — upstream groups in a map keyed by track-grid POINTER, whose order is arbitrary.
+///
+/// ⛔ **The layer's IDENTITY and its NUMBER are independent, and the fixture must say so.** A
+/// mutation that deleted the sort went straight through an earlier version of this test, because
+/// there the two happened to rise together and the grouping alone already ordered them. Here layer
+/// `0` is the HIGHEST-numbered, so only an explicit sort by number can produce the right order.
+#[test]
+fn layers_come_out_sorted_by_layer_number() {
+    let cands = [
+        candidate(0, 0, 9, true, 100),
+        candidate(1, 1, 3, true, 200),
+        candidate(2, 2, 5, true, 300),
+    ];
+    let got = snap_layer_data(&cands, SnapAxis::Vertical).unwrap();
+    let numbers: Vec<i32> = got.iter().map(|d| d.layer_number).collect();
+    assert_eq!(numbers, vec![3, 5, 9], "by NUMBER, not by the order they were grouped in");
+    let layers: Vec<usize> = got.iter().map(|d| d.layer).collect();
+    assert_eq!(layers, vec![1, 2, 0], "which is not the layers own order");
+}
+
+/// 🔑 **The lowest layer's lowest-centred pin drives the whole snap.**
+#[test]
+fn the_snap_pin_is_the_lowest_layers_lowest_centre() {
+    // ⚠️ Layer identity `0` is deliberately the HIGHER-numbered one, so the answer cannot come
+    // from the grouping order.
+    let cands = [
+        candidate(0, 0, 5, true, 10),
+        candidate(1, 1, 3, true, 900),
+        candidate(2, 1, 3, true, 400),
+    ];
+    let got = snap_layer_data(&cands, SnapAxis::Vertical).unwrap();
+    assert_eq!(got[0].layer_number, 3, "the lowest layer");
+    assert_eq!(got[0].pins[0], 2, "and its lowest-centred pin, not the first listed");
+}
+
+/// ⚠️ **Only pins whose layer runs in the pass's direction are kept.**
+#[test]
+fn a_pass_sees_only_layers_running_its_way() {
+    let cands = [
+        candidate(0, 3, 3, true, 100),
+        candidate(1, 4, 4, false, 200),
+    ];
+    let vertical = snap_layer_data(&cands, SnapAxis::Vertical).unwrap();
+    assert_eq!(vertical.len(), 1);
+    assert_eq!(vertical[0].layer, 3);
+
+    let horizontal = snap_layer_data(&cands, SnapAxis::Horizontal).unwrap();
+    assert_eq!(horizontal.len(), 1);
+    assert_eq!(horizontal[0].layer, 4);
+}
+
+/// ⚠️ **Only SIGNAL terminals** — power and ground are skipped.
+#[test]
+fn power_and_ground_pins_are_skipped() {
+    let mut power = candidate(0, 3, 3, true, 100);
+    power.is_signal = false;
+    let cands = [power, candidate(1, 3, 3, true, 200)];
+    let got = snap_layer_data(&cands, SnapAxis::Vertical).unwrap();
+    assert_eq!(got[0].pins, vec![1]);
+}
+
+/// ⛔ **A terminal appears once per matching MPIN**, so two master pins on one layer put the same
+/// terminal in the list twice — and both count towards the total and towards alignment.
+#[test]
+fn a_terminal_with_two_master_pins_appears_twice() {
+    let cands = [
+        candidate(7, 3, 3, true, 100),
+        candidate(7, 3, 3, true, 500),
+    ];
+    let got = snap_layer_data(&cands, SnapAxis::Vertical).unwrap();
+    assert_eq!(got[0].pins, vec![7, 7], "the same terminal, twice");
+}
+
+/// ⚠️ Pins within a layer are sorted by centre.
+#[test]
+fn pins_are_sorted_by_centre_within_a_layer() {
+    let cands = [
+        candidate(0, 3, 3, true, 900),
+        candidate(1, 3, 3, true, 100),
+        candidate(2, 3, 3, true, 500),
+    ];
+    let got = snap_layer_data(&cands, SnapAxis::Vertical).unwrap();
+    assert_eq!(got[0].pins, vec![1, 2, 0]);
+}
+
+/// ⛔ A layer with no track grid is upstream's MPL-39.
+#[test]
+fn a_layer_without_a_track_grid_is_refused() {
+    let mut no_grid = candidate(0, 4, 4, true, 100);
+    no_grid.has_track_grid = false;
+    assert_eq!(snap_layer_data(&[no_grid], SnapAxis::Vertical), Err(MissingTrackGrid(4)));
+}
+
+/// ⚠️ A layer running the wrong way is skipped BEFORE the track-grid check, so it never refuses.
+#[test]
+fn a_wrong_way_layer_without_a_grid_is_not_refused() {
+    let mut no_grid = candidate(0, 4, 4, false, 100);
+    no_grid.has_track_grid = false;
+    assert!(snap_layer_data(&[no_grid], SnapAxis::Vertical).is_ok());
+}
+
+/// ℹ️ Nothing matching gives an empty list — the caller then aligns to the manufacturing grid alone.
+#[test]
+fn nothing_matching_gives_an_empty_list() {
+    let got: Vec<SnapLayerData> = snap_layer_data(&[], SnapAxis::Vertical).unwrap();
+    assert!(got.is_empty());
+}

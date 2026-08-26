@@ -540,6 +540,80 @@ pub const MUTATIONS: &[Mutation] = &[
         }"#,
         want: r#"the_spiral_steps_past_one_end_and_keeps_going"#,
     },
+    Mutation {
+        name: r#"layers-not-sorted-by-number"#,
+        file: r#"src/placement.rs"#,
+        find: r#"    out.sort_by_key(|d| d.layer_number);
+    Ok(out)"#,
+        replace: r#"    Ok(out)"#,
+        want: r#"layers_come_out_sorted_by_layer_number"#,
+    },
+    Mutation {
+        name: r#"snap-pins-not-sorted-by-centre"#,
+        file: r#"src/placement.rs"#,
+        find: r#"            pins.sort_by_key(|(center, _)| *center);"#,
+        replace: r#"            pins.sort_by_key(|(_, iterm)| *iterm);"#,
+        want: r#"pins_are_sorted_by_centre_within_a_layer"#,
+    },
+    Mutation {
+        name: r#"snap-keeps-power-pins"#,
+        file: r#"src/placement.rs"#,
+        find: r#"        if !c.is_signal {
+            continue;
+        }"#,
+        replace: r#"        if false {
+            continue;
+        }"#,
+        want: r#"power_and_ground_pins_are_skipped"#,
+    },
+    Mutation {
+        name: r#"snap-direction-filter-inverted"#,
+        file: r#"src/placement.rs"#,
+        find: r#"        if c.layer_is_vertical != want_vertical {
+            continue;
+        }"#,
+        replace: r#"        if c.layer_is_vertical == want_vertical {
+            continue;
+        }"#,
+        want: r#"a_pass_sees_only_layers_running_its_way"#,
+    },
+    Mutation {
+        name: r#"missing-track-grid-skipped"#,
+        file: r#"src/placement.rs"#,
+        find: r#"        if !c.has_track_grid {
+            return Err(MissingTrackGrid(c.layer));
+        }"#,
+        replace: r#"        if !c.has_track_grid {
+            continue;
+        }"#,
+        want: r#"a_layer_without_a_track_grid_is_refused"#,
+    },
+    Mutation {
+        name: r#"track-grid-checked-before-direction"#,
+        file: r#"src/placement.rs"#,
+        find: r#"        if c.layer_is_vertical != want_vertical {
+            continue;
+        }
+        if !c.has_track_grid {"#,
+        replace: r#"        if !c.has_track_grid {
+            return Err(MissingTrackGrid(c.layer));
+        }
+        if c.layer_is_vertical != want_vertical {
+            continue;
+        }
+        if false {"#,
+        want: r#"a_wrong_way_layer_without_a_grid_is_not_refused"#,
+    },
+    Mutation {
+        name: r#"duplicate-mpins-deduplicated"#,
+        file: r#"src/placement.rs"#,
+        find: r#"        grouped.entry(c.layer).or_insert((c.layer_number, Vec::new())).1.push((c.center, c.iterm));"#,
+        replace: r#"        let slot = grouped.entry(c.layer).or_insert((c.layer_number, Vec::new()));
+        if !slot.1.iter().any(|(_, t)| *t == c.iterm) {
+            slot.1.push((c.center, c.iterm));
+        }"#,
+        want: r#"a_terminal_with_two_master_pins_appears_twice"#,
+    },
     // ---------------------------------------------------------------- committing to the database
     Mutation {
         name: r#"location-written-before-orientation"#,
