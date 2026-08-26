@@ -928,6 +928,11 @@ pub struct Search {
     pub dbu_per_micron: i32,
     /// The bounding boxes of the fixed macros, taken once before the search starts.
     pub fixed_bboxes: Vec<(i32, i32, i32, i32)>,
+    /// What the six placement-only terms need in order to be scored.
+    ///
+    /// ⚠️ **`None` for a tiling run**, which is why those six stay at zero there — see
+    /// [`Search::cal_penalty`].
+    pub placement: Option<Box<crate::placement::PlacementInputs>>,
     pub weights: SoftWeights,
     pub normalization: Normalization,
     pub probabilities: ActionProbabilities,
@@ -964,14 +969,38 @@ impl Search {
         area_penalty(self.width, self.height, self.outline_area(), self.dbu_per_micron)
     }
 
-    /// Upstream `calPenalty`, reduced to the terms shaping leaves alive.
+    /// Upstream `calPenalty`.
     ///
-    /// ℹ️ Boundary, soft-blockage and notch all early-return on a zero weight without touching
-    /// anything else, and wirelength does the same — so for a tiling run they are permanently
-    /// zero and are not modelled.
+    /// ⚠️ **The term ORDER is load-bearing, and not because of arithmetic.** `calNotchPenalty`
+    /// asks `isValid()`, which reads the fixed-macro penalty — and `calFixedMacrosPenalty` runs
+    /// AFTER it. So the notch term judges validity against the PREVIOUS perturbation's
+    /// fixed-macro penalty, not this one's. Computing the fixed-macro term first would be the
+    /// obvious tidy-up and would be a different program.
+    ///
+    /// ℹ️ Without a placement context the six extra terms are not computed at all. Upstream calls
+    /// each of them and each early-returns on its zero weight, leaving the member as it was —
+    /// which for a tiling run is the `0.0` it was constructed with. Skipping them is the same
+    /// arithmetic, and it is why the shaping path costs nothing extra.
     pub fn cal_penalty(&mut self) {
         self.penalties.outline =
             outline_penalty(self.width, self.height, self.outline_width, self.outline_height);
+
+        if let Some(inputs) = self.placement.take() {
+            let outline = (self.outline_width, self.outline_height);
+
+            self.penalties.wirelength = inputs.wirelength(&self.macros, outline);
+            self.penalties.guidance = inputs.guidance(&self.macros, self.dbu_per_micron);
+            self.penalties.fence = inputs.fence(&self.macros, outline);
+            self.penalties.boundary = inputs.boundary(&self.macros, &self.sp, self.dbu_per_micron);
+            self.penalties.soft_blockage = inputs.soft_blockage(&self.macros, &self.sp);
+            // ⛔ Reads the fixed-macro penalty that is about to be overwritten. See above.
+            let valid = self.is_valid(!self.fixed_bboxes.is_empty());
+            self.penalties.notch =
+                inputs.notch(&self.macros, outline, (self.width, self.height), valid);
+
+            self.placement = Some(inputs);
+        }
+
         self.penalties.fixed_macros = fixed_macros_penalty(
             &self.macros,
             &self.fixed_bboxes,
@@ -1505,6 +1534,7 @@ fn new_search(
         width: 0,
         height: 0,
         penalties: Penalties::default(),
+        placement: None,
         outline_width,
         outline_height,
         dbu_per_micron,

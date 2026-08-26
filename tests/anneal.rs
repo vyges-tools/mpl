@@ -971,6 +971,7 @@ fn search_with(n: usize) -> Search {
         width: 0,
         height: 0,
         penalties: Default::default(),
+        placement: None,
         outline_width: 100_000,
         outline_height: 100_000,
         dbu_per_micron: 2000,

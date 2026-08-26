@@ -479,7 +479,7 @@ pub struct BoundaryMacro {
 /// ⚠️ **Its `width` and `height` are used as if they were the far-edge COORDINATES.** That is
 /// upstream's arithmetic and it is consistent, because the macro's position is first rebased onto
 /// the root's origin — but it only reads as correct once that rebasing is in view.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub struct Root {
     pub x: i32,
     pub y: i32,
@@ -1712,5 +1712,173 @@ pub fn run_enhancements<S: Enhancements + ?Sized>(state: &mut S, force_centraliz
     let pre_cost = state.norm_cost();
     if attempt_centralization(state, pre_cost, force_centralization) {
         attempt_macro_cluster_alignment(state);
+    }
+}
+
+// ---------------------------------------------------------------- the placement cost's inputs
+
+/// What a soft macro's cluster contributes to the placement-only cost terms.
+///
+/// 🔑 **Fixed for the whole search.** The annealer moves and resizes macros, but nothing here
+/// changes — so this is taken once, alongside the macros, and the per-term views below are rebuilt
+/// from it and the current geometry on every scoring.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct MacroAttributes {
+    pub kind: Option<AreaKind>,
+    /// The number of hard macros the cluster holds. ⚠️ Zero for a standard-cell cluster.
+    pub num_macro: i32,
+    pub cluster_macro_area: i64,
+    pub cluster_area: i64,
+    pub is_cluster_of_unplaced_io_pins: bool,
+    pub is_unconstrained_io_cluster: bool,
+}
+
+/// Everything the six placement-only cost terms read that the annealer's own state does not hold.
+///
+/// ⚠️ **A structural divergence, class E.** Upstream keeps every one of these as a member of
+/// `SACoreSoftMacro` and reads them term by term. Gathering them into one value is what lets the
+/// tiling search share the same core without carrying any of it.
+#[derive(Debug, Clone, Default)]
+pub struct PlacementInputs {
+    pub attributes: Vec<MacroAttributes>,
+    pub nets: Vec<BundledNet>,
+    pub guides: Vec<(usize, (i32, i32, i32, i32))>,
+    pub fences: Vec<(usize, (i32, i32, i32, i32))>,
+    pub soft_blockages: Vec<(i32, i32, i32, i32)>,
+    /// The parent outline's lower-left corner in the die's coordinates.
+    pub outline_origin: (i32, i32),
+    pub root: Root,
+    /// The die's own width plus height — what an unplaced IO pin's macro is charged when it sits
+    /// outside the outline.
+    pub die_span: i64,
+    /// The die edges an unconstrained IO cluster's pins may land on.
+    pub available_regions: Vec<Region>,
+    /// A constrained IO cluster's own region, by macro id.
+    pub constraint_regions: Vec<(usize, Region)>,
+    pub weights: crate::anneal::SoftWeights,
+}
+
+impl PlacementInputs {
+    fn wirelength_view(&self, macros: &[crate::anneal::SoftMacro]) -> Vec<WirelengthMacro> {
+        macros
+            .iter()
+            .zip(&self.attributes)
+            .map(|(m, a)| WirelengthMacro {
+                x: m.x,
+                y: m.y,
+                width: m.width,
+                height: m.height,
+                is_cluster_of_unplaced_io_pins: a.is_cluster_of_unplaced_io_pins,
+                is_unconstrained_io_cluster: a.is_unconstrained_io_cluster,
+            })
+            .collect()
+    }
+
+    /// ⚠️ **Both net lists are the same one here.** They are separate parameters so the reference's
+    /// one-character difference between the weight sum's list and the length's stays visible; its
+    /// only caller passes the same list to both, and so does this.
+    pub fn wirelength(
+        &self,
+        macros: &[crate::anneal::SoftMacro],
+        outline: (i32, i32),
+    ) -> f32 {
+        if self.weights.wirelength <= 0.0 {
+            return 0.0;
+        }
+        let view = self.wirelength_view(macros);
+        let constraint_of = |id: usize| {
+            self.constraint_regions.iter().find(|(i, _)| *i == id).map(|(_, r)| r.clone())
+        };
+        compute_nets_wire_length(
+            &self.nets,
+            &self.nets,
+            &view,
+            outline,
+            self.die_span,
+            &self.available_regions,
+            &constraint_of,
+        )
+    }
+
+    pub fn guidance(&self, macros: &[crate::anneal::SoftMacro], dbu_per_micron: i32) -> f32 {
+        let view = self.wirelength_view(macros);
+        guidance_penalty(&self.guides, &view, self.weights.guidance, dbu_per_micron)
+    }
+
+    pub fn fence(&self, macros: &[crate::anneal::SoftMacro], outline: (i32, i32)) -> f32 {
+        let view = self.wirelength_view(macros);
+        fence_penalty(&self.fences, &view, outline, self.weights.fence)
+    }
+
+    pub fn boundary(
+        &self,
+        macros: &[crate::anneal::SoftMacro],
+        sp: &crate::anneal::SequencePair,
+        dbu_per_micron: i32,
+    ) -> f32 {
+        let view: Vec<BoundaryMacro> = macros
+            .iter()
+            .zip(&self.attributes)
+            .map(|(m, a)| BoundaryMacro {
+                x: m.x,
+                y: m.y,
+                width: m.width,
+                height: m.height,
+                fixed: m.fixed,
+                num_macro: a.num_macro,
+            })
+            .collect();
+        boundary_penalty(
+            &view,
+            &sp.pos,
+            self.outline_origin,
+            &self.root,
+            self.weights.boundary,
+            dbu_per_micron,
+        )
+    }
+
+    pub fn soft_blockage(
+        &self,
+        macros: &[crate::anneal::SoftMacro],
+        sp: &crate::anneal::SequencePair,
+    ) -> f32 {
+        let view: Vec<BlockageMacro> = macros
+            .iter()
+            .zip(&self.attributes)
+            .map(|(m, a)| BlockageMacro {
+                x: m.x,
+                y: m.y,
+                width: m.width,
+                height: m.height,
+                num_macro: a.num_macro,
+                cluster_macro_area: a.cluster_macro_area,
+                cluster_area: a.cluster_area,
+            })
+            .collect();
+        soft_blockage_penalty(&view, &sp.pos, &self.soft_blockages, self.weights.soft_blockage)
+    }
+
+    /// ⚠️ **A macro with no cluster behind it obstructs nothing**, whatever its geometry — see
+    /// [`NotchMacro::obstructs`]. `None` is upstream's null cluster pointer.
+    pub fn notch(
+        &self,
+        macros: &[crate::anneal::SoftMacro],
+        outline: (i32, i32),
+        packing: (i32, i32),
+        valid: bool,
+    ) -> f32 {
+        let view: Vec<NotchMacro> = macros
+            .iter()
+            .zip(&self.attributes)
+            .map(|(m, a)| NotchMacro {
+                x: m.x,
+                y: m.y,
+                width: m.width,
+                height: m.height,
+                kind: a.kind.unwrap_or(AreaKind::FixedMacro),
+            })
+            .collect();
+        notch_penalty(&view, outline, packing, valid, self.weights.notch)
     }
 }
