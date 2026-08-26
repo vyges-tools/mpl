@@ -3213,3 +3213,97 @@ pub fn temp_macro_clusters(macro_names: &[String], masters: &[usize], first_id: 
     out.distinct_masters = distinct.len();
     out
 }
+
+// ---------------------------------------------------------------- snapping to the track grid
+
+/// Which axis a snap pass constrains.
+///
+/// ⚠️ **A VERTICAL pass constrains X**, because vertical routing layers have vertical tracks whose
+/// positions are X coordinates. Reading "vertical" as "moves the macro vertically" gets both passes
+/// backwards.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SnapAxis {
+    /// Vertical layers, vertical tracks, X positions.
+    Vertical,
+    /// Horizontal layers, horizontal tracks, Y positions.
+    Horizontal,
+}
+
+/// Upstream `Snapper::snapMacro`: ⚠️ **vertical first, then horizontal** — X settled before Y. The
+/// two passes are independent, so the order is not load-bearing for the result, but it is what the
+/// reference does and what its trace shows.
+pub const SNAP_PASSES: [SnapAxis; 2] = [SnapAxis::Vertical, SnapAxis::Horizontal];
+
+/// Upstream `Snapper::getPinOffset`: where a pin's centre sits relative to the macro's origin.
+///
+/// ⛔ **It mixes two different boxes.** The half-width comes from the PLACED pin's bounding box,
+/// and the distance to the origin from the MASTER TERMINAL's — one is in die coordinates and one
+/// is in the master's. They agree for an unrotated macro, which is why it works.
+///
+/// ⛔ **Only THREE of the eight orientations negate, and they differ per axis**: `MY` and `R180`
+/// on the vertical pass, `MX` and `R180` on the horizontal one. **The four rotated orientations —
+/// `R90`, `R270`, `MXR90`, `MYR90` — are not handled at all** and take the unnegated offset.
+///
+/// ⚠️ The half-width is an INTEGER division, so an odd pin width loses its half unit.
+pub fn pin_offset(
+    pin_width: i32,
+    mterm_min: i32,
+    orient: crate::halo::Orient,
+    axis: SnapAxis,
+) -> i32 {
+    use crate::halo::Orient;
+    let offset = mterm_min + (pin_width / 2);
+    let negates = match axis {
+        SnapAxis::Vertical => matches!(orient, Orient::My | Orient::R180),
+        SnapAxis::Horizontal => matches!(orient, Orient::Mx | Orient::R180),
+    };
+    if negates {
+        -offset
+    } else {
+        offset
+    }
+}
+
+/// Upstream `Snapper::alignWithManufacturingGrid`.
+///
+/// ⚠️ **`std::round`, which rounds half AWAY FROM ZERO** — not to even, and not toward zero. The
+/// division is in `f64` and the product is narrowed back to an `int`.
+///
+/// ⛔ **A grid of zero divides by zero.** Upstream does not guard it; a technology without a
+/// manufacturing grid would produce a NaN and then an unspecified integer.
+pub fn align_with_manufacturing_grid(origin: i32, manufacturing_grid: i32) -> i32 {
+    ((origin as f64 / manufacturing_grid as f64).round() * manufacturing_grid as f64) as i32
+}
+
+/// Upstream `Snapper::snapPinToPosition`.
+///
+/// ⛔ **The manufacturing-grid alignment happens AFTER the track is chosen, and can undo it.** The
+/// origin is placed so the pin lands exactly on a track, and is then rounded to the manufacturing
+/// grid — which moves the pin off that track whenever the track pitch is not a multiple of the
+/// grid. The snap targets the track; the grid has the last word.
+pub fn snap_origin_to_position(
+    position: i32,
+    pin_offset: i32,
+    manufacturing_grid: i32,
+) -> i32 {
+    align_with_manufacturing_grid(position - pin_offset, manufacturing_grid)
+}
+
+/// Upstream `snap`'s choice of track.
+///
+/// ⛔ **It takes the first track AT OR AFTER the pin centre, not the NEAREST one.** A pin sitting
+/// just past a track is moved FORWARD to the next, never back — so the snap is biased in one
+/// direction along the axis.
+///
+/// ⚠️ **A pin past the last track steps BACK to it**, which is the only case that ever moves
+/// backwards.
+///
+/// ℹ️ `None` when there are no tracks at all; upstream's caller handles that case before reaching
+/// here, by aligning to the manufacturing grid alone.
+pub fn starting_position_index(positions: &[i32], pin_center: i32) -> Option<usize> {
+    if positions.is_empty() {
+        return None;
+    }
+    let index = positions.partition_point(|&p| p < pin_center);
+    Some(if index == positions.len() { index - 1 } else { index })
+}
