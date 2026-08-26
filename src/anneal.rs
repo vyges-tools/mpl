@@ -399,8 +399,8 @@ pub fn fixed_macros_penalty(
 /// [`Default`] is the shaping set because that is the caller this file was built for.
 ///
 /// ⚠️ **`fence` is NOT dead by default at placement.** Its command default is `10.0`, and only a
-/// design with no standard cells zeroes it. The term stays inert only because a design with no
-/// fences has nothing to score — see [`Penalties::fence`].
+/// design with no standard cells zeroes it — so the term is live on any design that declares a
+/// fence, and merely has nothing to score on one that does not.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct SoftWeights {
     pub area: f32,
@@ -490,9 +490,8 @@ pub struct Penalties {
     pub outline: f32,
     pub wirelength: f32,
     pub guidance: f32,
-    /// ⛔ **Never computed.** `calFencePenalty` is unbuilt — divergence class F. It stays zero,
-    /// which is the right answer for every design that declares no fence and the wrong one for
-    /// any design that does.
+    /// ℹ️ Computed by [`crate::placement::fence_penalty`]. It is zero for every design in the
+    /// suite because none of them declares a fence — not because the term is unbuilt.
     pub fence: f32,
     pub boundary: f32,
     pub soft_blockage: f32,

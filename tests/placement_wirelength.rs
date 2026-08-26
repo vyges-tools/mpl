@@ -424,3 +424,89 @@ fn the_accumulation_follows_the_sequence_order() {
     assert!((forward - reverse).abs() < 1e-3, "same geometry either way");
     assert_eq!(forward, boundary_penalty(&macros, &[0, 1, 2], (0, 0), &root(), 50.0, 3));
 }
+
+// ---------------------------------------------------------------- the fence penalty
+
+use vyges_mpl::placement::fence_penalty;
+
+/// 🔑 **A macro anywhere inside its fence scores zero** — the term measures the distance to
+/// having no violation, not the distance to the fence's centre.
+#[test]
+fn a_macro_inside_its_fence_costs_nothing() {
+    let fence = [(0usize, (0, 0, 1000, 1000))];
+    // Centred, and hard against each corner of the fence in turn.
+    for origin in [(450, 450), (0, 0), (900, 900), (0, 900)] {
+        let macros = [macro_at(origin.0, origin.1, 100, 100)];
+        assert_eq!(fence_penalty(&fence, &macros, (2000, 2000), 10.0), 0.0, "{origin:?}");
+    }
+}
+
+/// ⚠️ **The overshoot is a fraction of the OUTLINE, squared** — and it is the ratio that is
+/// squared, not the distance.
+#[test]
+fn a_macro_outside_its_fence_pays_the_squared_overshoot() {
+    // A 100-wide macro in a 1000-wide fence has 450 of slack; put its centre 700 from the fence
+    // centre and the overshoot is 250, which is an exact eighth of a 2000-wide outline.
+    let fence = [(0usize, (0, 0, 1000, 1000))];
+    let macros = [macro_at(1150, 450, 100, 100)];
+    let got = fence_penalty(&fence, &macros, (2000, 2000), 10.0);
+    assert_eq!(got, 0.015_625, "0.125 squared, and no y term");
+
+    // Both axes overshoot, and the two squares add.
+    let macros = [macro_at(1150, 1150, 100, 100)];
+    let got = fence_penalty(&fence, &macros, (2000, 2000), 10.0);
+    assert_eq!(got, 0.031_25);
+}
+
+/// ⚠️ **`<=`, so a macro exactly at the limit of its slack scores zero.**
+#[test]
+fn a_macro_exactly_at_its_slack_limit_costs_nothing() {
+    let fence = [(0usize, (0, 0, 1000, 1000))];
+    // Slack is 450; a centre exactly 450 away puts the macro's edge on the fence's.
+    let macros = [macro_at(900, 450, 100, 100)];
+    assert_eq!(fence_penalty(&fence, &macros, (2000, 2000), 10.0), 0.0);
+
+    let macros = [macro_at(901, 450, 100, 100)];
+    assert!(fence_penalty(&fence, &macros, (2000, 2000), 10.0) > 0.0, "one unit further out");
+}
+
+/// ⚠️ **A fence smaller than the macro it constrains is treated as unsatisfiable and skipped**,
+/// not as infinitely violated.
+#[test]
+fn a_fence_the_macro_cannot_fit_is_skipped() {
+    let fence = [(0usize, (0, 0, 50, 1000))];
+    let macros = [macro_at(5000, 5000, 100, 100)];
+    assert_eq!(fence_penalty(&fence, &macros, (2000, 2000), 10.0), 0.0, "far away, and skipped");
+}
+
+/// ⚠️ A zero-area macro is skipped too.
+#[test]
+fn a_zero_area_macro_is_skipped() {
+    let fence = [(0usize, (0, 0, 1000, 1000))];
+    let macros = [macro_at(5000, 5000, 0, 100)];
+    assert_eq!(fence_penalty(&fence, &macros, (2000, 2000), 10.0), 0.0);
+}
+
+/// ⛔ **A skipped fence still counts towards the divisor**, so adding an unsatisfiable one dilutes
+/// the whole term rather than being ignored.
+#[test]
+fn a_skipped_fence_still_dilutes_the_mean() {
+    let macros = [macro_at(1150, 450, 100, 100), macro_at(5000, 5000, 100, 100)];
+    let one = [(0usize, (0, 0, 1000, 1000))];
+    let alone = fence_penalty(&one, &macros, (2000, 2000), 10.0);
+
+    // The second fence is far too small for its macro, so it scores nothing — and halves the mean.
+    let with_unsatisfiable = [(0usize, (0, 0, 1000, 1000)), (1usize, (0, 0, 10, 10))];
+    let diluted = fence_penalty(&with_unsatisfiable, &macros, (2000, 2000), 10.0);
+    assert_eq!(diluted, alone / 2.0);
+}
+
+/// ℹ️ No fences, or a zero weight, and the term is dark — which is every design in the suite,
+/// since none of them declares a fence.
+#[test]
+fn the_fence_term_is_dark_without_fences_or_weight() {
+    let macros = [macro_at(5000, 5000, 100, 100)];
+    assert_eq!(fence_penalty(&[], &macros, (2000, 2000), 10.0), 0.0);
+    let fence = [(0usize, (0, 0, 1000, 1000))];
+    assert_eq!(fence_penalty(&fence, &macros, (2000, 2000), 0.0), 0.0);
+}

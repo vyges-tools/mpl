@@ -390,6 +390,64 @@ pub fn guidance_penalty(
     penalty / guides.len() as f32
 }
 
+/// Upstream `calFencePenalty`.
+///
+/// 🔑 **It measures how far a macro is from having no fence violation at all**, not how far it is
+/// from the fence's centre. A macro anywhere inside its fence scores zero; one outside scores the
+/// overshoot, as a fraction of the outline, squared on each axis and summed.
+///
+/// ⚠️ **A macro with zero area is skipped**, and so is one that simply does not FIT its fence — a
+/// fence smaller than the macro it constrains is treated as unsatisfiable rather than as
+/// infinitely violated.
+///
+/// ⚠️ **Both skips still count towards the divisor.** The mean is over every fence declared, not
+/// over the ones that scored, so adding an unsatisfiable fence dilutes the whole term.
+///
+/// ⚠️ **`<=`, so a macro exactly at the limit of its slack scores zero.** And every centre and
+/// half-extent is an integer division, so an odd extent loses its half unit before the comparison.
+///
+/// ⚠️ The ratios are formed against the OUTLINE's extents, so the term is dimensionless and
+/// comparable across outlines — and it is the ratio that is squared, not the distance.
+pub fn fence_penalty(
+    fences: &[(usize, (i32, i32, i32, i32))],
+    macros: &[WirelengthMacro],
+    outline: (i32, i32),
+    weight: f32,
+) -> f32 {
+    if weight <= 0.0 || fences.is_empty() {
+        return 0.0;
+    }
+
+    let mut penalty = 0.0f32;
+    for &(id, fence) in fences {
+        let m = &macros[id];
+        let (lx, ly) = (m.x, m.y);
+        let (ux, uy) = (lx + m.width, ly + m.height);
+
+        if m.width as i64 * m.height as i64 == 0 {
+            continue;
+        }
+        let (fence_dx, fence_dy) = (fence.2 - fence.0, fence.3 - fence.1);
+        if m.width > fence_dx || m.height > fence_dy {
+            continue;
+        }
+
+        // How far the macro's centre may stray before any part of it leaves the fence.
+        let max_x_dist = (fence_dx - (ux - lx)) / 2;
+        let max_y_dist = (fence_dy - (uy - ly)) / 2;
+        let x_dist = (((fence.0 + fence.2) / 2) - ((lx + ux) / 2)).abs();
+        let y_dist = (((fence.1 + fence.3) / 2) - ((ly + uy) / 2)).abs();
+
+        let width = if x_dist <= max_x_dist { 0 } else { x_dist - max_x_dist };
+        let height = if y_dist <= max_y_dist { 0 } else { y_dist - max_y_dist };
+        let width_ratio = width as f32 / outline.0 as f32;
+        let height_ratio = height as f32 / outline.1 as f32;
+        penalty += (width_ratio * width_ratio) + (height_ratio * height_ratio);
+    }
+
+    penalty / fences.len() as f32
+}
+
 /// `dbuAreaToMicrons`, narrowed to the `f32` the penalty accumulates in.
 fn area_to_microns_f32(dbu_area: i64, dbu_per_micron: i32) -> f32 {
     let d = dbu_per_micron as f64;
