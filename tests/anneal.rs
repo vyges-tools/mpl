@@ -985,3 +985,167 @@ fn the_cost_is_dominated_by_the_outline_once_it_overhangs() {
     let outside = s.norm_cost();
     assert!(outside > inside * 100.0, "inside {inside}, outside {outside}");
 }
+
+// ---------------------------------------------------------------- initialize and fastSA
+
+use vyges_mpl::anneal::{BestResult, SaParameters};
+
+/// ⚠️ **A tenth of the configured count is the FLOOR.** Every cluster with fewer than 50 macros
+/// runs 50 perturbations per step, not one per macro — so the sweep length is nearly always 50.
+#[test]
+fn the_perturbation_count_has_a_floor_of_a_tenth() {
+    let p = SaParameters::default();
+    assert_eq!(p.perturbations_for(2), 50, "two macros still get fifty");
+    assert_eq!(p.perturbations_for(50), 50, "the floor wins on a tie");
+    assert_eq!(p.perturbations_for(51), 51, "and the count wins above it");
+}
+
+/// 🔑 **The sweep never restores, so the samples walk a trajectory.** If it restored, every
+/// sample would be one move from the identity and the widths would barely vary.
+#[test]
+fn the_normalisation_sweep_walks_rather_than_resampling() {
+    let mut s = search_with(4);
+    let mut g = Mt19937::new(0);
+    let start = s.sp.pos.clone();
+    s.initialize(&mut g, &SaParameters::default());
+    // Fifty un-restored moves from the identity essentially never land back on it.
+    assert_ne!(
+        (s.sp.pos.clone(), s.sp.neg.clone()),
+        (start.clone(), start),
+        "the state moved and stayed moved"
+    );
+}
+
+/// ⚠️ **Every factor at or below `1e-4` becomes exactly `1.0`** — not a small number. A design
+/// with no fixed macros has a fixed-macro penalty of zero throughout, so its factor is 1.0.
+#[test]
+fn an_absent_penalty_normalises_to_one() {
+    let mut s = search_with(3);
+    let mut g = Mt19937::new(1);
+    s.initialize(&mut g, &SaParameters::default());
+    assert_eq!(s.normalization.fixed_macros, 1.0, "no fixed macros, so the factor is floored");
+    assert!(s.normalization.outline > 0.0);
+}
+
+/// ⚠️ **The replay leaves the live state holding the LAST sample.** Upstream assigns each sample
+/// back into the members to recompute its cost, and never puts the originals back.
+#[test]
+fn initialize_leaves_the_last_sample_in_the_live_state() {
+    let mut s = search_with(3);
+    let mut g = Mt19937::new(2);
+
+    // Reproduce the sweep by hand and keep the final sample.
+    let mut replay = search_with(3);
+    let mut rg = Mt19937::new(2);
+    let n = SaParameters::default().perturbations_for(replay.macros.len());
+    let mut last = (0, 0, 0.0f32);
+    for _ in 0..n {
+        replay.perturb(&mut rg);
+        last = (replay.width, replay.height, replay.outline_penalty);
+    }
+
+    s.initialize(&mut g, &SaParameters::default());
+    assert_eq!((s.width, s.height, s.outline_penalty), last);
+}
+
+/// ⚠️ The initial temperature comes from the mean ABSOLUTE change between consecutive costs, so a
+/// run whose cost never changes gets exactly 1.0 rather than a division by zero.
+#[test]
+fn a_flat_cost_gives_the_default_temperature() {
+    // One macro: every action either does nothing or resizes within a single shape, and the
+    // sequence cannot be permuted — so the cost never moves.
+    let (curve, w, h, area) = shape_curve_from_tilings(&[(200, 100)]);
+    let mut s = search_with(1);
+    s.curves = vec![curve];
+    s.macros = vec![SoftMacro { width: w, height: h, area, is_macro_cluster: true, ..Default::default() }];
+    s.sp = init_sequence_pair(1);
+    let (pw, ph) = pack_floorplan(&mut s.macros, &s.sp);
+    s.width = pw;
+    s.height = ph;
+    s.cal_penalty();
+
+    let mut g = Mt19937::new(3);
+    let temperature = s.initialize(&mut g, &SaParameters::default());
+    assert_eq!(temperature, 1.0, "no variation, so no temperature to derive");
+}
+
+/// 🔑 **A varying cost gives a positive, finite temperature.** `ln(0.9)` is negative, so the sign
+/// flip is what makes it positive — dropping it would give a negative temperature and invert
+/// every acceptance test.
+#[test]
+fn a_varying_cost_gives_a_positive_temperature() {
+    let mut s = search_with(4);
+    let mut g = Mt19937::new(4);
+    let temperature = s.initialize(&mut g, &SaParameters::default());
+    assert!(temperature > 0.0 && temperature.is_finite(), "got {temperature}");
+}
+
+/// ⚠️ The best result keeps only WIDTHS, and starts at the largest float so the first candidate
+/// always replaces it.
+#[test]
+fn the_best_result_starts_at_the_largest_float() {
+    let best = BestResult::new();
+    assert_eq!(best.cost, f32::MAX);
+    assert!(best.is_empty());
+
+    let s = search_with(3);
+    let mut best = BestResult::new();
+    s.update_best_result(&mut best, 1.5);
+    assert_eq!(best.cost, 1.5);
+    assert_eq!(best.macro_widths.len(), 3);
+    assert!(!best.is_empty());
+}
+
+/// 🔑 **The search is deterministic**: same seed, same answer. This is the property the whole
+/// exercise rests on.
+#[test]
+fn the_search_is_reproducible_from_its_seed() {
+    let params = SaParameters { max_num_step: 20, ..SaParameters::default() };
+    let run = || {
+        let mut s = search_with(4);
+        let mut g = Mt19937::new(7);
+        let t = s.initialize(&mut g, &params);
+        s.fast_sa(&mut g, &params, t, false);
+        (s.width, s.height, s.sp.pos.clone(), s.sp.neg.clone())
+    };
+    assert_eq!(run(), run());
+}
+
+/// ⚠️ **A random word is drawn only when a move makes things WORSE**, so how much randomness a
+/// run consumes is a function of its own cost trajectory. Two runs identical but for the
+/// temperature must therefore leave the generator in DIFFERENT places — if the draw schedule were
+/// fixed, they would land together.
+#[test]
+fn the_draw_count_follows_the_cost_trajectory_not_a_schedule() {
+    let params = SaParameters { max_num_step: 5, ..SaParameters::default() };
+
+    let end_state = |temperature: f32| {
+        let mut s = search_with(4);
+        let mut g = Mt19937::new(8);
+        s.fast_sa(&mut g, &params, temperature, false);
+        g.next()
+    };
+
+    // Cold: almost every degrading move is rejected. Hot: almost every one is accepted. Both
+    // draw for each degrading move, but the trajectories differ and so do the streams.
+    assert_ne!(
+        end_state(1e-9),
+        end_state(1e9),
+        "the amount of randomness consumed depends on the trajectory"
+    );
+    assert_eq!(end_state(1e-9), end_state(1e-9), "and is reproducible at a fixed temperature");
+}
+
+/// 🔑 **The search improves on where it started.** The opening state is a single row, far outside
+/// the outline, so a working annealer must reduce the cost.
+#[test]
+fn the_search_improves_on_the_opening_row() {
+    let params = SaParameters { max_num_step: 200, ..SaParameters::default() };
+    let mut s = search_with(4);
+    let opening = s.norm_cost();
+
+    let mut g = Mt19937::new(9);
+    let t = s.initialize(&mut g, &params);
+    let best = s.fast_sa(&mut g, &params, t, false);
+    assert!(best.cost < opening, "opening {opening}, best {}", best.cost);
+}

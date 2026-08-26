@@ -974,3 +974,260 @@ impl Search {
         self.cal_penalty();
     }
 }
+
+// ---------------------------------------------------------------- the best result
+
+/// The best packing the search has seen.
+///
+/// ⚠️ **Only each macro's WIDTH is kept**, never its height. Restoring re-derives the height —
+/// from the stored area for a macro cluster, and by walking the shape curve for anything else.
+#[derive(Debug, Clone, Default)]
+pub struct BestResult {
+    pub cost: f32,
+    pub pos: Vec<usize>,
+    pub neg: Vec<usize>,
+    pub macro_widths: Vec<i32>,
+}
+
+impl BestResult {
+    /// ⚠️ The cost starts at the largest finite float, so the first candidate always wins.
+    pub fn new() -> Self {
+        Self { cost: f32::MAX, pos: Vec::new(), neg: Vec::new(), macro_widths: Vec::new() }
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.pos.is_empty()
+    }
+}
+
+impl Search {
+    /// Upstream `SACoreSoftMacro::isValid`.
+    ///
+    /// ⚠️ Two conditions: nothing may overlap a fixed macro, AND the packing must fit. A design
+    /// with no fixed macros is judged on the fit alone.
+    pub fn is_valid(&self, fixed_present: bool) -> bool {
+        if fixed_present && self.fixed_macros_penalty > 0.0 {
+            return false;
+        }
+        self.fits_in_outline()
+    }
+
+    /// Upstream `updateBestResult`.
+    pub fn update_best_result(&self, best: &mut BestResult, cost: f32) {
+        best.pos.clone_from(&self.sp.pos);
+        best.neg.clone_from(&self.sp.neg);
+        best.macro_widths = vec![0; self.macros.len()];
+        for &id in &self.sp.pos {
+            best.macro_widths[id] = self.macros[id].width;
+        }
+        best.cost = cost;
+    }
+
+    /// Upstream `useBestResult`: put the sequences back and rebuild each macro from its width.
+    ///
+    /// ⚠️ **A macro cluster is restored with `setShapeF`, which BYPASSES the shape curve** — the
+    /// height is `area / width` and both are assigned directly. Everything else goes through
+    /// `set_width` and is snapped to the curve, so the two paths can disagree about what a given
+    /// width means.
+    pub fn use_best_result(&mut self, best: &BestResult) {
+        self.sp.pos.clone_from(&best.pos);
+        self.sp.neg.clone_from(&best.neg);
+        for &id in &self.sp.pos {
+            let width = best.macro_widths[id];
+            if self.macros[id].is_macro_cluster {
+                // ⚠️ `getArea` reports zero for an area of 1 or less.
+                let area = if self.macros[id].area > 1 { self.macros[id].area } else { 0 };
+                let height = if width != 0 { (area / width as i64) as i32 } else { 0 };
+                if !self.macros[id].fixed {
+                    self.macros[id].width = width;
+                    self.macros[id].height = height;
+                    self.macros[id].area = width as i64 * height as i64;
+                }
+            } else {
+                let curve = self.curves[id].clone();
+                set_width(&mut self.macros[id], &curve, width);
+            }
+        }
+        let (width, height) = pack_floorplan(&mut self.macros, &self.sp);
+        self.width = width;
+        self.height = height;
+        self.cal_penalty();
+    }
+}
+
+// ---------------------------------------------------------------- initialize
+
+/// The hyperparameters the tiling search is built with.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct SaParameters {
+    pub init_prob: f32,
+    pub max_num_step: i32,
+    pub num_perturb_per_step: i32,
+}
+
+impl Default for SaParameters {
+    fn default() -> Self {
+        Self { init_prob: 0.9, max_num_step: 2000, num_perturb_per_step: 500 }
+    }
+}
+
+impl SaParameters {
+    /// Upstream's own adjustment at the shaping call site.
+    ///
+    /// ⚠️ **A TENTH of the configured count is the floor**, and the macro count wins only when it
+    /// exceeds that — so every cluster with fewer than 50 macros runs exactly 50 perturbations
+    /// per step, not one per macro.
+    pub fn perturbations_for(&self, macro_count: usize) -> usize {
+        let tenth = (self.num_perturb_per_step / 10) as usize;
+        if macro_count > tenth {
+            macro_count
+        } else {
+            tenth
+        }
+    }
+}
+
+impl Search {
+    /// Upstream `SACoreSoftMacro::initialize`: measure the penalties, then set the temperature.
+    ///
+    /// 🔑 **The sweep never restores.** It saves state each iteration and only puts it back when
+    /// invalid states are disallowed — which the shaping caller never asks for. So the samples
+    /// walk a RANDOM TRAJECTORY: the twentieth is twenty moves from the start, not one.
+    ///
+    /// ⚠️ **Every factor at or below `1e-4` becomes exactly `1.0`.** That is not a clamp to a
+    /// small number; a penalty that is almost always zero ends up dividing by one, so its raw
+    /// magnitude reaches the cost undamped on the rare step where it is not zero.
+    ///
+    /// ⚠️ **The replay MUTATES the live state.** Upstream assigns each sample back into the
+    /// members to recompute its cost, so when this returns the width, height and penalties are
+    /// the LAST sample's — which is also the last perturbation's, since nothing was restored.
+    ///
+    /// ⚠️ The initial temperature comes from the mean ABSOLUTE step-to-step change in cost, not
+    /// from the spread of the costs: `-(mean delta) / ln(init_prob)`.
+    pub fn initialize(&mut self, rng: &mut Mt19937, params: &SaParameters) -> f32 {
+        let perturbations = params.perturbations_for(self.macros.len());
+
+        let mut widths = Vec::with_capacity(perturbations);
+        let mut heights = Vec::with_capacity(perturbations);
+        let mut area_list = Vec::with_capacity(perturbations);
+        let mut outline_list = Vec::with_capacity(perturbations);
+        let mut fixed_list = Vec::with_capacity(perturbations);
+
+        for _ in 0..perturbations {
+            // ℹ️ Saved and then never used: the restore is guarded by a flag the shaping caller
+            // leaves at its default. Kept so the shape of the loop matches the reference.
+            let _saved = self.save_state();
+            self.perturb(rng);
+            widths.push(self.width);
+            heights.push(self.height);
+            area_list.push(self.area_penalty());
+            outline_list.push(self.outline_penalty);
+            fixed_list.push(self.fixed_macros_penalty);
+        }
+
+        let floor_at = |value: f32| if value <= 1e-4 { 1.0 } else { value };
+        self.normalization.area = floor_at(average(&area_list));
+        self.normalization.outline = floor_at(average(&outline_list));
+        self.normalization.fixed_macros = floor_at(average(&fixed_list));
+
+        let mut cost_list = Vec::with_capacity(outline_list.len());
+        for i in 0..outline_list.len() {
+            self.width = widths[i];
+            self.height = heights[i];
+            self.outline_penalty = outline_list[i];
+            self.fixed_macros_penalty = fixed_list[i];
+            cost_list.push(self.norm_cost());
+        }
+
+        let mut delta_cost = 0.0f32;
+        for i in 1..cost_list.len() {
+            delta_cost += (cost_list[i] - cost_list[i - 1]).abs();
+        }
+
+        if cost_list.len() > 1 && delta_cost > 0.0 {
+            -(delta_cost / (cost_list.len() - 1) as f32) / params.init_prob.ln()
+        } else {
+            1.0
+        }
+    }
+
+    /// Upstream `fastSA`.
+    ///
+    /// 🔑 **The temperature decays GEOMETRICALLY to `1e-10`** over exactly `max_num_step` steps,
+    /// the ratio fixed in advance rather than adapted.
+    ///
+    /// ⚠️ **A random word is drawn ONLY when a move makes things worse.** An improving move is
+    /// accepted without consulting the generator, so the number of words a run consumes depends
+    /// on its own trajectory — which is why every earlier piece had to be exact.
+    ///
+    /// ⚠️ **`num < prob`, strictly.** The draw is in `[0, 1)` and `prob` can reach 1 when the
+    /// temperature is still high, so the boundary is reachable.
+    ///
+    /// ⚠️ The final packing is recomputed once at the end, because `restore_state` deliberately
+    /// left the macros where the rejected move had put them.
+    pub fn fast_sa(
+        &mut self,
+        rng: &mut Mt19937,
+        params: &SaParameters,
+        init_temperature: f32,
+        fixed_present: bool,
+    ) -> BestResult {
+        let perturbations = params.perturbations_for(self.macros.len());
+        let mut best = BestResult::new();
+        let mut is_best_valid = false;
+
+        let mut cost = self.norm_cost();
+        let mut pre_cost = cost;
+        let mut temperature = init_temperature;
+        const MIN_T: f32 = 1e-10;
+        let t_factor = ((MIN_T / init_temperature).ln() / params.max_num_step as f32).exp();
+
+        self.update_best_result(&mut best, cost);
+
+        let mut step = 1;
+        while step <= params.max_num_step {
+            for _ in 0..perturbations {
+                let saved = self.save_state();
+                self.perturb(rng);
+                cost = self.norm_cost();
+
+                let is_valid = self.is_valid(fixed_present);
+                // ℹ️ The reference tests `!invalid_states_allowed_` here and restores. The
+                // shaping caller never disallows them, so the branch is not modelled.
+
+                let found_new_best = cost < best.cost;
+                if (!is_best_valid || is_valid) && found_new_best {
+                    self.update_best_result(&mut best, cost);
+                    is_best_valid = is_valid;
+                }
+
+                let delta_cost = cost - pre_cost;
+                if delta_cost <= 0.0 {
+                    pre_cost = cost;
+                } else {
+                    let num = canonical_f32(rng);
+                    let prob = (-delta_cost / temperature).exp();
+                    if num < prob {
+                        pre_cost = cost;
+                    } else if let Some(saved) = &saved {
+                        self.restore_state(saved);
+                    }
+                }
+            }
+            temperature *= t_factor;
+            step += 1;
+        }
+
+        let (width, height) = pack_floorplan(&mut self.macros, &self.sp);
+        self.width = width;
+        self.height = height;
+        self.cal_penalty();
+        cost = self.norm_cost();
+
+        let found_new_best = cost < best.cost;
+        if (is_best_valid && !self.is_valid(fixed_present)) || !found_new_best {
+            self.use_best_result(&best);
+        }
+        best
+    }
+}
