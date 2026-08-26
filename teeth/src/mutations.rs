@@ -477,6 +477,83 @@ pub const MUTATIONS: &[Mutation] = &[
     }"#,
         want: r#"the_all_macro_guard_is_checked_first"#,
     },
+    Mutation {
+        name: r#"push-tie-goes-left"#,
+        file: r#"src/placement.rs"#,
+        find: r#"    let (hor_boundary, smaller_hor) = if distance_to_left < distance_to_right {"#,
+        replace: r#"    let (hor_boundary, smaller_hor) = if distance_to_left <= distance_to_right {"#,
+        want: r#"a_tie_goes_right_and_top"#,
+    },
+    Mutation {
+        name: r#"push-tie-goes-bottom"#,
+        file: r#"src/placement.rs"#,
+        find: r#"    let (ver_boundary, smaller_ver) = if distance_to_bottom < distance_to_top {"#,
+        replace: r#"    let (ver_boundary, smaller_ver) = if distance_to_bottom <= distance_to_top {"#,
+        want: r#"a_tie_goes_right_and_top"#,
+    },
+    Mutation {
+        name: r#"push-threshold-crossed"#,
+        file: r#"src/placement.rs"#,
+        find: r#"    if smaller_hor < macro_width {"#,
+        replace: r#"    if smaller_hor < macro_height {"#,
+        want: r#"each_axis_is_measured_against_its_own_macro_dimension"#,
+    },
+    Mutation {
+        name: r#"push-distance-not-absolute"#,
+        file: r#"src/placement.rs"#,
+        find: r#"    let distance_to_left = (cluster_box.0 - core.0).abs();"#,
+        replace: r#"    let distance_to_left = cluster_box.0 - core.0;"#,
+        want: r#"a_cluster_outside_the_core_is_pushed_further_out"#,
+    },
+    Mutation {
+        name: r#"push-boundaries-in-decision-order"#,
+        file: r#"src/placement.rs"#,
+        find: r#"    found.sort_by_key(|(b, _)| *b);"#,
+        replace: r#"    found.reverse();"#,
+        want: r#"the_boundaries_come_out_in_enum_order"#,
+    },
+    Mutation {
+        name: r#"push-direction-inverted"#,
+        file: r#"src/placement.rs"#,
+        find: r#"        Boundary::L => (-distance, 0),
+        Boundary::R => (distance, 0),"#,
+        replace: r#"        Boundary::L => (distance, 0),
+        Boundary::R => (-distance, 0),"#,
+        want: r#"the_direction_comes_from_the_boundary_not_the_sign"#,
+    },
+    Mutation {
+        name: r#"push-does-not-compose"#,
+        file: r#"src/placement.rs"#,
+        find: r#"            cluster_box = moved;"#,
+        replace: r#"            let _ = moved;"#,
+        want: r#"the_two_pushes_compose"#,
+    },
+    Mutation {
+        name: r#"push-stops-after-a-revert"#,
+        file: r#"src/placement.rs"#,
+        find: r#"            attempts.push(PushAttempt { boundary, distance, committed: false });"#,
+        replace: r#"            attempts.push(PushAttempt { boundary, distance, committed: false });
+            break;"#,
+        want: r#"a_reverted_push_does_not_block_the_next"#,
+    },
+    Mutation {
+        name: r#"push-zero-distance-attempted"#,
+        file: r#"src/placement.rs"#,
+        find: r#"        if distance == 0 {
+            continue;
+        }
+        let moved = move_towards_boundary(cluster_box, boundary, distance);"#,
+        replace: r#"        let moved = move_towards_boundary(cluster_box, boundary, distance);"#,
+        want: r#"a_zero_distance_is_skipped_entirely"#,
+    },
+    Mutation {
+        name: r#"push-reverted-attempt-not-recorded"#,
+        file: r#"src/placement.rs"#,
+        find: r#"        if overlaps(moved) {"#,
+        replace: r#"        if overlaps(moved) {
+            continue;"#,
+        want: r#"a_reverted_push_is_still_an_attempt"#,
+    },
     // ---------------------------------------------------------------- the hard-macro netlist
     Mutation {
         name: r#"terminals-in-connection-order"#,

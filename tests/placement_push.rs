@@ -137,3 +137,155 @@ fn an_ordinary_design_is_pushed() {
     ];
     assert_eq!(push_decision(AreaKind::MixedCluster, &children), Ok(()));
 }
+
+// ---------------------------------------------------------------- the push itself
+
+use vyges_mpl::halo::Boundary;
+use vyges_mpl::placement::{
+    distance_to_close_boundaries, move_towards_boundary, push_macro_cluster, PushAttempt,
+};
+
+const CORE: (i32, i32, i32, i32) = (0, 0, 1000, 1000);
+
+/// 🔑 **At most one horizontal and one vertical boundary**, each the nearer of its pair.
+#[test]
+fn a_cluster_is_never_pushed_both_ways_on_one_axis() {
+    // Near the bottom-left corner; macros 200 x 200.
+    let got = distance_to_close_boundaries((50, 30, 250, 230), CORE, 200, 200);
+    assert_eq!(got, vec![(Boundary::B, 30), (Boundary::L, 50)]);
+}
+
+/// ⚠️ **The threshold is the MACRO's own dimension**, not the cluster's — a cluster further away
+/// than one macro is wide is left alone, which is what stops the push dragging it across the die.
+#[test]
+fn a_cluster_further_than_one_macro_is_left_alone() {
+    // 300 from the left, macros only 200 wide.
+    let got = distance_to_close_boundaries((300, 300, 500, 500), CORE, 200, 200);
+    assert!(got.is_empty(), "{got:?}");
+
+    // Widen the macro past the distance and it qualifies.
+    let got = distance_to_close_boundaries((300, 300, 500, 500), CORE, 301, 301);
+    assert_eq!(got.len(), 2);
+}
+
+/// ⛔ **The horizontal test uses the macro's WIDTH and the vertical its HEIGHT** — unlike the notch
+/// thresholds, which are crossed. A SQUARE macro cannot tell the two readings apart, and a mutation
+/// proved that every fixture here was square.
+#[test]
+fn each_axis_is_measured_against_its_own_macro_dimension() {
+    // Macros 200 wide and 400 tall. The cluster is 300 from the left — further than one macro
+    // WIDTH, so no horizontal push; but nearer than one macro HEIGHT, so the crossed reading
+    // would push it.
+    // Vertically it is centred at 450 from either edge, further than 400, so nothing there either.
+    let got = distance_to_close_boundaries((300, 450, 500, 550), CORE, 200, 400);
+    assert!(got.is_empty(), "the crossed reading would have pushed it left: {got:?}");
+}
+
+/// ⛔ **A tie goes to RIGHT, and to TOP.** A centred cluster is pushed towards the far edges.
+#[test]
+fn a_tie_goes_right_and_top() {
+    // Exactly centred: 400 from every edge.
+    let got = distance_to_close_boundaries((400, 400, 600, 600), CORE, 500, 500);
+    assert_eq!(got, vec![(Boundary::T, 400), (Boundary::R, 400)]);
+}
+
+/// ⚠️ **Both distances are `abs`**, so a cluster already OUTSIDE the core reads as close to the
+/// boundary it has passed — and is pushed further out rather than back in.
+#[test]
+fn a_cluster_outside_the_core_is_pushed_further_out() {
+    // Its left edge is 50 past the core's left edge.
+    let got = distance_to_close_boundaries((-50, 400, 150, 600), CORE, 200, 200);
+    assert_eq!(got, vec![(Boundary::L, 50)], "50, not -50");
+}
+
+/// ⚠️ **The result comes out in enum order — B, L, T, R** — not in the order the two were decided.
+#[test]
+fn the_boundaries_come_out_in_enum_order() {
+    let got = distance_to_close_boundaries((50, 30, 250, 230), CORE, 200, 200);
+    let order: Vec<Boundary> = got.iter().map(|(b, _)| *b).collect();
+    assert_eq!(order, vec![Boundary::B, Boundary::L], "B before L");
+
+    // Top-right corner: T before R.
+    let got = distance_to_close_boundaries((750, 770, 950, 970), CORE, 200, 200);
+    let order: Vec<Boundary> = got.iter().map(|(b, _)| *b).collect();
+    assert_eq!(order, vec![Boundary::T, Boundary::R]);
+
+    // ⛔ **Top-LEFT is the corner that proves it is a SORT and not a reversal.** In the other three
+    // corners the two happen to agree — the vertical boundary sorts ahead of the horizontal one and
+    // is decided second, so reversing the decision order gives the same answer. Here `L` (1) sorts
+    // ahead of `T` (2) while still being decided first, and only a sort keeps it there. A mutation
+    // that reversed instead of sorting went straight through the other three.
+    let got = distance_to_close_boundaries((50, 750, 250, 950), CORE, 200, 200);
+    assert_eq!(got, vec![(Boundary::L, 50), (Boundary::T, 50)], "L before T");
+}
+
+/// ⚠️ `L` and `B` move negative, `R` and `T` positive.
+#[test]
+fn the_direction_comes_from_the_boundary_not_the_sign() {
+    let b = (100, 100, 200, 200);
+    assert_eq!(move_towards_boundary(b, Boundary::L, 50), (50, 100, 150, 200));
+    assert_eq!(move_towards_boundary(b, Boundary::R, 50), (150, 100, 250, 200));
+    assert_eq!(move_towards_boundary(b, Boundary::B, 50), (100, 50, 200, 150));
+    assert_eq!(move_towards_boundary(b, Boundary::T, 50), (100, 150, 200, 250));
+}
+
+/// 🔑 **The two pushes COMPOSE** — the second is applied to the box the first left behind.
+#[test]
+fn the_two_pushes_compose() {
+    let (moved, attempts) = push_macro_cluster(
+        (50, 30, 250, 230),
+        &[(Boundary::B, 30), (Boundary::L, 50)],
+        &|_| false,
+    );
+    assert_eq!(moved, (0, 0, 200, 200), "into the corner");
+    assert!(attempts.iter().all(|a| a.committed));
+}
+
+/// ⚠️ **A reverted push leaves the box exactly as it was**, and does not stop the next one.
+///
+/// ⛔ **The revert has to come FIRST for this to prove anything.** With the revert second, a
+/// version that gave up after the first failure would behave identically — a mutation proved that
+/// the original fixture here did exactly that.
+#[test]
+fn a_reverted_push_does_not_block_the_next() {
+    // Anything moved DOWN overlaps; moving left does not. The bottom push is tried first.
+    let overlaps = |b: (i32, i32, i32, i32)| b.1 < 30;
+    let (moved, attempts) = push_macro_cluster(
+        (50, 30, 250, 230),
+        &[(Boundary::B, 30), (Boundary::L, 50)],
+        &overlaps,
+    );
+    assert_eq!(moved, (0, 30, 200, 230), "the LEFT push still happened after the bottom failed");
+    assert_eq!(
+        attempts,
+        vec![
+            PushAttempt { boundary: Boundary::B, distance: 30, committed: false },
+            PushAttempt { boundary: Boundary::L, distance: 50, committed: true },
+        ]
+    );
+}
+
+/// ⚠️ **A distance of zero is skipped, not attempted** — the cluster is already on that boundary,
+/// and no trace line is emitted for it.
+#[test]
+fn a_zero_distance_is_skipped_entirely() {
+    let (moved, attempts) = push_macro_cluster(
+        (0, 30, 200, 230),
+        &[(Boundary::B, 30), (Boundary::L, 0)],
+        &|_| false,
+    );
+    assert_eq!(moved, (0, 0, 200, 200));
+    assert_eq!(attempts.len(), 1, "only the bottom push was attempted");
+    assert_eq!(attempts[0].boundary, Boundary::B);
+}
+
+/// ⚠️ **The trace records ATTEMPTS, not commits** — upstream prints its line before the overlap
+/// test, so its log says "Moved X" for pushes it then undoes. Anyone scoring against the
+/// `boundary_push` channel is scoring attempts.
+#[test]
+fn a_reverted_push_is_still_an_attempt() {
+    let (_, attempts) =
+        push_macro_cluster((50, 50, 250, 250), &[(Boundary::L, 50)], &|_| true);
+    assert_eq!(attempts.len(), 1, "recorded even though it was undone");
+    assert!(!attempts[0].committed);
+}

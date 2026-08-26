@@ -2816,3 +2816,125 @@ pub fn push_decision(
     }
     Ok(())
 }
+
+/// Upstream `Pusher::getDistanceToCloseBoundaries`.
+///
+/// 🔑 **At most ONE horizontal and ONE vertical boundary**, each the nearer of its pair — a cluster
+/// is never pushed both left and right.
+///
+/// ⚠️ **The threshold is the MACRO's own dimension, not the cluster's.** A cluster further from the
+/// boundary than one macro is wide is left alone entirely, which is what stops the push dragging
+/// clusters across the die. Upstream takes it from `getHardMacros().front()` and says why: only
+/// macros of the same size are grouped.
+///
+/// ⛔ **A TIE goes to RIGHT, and to TOP.** The tests are `left < right` and `bottom < top`, so a
+/// cluster exactly centred is pushed towards the far edges, not the near ones.
+///
+/// ⚠️ **Both distances are `abs`**, so a cluster already OUTSIDE the core reads as close to the
+/// boundary it has passed and is pushed further out rather than back in.
+///
+/// ⚠️ **The result is a `std::map` keyed by boundary**, so it comes out in enum order — `B`, `L`,
+/// `T`, `R` — not in the order the two were decided. The push then applies them in that order, and
+/// the second is applied to a box the first may already have moved.
+pub fn distance_to_close_boundaries(
+    cluster_box: (i32, i32, i32, i32),
+    core: (i32, i32, i32, i32),
+    macro_width: i32,
+    macro_height: i32,
+) -> Vec<(crate::halo::Boundary, i32)> {
+    use crate::halo::Boundary;
+    let mut found: Vec<(Boundary, i32)> = Vec::new();
+
+    let distance_to_left = (cluster_box.0 - core.0).abs();
+    let distance_to_right = (cluster_box.2 - core.2).abs();
+    let (hor_boundary, smaller_hor) = if distance_to_left < distance_to_right {
+        (Boundary::L, distance_to_left)
+    } else {
+        // ⛔ A tie goes RIGHT.
+        (Boundary::R, distance_to_right)
+    };
+    if smaller_hor < macro_width {
+        found.push((hor_boundary, smaller_hor));
+    }
+
+    let distance_to_top = (cluster_box.3 - core.3).abs();
+    let distance_to_bottom = (cluster_box.1 - core.1).abs();
+    let (ver_boundary, smaller_ver) = if distance_to_bottom < distance_to_top {
+        (Boundary::B, distance_to_bottom)
+    } else {
+        // ⛔ A tie goes TOP.
+        (Boundary::T, distance_to_top)
+    };
+    if smaller_ver < macro_height {
+        found.push((ver_boundary, smaller_ver));
+    }
+
+    // ⚠️ Upstream's container is a `std::map<Boundary, int>`, so it is read in enum order.
+    found.sort_by_key(|(b, _)| *b);
+    found
+}
+
+/// Upstream `Pusher::moveMacroClusterBox`: shift a box towards one boundary.
+///
+/// ⚠️ **`L` and `B` move NEGATIVE, `R` and `T` positive** — the distance is unsigned and the
+/// direction comes entirely from the boundary.
+pub fn move_towards_boundary(
+    box_: (i32, i32, i32, i32),
+    boundary: crate::halo::Boundary,
+    distance: i32,
+) -> (i32, i32, i32, i32) {
+    use crate::halo::Boundary;
+    let (dx, dy) = match boundary {
+        Boundary::L => (-distance, 0),
+        Boundary::R => (distance, 0),
+        Boundary::T => (0, distance),
+        Boundary::B => (0, -distance),
+    };
+    (box_.0 + dx, box_.1 + dy, box_.2 + dx, box_.3 + dy)
+}
+
+/// One attempted push, as the reference's `boundary_push` trace records it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct PushAttempt {
+    pub boundary: crate::halo::Boundary,
+    pub distance: i32,
+    /// ⚠️ **False when the move was reverted.** The reference's trace line is printed BEFORE the
+    /// overlap test, so its log says "Moved X" for attempts that were undone — scoring against
+    /// that channel means scoring ATTEMPTS, not commits.
+    pub committed: bool,
+}
+
+/// Upstream `Pusher::pushMacroClusterToCoreBoundaries`.
+///
+/// 🔑 **Each boundary is tried in turn against the box the previous one left behind.** A committed
+/// push is not undone by a later failure, and a reverted one leaves the box exactly as it was — so
+/// the two pushes compose.
+///
+/// ⚠️ **A distance of zero is skipped**, not attempted: the cluster is already on that boundary.
+///
+/// ⚠️ **Overlap is tested on the CLUSTER's box, not on each macro** — upstream says why: it avoids
+/// iterating every hard macro. So a cluster whose bounding box clears an obstacle is committed even
+/// if the arrangement inside it would not.
+///
+/// Returns the final box and what was attempted.
+pub fn push_macro_cluster(
+    mut cluster_box: (i32, i32, i32, i32),
+    boundaries: &[(crate::halo::Boundary, i32)],
+    overlaps: &dyn Fn((i32, i32, i32, i32)) -> bool,
+) -> ((i32, i32, i32, i32), Vec<PushAttempt>) {
+    let mut attempts = Vec::new();
+    for &(boundary, distance) in boundaries {
+        if distance == 0 {
+            continue;
+        }
+        let moved = move_towards_boundary(cluster_box, boundary, distance);
+        if overlaps(moved) {
+            // ⚠️ Upstream moves the box back by the same distance rather than restoring a copy.
+            attempts.push(PushAttempt { boundary, distance, committed: false });
+        } else {
+            cluster_box = moved;
+            attempts.push(PushAttempt { boundary, distance, committed: true });
+        }
+    }
+    (cluster_box, attempts)
+}
