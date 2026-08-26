@@ -451,3 +451,102 @@ fn each_tiling_gets_its_own_width_range() {
 fn a_mixed_cluster_without_tilings_has_no_shape() {
     assert!(mixed_cluster_shape(&[], 1000, 0.5).is_none());
 }
+
+// ---------------------------------------------------------------- dead space
+
+use vyges_mpl::placement::{dead_space_grid, fill_dead_space, segment_index, DeadSpaceMacro};
+
+fn ds(x: i32, y: i32, w: i32, h: i32, mixed: bool, std_cell: bool) -> DeadSpaceMacro {
+    DeadSpaceMacro {
+        x,
+        y,
+        width: w,
+        height: h,
+        area: w as i64 * h as i64,
+        is_mixed_cluster: mixed,
+        is_std_cell_cluster: std_cell,
+    }
+}
+
+/// ⚠️ **`lower_bound`: a coordinate that IS an edge returns that edge's index**, which is what
+/// makes a macro's `[start, end)` span cover exactly its own cells.
+#[test]
+fn a_coordinate_on_an_edge_indexes_that_edge() {
+    let coords = [0, 100, 300, 500];
+    assert_eq!(segment_index(0, &coords), 0);
+    assert_eq!(segment_index(100, &coords), 1, "on the edge, not the cell before");
+    assert_eq!(segment_index(150, &coords), 2, "inside a cell, the next edge");
+    assert_eq!(segment_index(500, &coords), 3);
+}
+
+/// 🔑 Every macro edge is a grid line, plus the outline's corners.
+#[test]
+fn the_grid_is_cut_at_every_macro_edge() {
+    let macros = [ds(100, 50, 200, 100, false, false)];
+    let (xs, ys) = dead_space_grid(&macros, (1000, 800));
+    assert_eq!(xs, vec![0, 100, 300, 1000]);
+    assert_eq!(ys, vec![0, 50, 150, 800]);
+}
+
+/// ⚠️ **A zero-area macro cuts nothing.** Fixed terminals carry zero area, so the filler expands
+/// straight through where they sit.
+#[test]
+fn a_zero_area_macro_does_not_cut_the_grid() {
+    let mut terminal = ds(400, 400, 0, 0, false, false);
+    terminal.area = 0;
+    let (xs, ys) = dead_space_grid(&[terminal], (1000, 800));
+    assert_eq!(xs, vec![0, 1000], "no edge at 400");
+    assert_eq!(ys, vec![0, 800]);
+}
+
+/// 🔑 **A lone cell cluster expands to fill the whole outline.**
+#[test]
+fn a_lone_cluster_takes_the_whole_outline() {
+    let mut macros = [ds(100, 100, 200, 200, false, true)];
+    fill_dead_space(&mut macros, (1000, 1000));
+    assert_eq!((macros[0].x, macros[0].y), (0, 0));
+    assert_eq!((macros[0].width, macros[0].height), (1000, 1000));
+}
+
+/// ⛔ **Expansion stops at the first occupied column** — it does not step over an obstacle to take
+/// free space beyond it.
+#[test]
+fn expansion_stops_at_the_first_obstacle() {
+    // A fixed block at x 400..600 spanning the full height, and a cell cluster to its left.
+    let mut macros = [
+        ds(0, 0, 200, 1000, false, true),
+        ds(400, 0, 200, 1000, false, false),
+    ];
+    fill_dead_space(&mut macros, (1000, 1000));
+    assert_eq!(macros[0].x, 0);
+    assert_eq!(macros[0].width, 400, "grew right up to the block and stopped");
+    assert_eq!((macros[1].x, macros[1].width), (400, 200), "the blocker did not move");
+}
+
+/// 🔑 **Mixed clusters take their space BEFORE cell clusters**, so what the first pass claims is
+/// gone from the second. Swapping the passes would redistribute the empty space differently.
+#[test]
+fn a_mixed_cluster_claims_space_before_a_cell_cluster() {
+    // ⚠️ The two must contend for the SAME gap. Side by side with free space above each, they
+    // simply take their own column and the ordering proves nothing — which is what a first
+    // version of this fixture did.
+    //
+    // Full-height clusters at either edge, with one free column between them:
+    //   cell 0..400 | gap 400..600 | mixed 600..1000
+    let mut macros = [
+        ds(0, 0, 400, 1000, false, true),
+        ds(600, 0, 400, 1000, true, false),
+    ];
+    fill_dead_space(&mut macros, (1000, 1000));
+    assert_eq!((macros[1].x, macros[1].width), (400, 600), "the mixed cluster took the gap");
+    assert_eq!((macros[0].x, macros[0].width), (0, 400), "the cell cluster found it gone");
+}
+
+/// ⚠️ A macro that is neither mixed nor a cell cluster is never grown.
+#[test]
+fn a_macro_cluster_is_not_grown() {
+    let mut macros = [ds(100, 100, 200, 200, false, false)];
+    let before = macros[0];
+    fill_dead_space(&mut macros, (1000, 1000));
+    assert_eq!(macros[0], before, "untouched");
+}

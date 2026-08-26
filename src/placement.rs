@@ -828,3 +828,164 @@ pub fn mixed_cluster_shape(
         .collect();
     Some((intervals, inflated_area))
 }
+
+// ---------------------------------------------------------------- dead space
+
+/// Upstream `getSegmentIndex`: where a coordinate falls in the grid's edge list.
+///
+/// ⚠️ **`lower_bound`, so a coordinate that IS an edge returns that edge's own index**, not the
+/// cell before it. That is what makes a macro's `[start, end)` span cover exactly its own cells.
+pub fn segment_index(coordinate: i32, coords: &[i32]) -> usize {
+    coords.partition_point(|&c| c < coordinate)
+}
+
+/// A macro as the dead-space filler sees it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct DeadSpaceMacro {
+    pub x: i32,
+    pub y: i32,
+    pub width: i32,
+    pub height: i32,
+    pub area: i64,
+    pub is_mixed_cluster: bool,
+    pub is_std_cell_cluster: bool,
+}
+
+/// The grid edges the filler cuts the outline along.
+///
+/// 🔑 **Every macro edge becomes a grid line**, plus the outline's own two corners — so the grid is
+/// exactly fine enough to describe any arrangement of these macros and no finer.
+///
+/// ⚠️ **A zero-AREA macro contributes no edges.** Fixed terminals and IO clusters carry zero area
+/// by construction, so they neither cut the grid nor occupy it — the filler expands straight
+/// through them.
+pub fn dead_space_grid(macros: &[DeadSpaceMacro], outline: (i32, i32)) -> (Vec<i32>, Vec<i32>) {
+    let mut xs = std::collections::BTreeSet::new();
+    let mut ys = std::collections::BTreeSet::new();
+    for m in macros {
+        if m.area == 0 {
+            continue;
+        }
+        xs.insert(m.x);
+        xs.insert(m.x + m.width);
+        ys.insert(m.y);
+        ys.insert(m.y + m.height);
+    }
+    xs.insert(0);
+    ys.insert(0);
+    xs.insert(outline.0);
+    ys.insert(outline.1);
+    (xs.into_iter().collect(), ys.into_iter().collect())
+}
+
+/// Upstream `fillDeadSpace`: grow the soft clusters into whatever space nobody claimed.
+///
+/// 🔑 **Mixed clusters first, then standard-cell clusters — two full passes.** The order is the
+/// algorithm: whatever a mixed cluster takes in the first pass is no longer available to a cell
+/// cluster in the second, so swapping them redistributes the empty space differently.
+///
+/// ⛔ **Within one cluster the directions are LEFT, TOP, RIGHT, then DOWN, and each uses the
+/// bounds the previous one just widened.** Growing left first means the top pass sweeps a wider
+/// span, which can block on something the original span would have cleared. The order compounds;
+/// it is not four independent expansions.
+///
+/// ⚠️ Expansion stops at the FIRST occupied column or row — it does not skip over an obstacle to
+/// take free space beyond it.
+///
+/// ⚠️ The final shape is assigned with the forcing setters, so it ignores the cluster's shape
+/// curve entirely: a cluster can end up a shape its own curve does not offer.
+pub fn fill_dead_space(macros: &mut [DeadSpaceMacro], outline: (i32, i32)) {
+    let (x_grid, y_grid) = dead_space_grid(macros, outline);
+    let (num_x, num_y) = (x_grid.len() - 1, y_grid.len() - 1);
+    if num_x == 0 || num_y == 0 {
+        return;
+    }
+
+    // -1 means unclaimed.
+    let mut grid = vec![vec![-1i64; num_x]; num_y];
+    let span = |m: &DeadSpaceMacro| {
+        (
+            segment_index(m.x, &x_grid),
+            segment_index(m.x + m.width, &x_grid),
+            segment_index(m.y, &y_grid),
+            segment_index(m.y + m.height, &y_grid),
+        )
+    };
+
+    for (id, m) in macros.iter().enumerate() {
+        if m.area == 0 {
+            continue;
+        }
+        let (x0, x1, y0, y1) = span(m);
+        for row in grid.iter_mut().take(y1).skip(y0) {
+            for cell in row.iter_mut().take(x1).skip(x0) {
+                *cell = id as i64;
+            }
+        }
+    }
+
+    for order in 0..=1 {
+        for id in 0..macros.len() {
+            if macros[id].area == 0 {
+                continue;
+            }
+            let wanted = if order == 0 {
+                macros[id].is_mixed_cluster
+            } else {
+                macros[id].is_std_cell_cluster
+            };
+            if !wanted {
+                continue;
+            }
+
+            let (mut x_start, mut x_end, mut y_start, mut y_end) = span(&macros[id]);
+            let me = id as i64;
+
+            // ⛔ Left first, and the widened `x_start` is what the top pass then sweeps.
+            for i in (0..x_start).rev() {
+                if (y_start..y_end).any(|j| grid[j][i] != -1) {
+                    break;
+                }
+                x_start = i;
+                for j in y_start..y_end {
+                    grid[j][i] = me;
+                }
+            }
+            // Top second.
+            for j in y_end..num_y {
+                if (x_start..x_end).any(|i| grid[j][i] != -1) {
+                    break;
+                }
+                y_end = j + 1;
+                for i in x_start..x_end {
+                    grid[j][i] = me;
+                }
+            }
+            // Right third.
+            for i in x_end..num_x {
+                if (y_start..y_end).any(|j| grid[j][i] != -1) {
+                    break;
+                }
+                x_end = i + 1;
+                for j in y_start..y_end {
+                    grid[j][i] = me;
+                }
+            }
+            // Down last.
+            for j in (0..y_start).rev() {
+                if (x_start..x_end).any(|i| grid[j][i] != -1) {
+                    break;
+                }
+                y_start = j;
+                for i in x_start..x_end {
+                    grid[j][i] = me;
+                }
+            }
+
+            macros[id].x = x_grid[x_start];
+            macros[id].y = y_grid[y_start];
+            macros[id].width = x_grid[x_end] - x_grid[x_start];
+            macros[id].height = y_grid[y_end] - y_grid[y_start];
+        }
+    }
+}
