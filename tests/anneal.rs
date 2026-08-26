@@ -311,7 +311,7 @@ fn a_single_element_sequence_is_left_alone_and_draws_nothing() {
 
 use vyges_mpl::anneal::{
     area_penalty, average, fixed_macros_penalty, norm_cost, outline_penalty, Normalization,
-    Penalties, ShapingWeights,
+    Penalties, SoftWeights,
 };
 
 /// 🔑 **A packing that fits costs nothing in outline.** Both maxima pin to the outline, the
@@ -375,8 +375,8 @@ fn the_area_penalty_is_the_ratio_of_the_areas() {
 /// contribution unchanged.
 #[test]
 fn the_area_term_is_not_divided_by_its_normalisation_factor() {
-    let p = Penalties { area: 0.5, outline: 0.0, fixed_macros: 0.0 };
-    let w = ShapingWeights { area: 1.0, outline: 1000.0, fixed_macros: 100.0 };
+    let p = Penalties { area: 0.5, ..Default::default() };
+    let w = SoftWeights { area: 1.0, outline: 1000.0, fixed_macros: 100.0, ..Default::default() };
     let one = norm_cost(&p, &w, &Normalization { area: 1.0, ..Default::default() });
     let four = norm_cost(&p, &w, &Normalization { area: 4.0, ..Default::default() });
     assert_eq!(one, four, "the factor only gates the term");
@@ -386,8 +386,8 @@ fn the_area_term_is_not_divided_by_its_normalisation_factor() {
 /// ⚠️ The outline term IS divided, which is what makes it different from the area term.
 #[test]
 fn the_outline_term_is_divided_by_its_normalisation_factor() {
-    let p = Penalties { area: 0.0, outline: 0.5, fixed_macros: 0.0 };
-    let w = ShapingWeights::default();
+    let p = Penalties { outline: 0.5, ..Default::default() };
+    let w = SoftWeights::default();
     let one = norm_cost(&p, &w, &Normalization { outline: 1.0, ..Default::default() });
     let two = norm_cost(&p, &w, &Normalization { outline: 2.0, ..Default::default() });
     assert_eq!(one, 500.0);
@@ -397,11 +397,120 @@ fn the_outline_term_is_divided_by_its_normalisation_factor() {
 /// ⛔ **A zero factor drops its term rather than dividing by zero.**
 #[test]
 fn a_zero_normalisation_factor_drops_its_term() {
-    let p = Penalties { area: 1.0, outline: 1.0, fixed_macros: 1.0 };
-    let w = ShapingWeights::default();
-    let cost = norm_cost(&p, &w, &Normalization { area: 0.0, outline: 0.0, fixed_macros: 0.0 });
+    let p = Penalties { area: 1.0, outline: 1.0, fixed_macros: 1.0, ..Default::default() };
+    let w = SoftWeights::default();
+    let cost = norm_cost(&p, &w, &Normalization { area: 0.0, outline: 0.0, fixed_macros: 0.0, ..Default::default() });
     assert_eq!(cost, 0.0);
     assert!(cost.is_finite(), "and it is finite, not an infinity from dividing by zero");
+}
+
+/// 🔑 **Shaping is the case where six of the nine weights are zero**, and the six dark terms each
+/// add an exact `0.0` — so a shaping cost is bit for bit the number it was before the other six
+/// existed.
+#[test]
+fn the_shaping_weights_leave_six_terms_dark() {
+    let all_ones = Penalties {
+        area: 1.0,
+        outline: 1.0,
+        wirelength: 1.0,
+        guidance: 1.0,
+        fence: 1.0,
+        boundary: 1.0,
+        soft_blockage: 1.0,
+        fixed_macros: 1.0,
+        notch: 1.0,
+    };
+    let got = norm_cost(&all_ones, &SoftWeights::default(), &Normalization::default());
+    assert_eq!(got, 1.0 + 1000.0 + 100.0, "area, outline and fixed macros, and nothing else");
+}
+
+/// ⚠️ **Every term divides by its OWN factor.** Crossing any two of the nine is the kind of slip
+/// that survives a design where the factors happen to be close.
+#[test]
+fn each_term_divides_by_its_own_normalisation_factor() {
+    let w = SoftWeights {
+        area: 1.0,
+        outline: 2.0,
+        wirelength: 3.0,
+        guidance: 4.0,
+        fence: 5.0,
+        boundary: 6.0,
+        soft_blockage: 7.0,
+        fixed_macros: 8.0,
+        notch: 9.0,
+    };
+    // One term alive at a time, each with a distinctive factor.
+    let cases: [(fn(&mut Penalties), fn(&mut Normalization), f32); 8] = [
+        (|p| p.outline = 1.0, |n| n.outline = 4.0, 2.0 / 4.0),
+        (|p| p.wirelength = 1.0, |n| n.wirelength = 4.0, 3.0 / 4.0),
+        (|p| p.guidance = 1.0, |n| n.guidance = 4.0, 4.0 / 4.0),
+        (|p| p.fence = 1.0, |n| n.fence = 4.0, 5.0 / 4.0),
+        (|p| p.boundary = 1.0, |n| n.boundary = 4.0, 6.0 / 4.0),
+        (|p| p.soft_blockage = 1.0, |n| n.soft_blockage = 4.0, 7.0 / 4.0),
+        (|p| p.fixed_macros = 1.0, |n| n.fixed_macros = 4.0, 8.0 / 4.0),
+        (|p| p.notch = 1.0, |n| n.notch = 4.0, 9.0 / 4.0),
+    ];
+    for (set_penalty, set_norm, expected) in cases {
+        let mut p = Penalties::default();
+        set_penalty(&mut p);
+        let mut n = Normalization::default();
+        set_norm(&mut n);
+        assert_eq!(norm_cost(&p, &w, &n), expected);
+    }
+}
+
+/// ⚠️ **The addition order is the source's**, and floating-point addition is not associative — the
+/// accept/reject test compares these sums directly, so a reordered cost is a different search.
+#[test]
+fn the_nine_terms_are_added_in_the_sources_order() {
+    // A huge first term and eight tiny ones: added last-to-first the tail accumulates before it
+    // is absorbed, and the total differs in the last bits.
+    let tiny = 1.0f32;
+    let p = Penalties {
+        area: 1.0e8,
+        outline: tiny,
+        wirelength: tiny,
+        guidance: tiny,
+        fence: tiny,
+        boundary: tiny,
+        soft_blockage: tiny,
+        fixed_macros: tiny,
+        notch: tiny,
+    };
+    let w = SoftWeights {
+        area: 1.0,
+        outline: 1.0,
+        wirelength: 1.0,
+        guidance: 1.0,
+        fence: 1.0,
+        boundary: 1.0,
+        soft_blockage: 1.0,
+        fixed_macros: 1.0,
+        notch: 1.0,
+    };
+    let got = norm_cost(&p, &w, &Normalization::default());
+
+    let forward = [1.0e8f32, tiny, tiny, tiny, tiny, tiny, tiny, tiny, tiny]
+        .iter()
+        .fold(0.0f32, |acc, v| acc + v);
+    assert_eq!(got, forward, "left to right, area first");
+
+    let backward = [1.0e8f32, tiny, tiny, tiny, tiny, tiny, tiny, tiny, tiny]
+        .iter()
+        .rev()
+        .fold(0.0f32, |acc, v| acc + v);
+    assert_ne!(forward, backward, "the fixture can tell the two orders apart");
+}
+
+/// ⚠️ **The placement weights are the command's own defaults**, and the fence weight among them is
+/// `10.0` — not zero. Only a design with no standard cells zeroes it.
+#[test]
+fn the_placement_weights_are_the_command_defaults() {
+    let w = SoftWeights::placement_defaults();
+    assert_eq!((w.area, w.outline, w.wirelength, w.guidance), (0.1, 100.0, 100.0, 10.0));
+    assert_eq!((w.fence, w.boundary, w.notch), (10.0, 50.0, 50.0));
+    assert_eq!(w.soft_blockage, 10.0, "before adjustSoftBlockageWeight raises it");
+    assert_eq!(w.fixed_macros, SoftWeights::default().fixed_macros, "a class constant either way");
 }
 
 fn movable(x: i32, y: i32, width: i32, height: i32) -> SoftMacro {
@@ -861,13 +970,12 @@ fn search_with(n: usize) -> Search {
         sp: init_sequence_pair(n),
         width: 0,
         height: 0,
-        outline_penalty: 0.0,
-        fixed_macros_penalty: 0.0,
+        penalties: Default::default(),
         outline_width: 100_000,
         outline_height: 100_000,
         dbu_per_micron: 2000,
         fixed_bboxes: Vec::new(),
-        weights: ShapingWeights::default(),
+        weights: SoftWeights::default(),
         normalization: Normalization::default(),
         probabilities: ActionProbabilities::normalized(0.2, 0.2, 0.2, 0.2, 0.2),
         action: None,
@@ -941,17 +1049,17 @@ fn restoring_after_a_double_swap_or_exchange_returns_both() {
 #[test]
 fn the_fixed_macro_penalty_survives_a_restore() {
     let mut s = search_with(2);
-    s.outline_penalty = 1.0;
-    s.fixed_macros_penalty = 2.0;
+    s.penalties.outline = 1.0;
+    s.penalties.fixed_macros = 2.0;
     let saved = s.save_state().expect("has macros");
 
     s.action = Some(Action::SwapPositive);
-    s.outline_penalty = 99.0;
-    s.fixed_macros_penalty = 99.0;
+    s.penalties.outline = 99.0;
+    s.penalties.fixed_macros = 99.0;
     s.restore_state(&saved);
 
-    assert_eq!(s.outline_penalty, 1.0, "the outline penalty is in the saved set");
-    assert_eq!(s.fixed_macros_penalty, 99.0, "the fixed-macro one is not, so the rejected value stands");
+    assert_eq!(s.penalties.outline, 1.0, "the outline penalty is in the saved set");
+    assert_eq!(s.penalties.fixed_macros, 99.0, "the fixed-macro one is not, so the rejected value stands");
 }
 
 /// ⛔ A search with no macros saves nothing and restores nothing.
@@ -1047,11 +1155,11 @@ fn initialize_leaves_the_last_sample_in_the_live_state() {
     let mut last = (0, 0, 0.0f32);
     for _ in 0..n {
         replay.perturb(&mut rg);
-        last = (replay.width, replay.height, replay.outline_penalty);
+        last = (replay.width, replay.height, replay.penalties.outline);
     }
 
     s.initialize(&mut g, &SaParameters::default());
-    assert_eq!((s.width, s.height, s.outline_penalty), last);
+    assert_eq!((s.width, s.height, s.penalties.outline), last);
 }
 
 /// ⚠️ The initial temperature comes from the mean ABSOLUTE change between consecutive costs, so a

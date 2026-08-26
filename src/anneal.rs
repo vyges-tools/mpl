@@ -390,22 +390,66 @@ pub fn fixed_macros_penalty(
     penalty
 }
 
-/// The weights the tiling search is built with.
+/// The nine weights a soft-macro annealer is built with.
 ///
-/// 🔑 **Only two of the nine terms are alive.** The shaping caller passes area `1.0` and outline
-/// `1000.0`, zeroes wirelength, guidance and fence, and passes a default `SASoftWeights` — so
-/// boundary, notch and soft blockage vanish too. What remains is area, outline, and the fixed
-/// macros term whose weight is a class constant.
+/// 🔑 **Shaping is the case where six of them are ZERO.** The tiling search passes area `1.0` and
+/// outline `1000.0`, zeroes wirelength, guidance and fence, and passes a default `SASoftWeights`
+/// — so boundary, notch and soft blockage vanish too. What is left is area, outline, and the
+/// fixed-macros term whose weight is a class constant. Cluster placement lights all nine, and
+/// [`Default`] is the shaping set because that is the caller this file was built for.
+///
+/// ⚠️ **`fence` is NOT dead by default at placement.** Its command default is `10.0`, and only a
+/// design with no standard cells zeroes it. The term stays inert only because a design with no
+/// fences has nothing to score — see [`Penalties::fence`].
 #[derive(Debug, Clone, Copy, PartialEq)]
-pub struct ShapingWeights {
+pub struct SoftWeights {
     pub area: f32,
     pub outline: f32,
+    pub wirelength: f32,
+    pub guidance: f32,
+    pub fence: f32,
+    pub boundary: f32,
+    pub soft_blockage: f32,
+    /// ⚠️ Not a command option — a class constant.
     pub fixed_macros: f32,
+    pub notch: f32,
 }
 
-impl Default for ShapingWeights {
+impl Default for SoftWeights {
     fn default() -> Self {
-        Self { area: 1.0, outline: 1000.0, fixed_macros: 100.0 }
+        Self {
+            area: 1.0,
+            outline: 1000.0,
+            wirelength: 0.0,
+            guidance: 0.0,
+            fence: 0.0,
+            boundary: 0.0,
+            soft_blockage: 0.0,
+            fixed_macros: 100.0,
+            notch: 0.0,
+        }
+    }
+}
+
+impl SoftWeights {
+    /// The weights `placeChildren` builds its annealers with — `mpl.tcl`'s own defaults, with the
+    /// soft-blockage weight already adjusted for the tree's depth by the caller.
+    ///
+    /// ⚠️ **`soft_blockage` is `10.0` from the command**, not the `50.0` a single-level tree ends
+    /// up with; that raise is `adjustSoftBlockageWeight`'s, and it happens once, before any
+    /// annealer is built.
+    pub fn placement_defaults() -> Self {
+        Self {
+            area: 0.1,
+            outline: 100.0,
+            wirelength: 100.0,
+            guidance: 10.0,
+            fence: 10.0,
+            boundary: 50.0,
+            soft_blockage: 10.0,
+            fixed_macros: 100.0,
+            notch: 50.0,
+        }
     }
 }
 
@@ -414,12 +458,28 @@ impl Default for ShapingWeights {
 pub struct Normalization {
     pub area: f32,
     pub outline: f32,
+    pub wirelength: f32,
+    pub guidance: f32,
+    pub fence: f32,
+    pub boundary: f32,
+    pub soft_blockage: f32,
     pub fixed_macros: f32,
+    pub notch: f32,
 }
 
 impl Default for Normalization {
     fn default() -> Self {
-        Self { area: 1.0, outline: 1.0, fixed_macros: 1.0 }
+        Self {
+            area: 1.0,
+            outline: 1.0,
+            wirelength: 1.0,
+            guidance: 1.0,
+            fence: 1.0,
+            boundary: 1.0,
+            soft_blockage: 1.0,
+            fixed_macros: 1.0,
+            notch: 1.0,
+        }
     }
 }
 
@@ -428,18 +488,31 @@ impl Default for Normalization {
 pub struct Penalties {
     pub area: f32,
     pub outline: f32,
+    pub wirelength: f32,
+    pub guidance: f32,
+    /// ⛔ **Never computed.** `calFencePenalty` is unbuilt — divergence class F. It stays zero,
+    /// which is the right answer for every design that declares no fence and the wrong one for
+    /// any design that does.
+    pub fence: f32,
+    pub boundary: f32,
+    pub soft_blockage: f32,
     pub fixed_macros: f32,
+    pub notch: f32,
 }
 
-/// Upstream `SACoreSoftMacro::calNormCost`, reduced to the terms shaping leaves alive.
+/// Upstream `SACoreSoftMacro::calNormCost`.
 ///
 /// ⚠️ **Each term is gated on its normalisation factor being `> 0`**, and `initialize` floors any
 /// factor at or below `1e-4` to `1.0` — so in practice every gate is open. The gate is reproduced
 /// because a factor of exactly zero would otherwise divide by zero rather than drop the term.
 ///
-/// ⚠️ **The addition order is area, outline, then fixed macros**, matching the source. Reordering
-/// changes the last bits, and the accept/reject test compares these values directly.
-pub fn norm_cost(p: &Penalties, w: &ShapingWeights, n: &Normalization) -> f32 {
+/// ⚠️ **The addition order is the source's**: area, outline, wirelength, guidance, fence,
+/// boundary, soft blockage, fixed macros, notch. Floating-point addition is not associative and
+/// the accept/reject test compares these values directly, so reordering is a different search.
+///
+/// ℹ️ Shaping's six dark terms each add an exact `0.0`, which leaves the running sum bit for bit
+/// as it was — so a shaping cost is the same number it was before the other six existed.
+pub fn norm_cost(p: &Penalties, w: &SoftWeights, n: &Normalization) -> f32 {
     let mut cost = 0.0f32;
     if n.area > 0.0 {
         // ⚠️ No division here — see `area_penalty`.
@@ -448,8 +521,26 @@ pub fn norm_cost(p: &Penalties, w: &ShapingWeights, n: &Normalization) -> f32 {
     if n.outline > 0.0 {
         cost += w.outline * p.outline / n.outline;
     }
+    if n.wirelength > 0.0 {
+        cost += w.wirelength * p.wirelength / n.wirelength;
+    }
+    if n.guidance > 0.0 {
+        cost += w.guidance * p.guidance / n.guidance;
+    }
+    if n.fence > 0.0 {
+        cost += w.fence * p.fence / n.fence;
+    }
+    if n.boundary > 0.0 {
+        cost += w.boundary * p.boundary / n.boundary;
+    }
+    if n.soft_blockage > 0.0 {
+        cost += w.soft_blockage * p.soft_blockage / n.soft_blockage;
+    }
     if n.fixed_macros > 0.0 {
         cost += w.fixed_macros * p.fixed_macros / n.fixed_macros;
+    }
+    if n.notch > 0.0 {
+        cost += w.notch * p.notch / n.notch;
     }
     cost
 }
@@ -824,15 +915,21 @@ pub struct Search {
     pub sp: SequencePair,
     pub width: i32,
     pub height: i32,
-    pub outline_penalty: f32,
-    /// ⛔ **Deliberately outside the saved set** — see [`Search::restore_state`].
-    pub fixed_macros_penalty: f32,
+    /// Every penalty the core keeps as a member.
+    ///
+    /// ⚠️ **`area` is NOT one of them upstream** — it is derived from the packing on every read
+    /// by `getAreaPenalty()`. The field here is never written by [`Search::cal_penalty`] and never
+    /// read by [`Search::norm_cost`], which derives it too; it exists only so one struct carries
+    /// the whole cost vector.
+    ///
+    /// ⛔ **`fixed_macros` is deliberately outside the saved set** — see [`Search::restore_state`].
+    pub penalties: Penalties,
     pub outline_width: i32,
     pub outline_height: i32,
     pub dbu_per_micron: i32,
     /// The bounding boxes of the fixed macros, taken once before the search starts.
     pub fixed_bboxes: Vec<(i32, i32, i32, i32)>,
-    pub weights: ShapingWeights,
+    pub weights: SoftWeights,
     pub normalization: Normalization,
     pub probabilities: ActionProbabilities,
     /// The action the last `perturb` chose. ⚠️ Restoring reads this, so it must survive the call.
@@ -853,7 +950,9 @@ pub struct Saved {
     neg: Vec<usize>,
     width: i32,
     height: i32,
-    outline_penalty: f32,
+    /// ⚠️ Copied whole, but only the SEVEN upstream lists are put back — see
+    /// [`Search::restore_state`].
+    penalties: Penalties,
 }
 
 impl Search {
@@ -872,9 +971,9 @@ impl Search {
     /// anything else, and wirelength does the same — so for a tiling run they are permanently
     /// zero and are not modelled.
     pub fn cal_penalty(&mut self) {
-        self.outline_penalty =
+        self.penalties.outline =
             outline_penalty(self.width, self.height, self.outline_width, self.outline_height);
-        self.fixed_macros_penalty = fixed_macros_penalty(
+        self.penalties.fixed_macros = fixed_macros_penalty(
             &self.macros,
             &self.fixed_bboxes,
             &self.sp,
@@ -885,11 +984,7 @@ impl Search {
     /// Upstream `SACoreSoftMacro::calNormCost`.
     pub fn norm_cost(&self) -> f32 {
         norm_cost(
-            &Penalties {
-                area: self.area_penalty(),
-                outline: self.outline_penalty,
-                fixed_macros: self.fixed_macros_penalty,
-            },
+            &Penalties { area: self.area_penalty(), ..self.penalties },
             &self.weights,
             &self.normalization,
         )
@@ -911,7 +1006,7 @@ impl Search {
             neg: self.sp.neg.clone(),
             width: self.width,
             height: self.height,
-            outline_penalty: self.outline_penalty,
+            penalties: self.penalties,
         })
     }
 
@@ -943,7 +1038,16 @@ impl Search {
         self.macros.clone_from(&saved.macros);
         self.width = saved.width;
         self.height = saved.height;
-        self.outline_penalty = saved.outline_penalty;
+        // ⛔ The SEVEN upstream restores, named one by one. `area` is not a member there and
+        // `fixed_macros` is upstream's own omission — putting either back would be a different
+        // program.
+        self.penalties.outline = saved.penalties.outline;
+        self.penalties.wirelength = saved.penalties.wirelength;
+        self.penalties.guidance = saved.penalties.guidance;
+        self.penalties.fence = saved.penalties.fence;
+        self.penalties.boundary = saved.penalties.boundary;
+        self.penalties.soft_blockage = saved.penalties.soft_blockage;
+        self.penalties.notch = saved.penalties.notch;
     }
 
     /// Upstream `SACoreSoftMacro::perturb`: choose an action, take it, repack, rescore.
@@ -1008,7 +1112,7 @@ impl Search {
     /// ⚠️ Two conditions: nothing may overlap a fixed macro, AND the packing must fit. A design
     /// with no fixed macros is judged on the fit alone.
     pub fn is_valid(&self, fixed_present: bool) -> bool {
-        if fixed_present && self.fixed_macros_penalty > 0.0 {
+        if fixed_present && self.penalties.fixed_macros > 0.0 {
             return false;
         }
         self.fits_in_outline()
@@ -1123,8 +1227,8 @@ impl Search {
             widths.push(self.width);
             heights.push(self.height);
             area_list.push(self.area_penalty());
-            outline_list.push(self.outline_penalty);
-            fixed_list.push(self.fixed_macros_penalty);
+            outline_list.push(self.penalties.outline);
+            fixed_list.push(self.penalties.fixed_macros);
         }
 
         let floor_at = |value: f32| if value <= 1e-4 { 1.0 } else { value };
@@ -1136,8 +1240,8 @@ impl Search {
         for i in 0..outline_list.len() {
             self.width = widths[i];
             self.height = heights[i];
-            self.outline_penalty = outline_list[i];
-            self.fixed_macros_penalty = fixed_list[i];
+            self.penalties.outline = outline_list[i];
+            self.penalties.fixed_macros = fixed_list[i];
             cost_list.push(self.norm_cost());
         }
 
@@ -1401,13 +1505,12 @@ fn new_search(
         sp: init_sequence_pair(macros.len()),
         width: 0,
         height: 0,
-        outline_penalty: 0.0,
-        fixed_macros_penalty: 0.0,
+        penalties: Penalties::default(),
         outline_width,
         outline_height,
         dbu_per_micron,
         fixed_bboxes: Vec::new(),
-        weights: ShapingWeights::default(),
+        weights: SoftWeights::default(),
         normalization: Normalization::default(),
         probabilities,
         action: None,
