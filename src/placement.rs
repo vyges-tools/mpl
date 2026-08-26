@@ -631,3 +631,97 @@ pub fn merged_region(
         clipped.3 - outline.1,
     ))
 }
+
+// ---------------------------------------------------------------- utilization
+
+/// What each soft macro contributes to the utilization sum.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum AreaKind {
+    /// A blockage — no cluster behind it. ⚠️ Counted by its PHYSICAL area.
+    Blockage,
+    /// ⚠️ Skipped entirely.
+    IoCluster,
+    /// ⚠️ Counted by the SOFT MACRO's area, not the cluster's, so a fixed macro only partly inside
+    /// the outline contributes only the part that is inside.
+    FixedMacro,
+    StdCellCluster,
+    HardMacroCluster,
+    MixedCluster,
+}
+
+/// One entry in the utilization sum.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct AreaContribution {
+    pub kind: AreaKind,
+    /// The soft macro's own area — used for blockages and fixed macros.
+    pub soft_macro_area: i64,
+    pub cluster_std_cell_area: i64,
+    /// ⚠️ The FIRST tiling's area, for the two kinds that have tilings.
+    pub first_tiling_area: i64,
+}
+
+/// Upstream `validUtilization`: does the soft area still fit once the hard area is taken out?
+///
+/// 🔑 **"Hard" and "soft" here are about compressibility, not about macros.** Blockages, macro
+/// clusters and a mixed cluster's macro half occupy space that cannot be squeezed; standard cells
+/// can be packed tighter, which is what the utilization figure expresses.
+///
+/// ⚠️ **A fixed macro is measured by its SOFT MACRO's area**, which is the clipped one — so a
+/// fixed macro hanging half outside the outline only charges for the half inside. Every other
+/// kind is measured from the cluster.
+///
+/// ⚠️ **`soft_area / utilization` is an int64 divided by a float and truncated back to an
+/// integer**, and the comparison is a strict `<`.
+pub fn valid_utilization(
+    contributions: &[AreaContribution],
+    outline_area: i64,
+    utilization: f32,
+) -> bool {
+    let mut blocked = 0i64;
+    let mut std_cell = 0i64;
+    let mut mixed_std_cell = 0i64;
+    let mut macro_cluster = 0i64;
+    let mut mixed_macro = 0i64;
+
+    for c in contributions {
+        match c.kind {
+            AreaKind::Blockage => blocked += c.soft_macro_area,
+            AreaKind::IoCluster => continue,
+            AreaKind::FixedMacro => macro_cluster += c.soft_macro_area,
+            AreaKind::StdCellCluster => std_cell += c.cluster_std_cell_area,
+            AreaKind::HardMacroCluster => macro_cluster += c.first_tiling_area,
+            AreaKind::MixedCluster => {
+                mixed_macro += c.first_tiling_area;
+                mixed_std_cell += c.cluster_std_cell_area;
+            }
+        }
+    }
+
+    let hard_area = blocked + macro_cluster + mixed_macro;
+    let available_area = outline_area - hard_area;
+    let soft_area = std_cell + mixed_std_cell;
+    // ⚠️ Truncated on the way back to an integer.
+    let inflated_soft_area = (soft_area as f32 / utilization) as i64;
+    inflated_soft_area < available_area
+}
+
+/// Upstream `setMacroClustersShapes`: give each movable macro cluster its tilings as shapes.
+///
+/// ⚠️ **This is `setShapes` WITHOUT the force flag**, so it declines an empty tiling list — unlike
+/// the shaping stage, which forces the same call. A macro cluster that was never shaped therefore
+/// arrives at placement with no shape curve and cannot be resized.
+///
+/// ⚠️ **A FIXED macro cluster is skipped**, because its shape is its position.
+///
+/// ⛔ The reference's `setShapes` APPENDS to the interval lists rather than clearing them, so
+/// calling it twice on one macro doubles its shapes. Each call site builds its macros fresh.
+pub fn set_macro_cluster_shapes(
+    is_macro_cluster: bool,
+    is_fixed: bool,
+    tilings: &[(i32, i32)],
+) -> Option<(crate::anneal::ShapeCurve, i32, i32, i64)> {
+    if !is_macro_cluster || is_fixed || tilings.is_empty() {
+        return None;
+    }
+    Some(crate::anneal::shape_curve_from_tilings(tilings))
+}

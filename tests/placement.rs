@@ -262,3 +262,76 @@ fn a_region_outside_the_outline_is_dropped() {
     assert_eq!(merged_region(&[(1000, 100, 1200, 200)], outline), None, "edge-on is zero area");
     assert_eq!(merged_region(&[], outline), None, "and no regions at all");
 }
+
+// ---------------------------------------------------------------- utilization
+
+use vyges_mpl::placement::{set_macro_cluster_shapes, valid_utilization, AreaContribution, AreaKind};
+
+fn contribution(kind: AreaKind, soft: i64, std_cell: i64, tiling: i64) -> AreaContribution {
+    AreaContribution {
+        kind,
+        soft_macro_area: soft,
+        cluster_std_cell_area: std_cell,
+        first_tiling_area: tiling,
+    }
+}
+
+/// 🔑 Hard area is taken out first; what remains has to hold the inflated soft area.
+#[test]
+fn the_soft_area_must_fit_what_the_hard_area_leaves() {
+    // Outline 1,000,000. Hard 400,000. Soft 300,000 at utilization 0.5 inflates to 600,000.
+    let c = [
+        contribution(AreaKind::HardMacroCluster, 0, 0, 400_000),
+        contribution(AreaKind::StdCellCluster, 0, 300_000, 0),
+    ];
+    assert!(!valid_utilization(&c, 1_000_000, 0.5), "600,000 does not fit in 600,000");
+    assert!(valid_utilization(&c, 1_000_001, 0.5), "one more unit and it does");
+    assert!(valid_utilization(&c, 1_000_000, 0.6), "or less inflation");
+}
+
+/// ⚠️ **A fixed macro is measured by its SOFT MACRO's area** — the clipped one — so a macro half
+/// outside the outline charges only for the half inside.
+#[test]
+fn a_fixed_macro_charges_only_the_part_inside() {
+    let half_in = [contribution(AreaKind::FixedMacro, 200_000, 0, 999_999)];
+    // The tiling area is deliberately huge; only the soft macro area should count.
+    assert!(valid_utilization(&half_in, 1_000_000, 1.0), "the tiling area was not used");
+}
+
+/// ⚠️ IO clusters are skipped entirely, however large.
+#[test]
+fn io_clusters_contribute_nothing() {
+    let c = [contribution(AreaKind::IoCluster, 900_000, 900_000, 900_000)];
+    assert!(valid_utilization(&c, 1_000, 1.0), "a huge IO cluster still fits a tiny outline");
+}
+
+/// ⚠️ A mixed cluster splits: its macro half is hard, its cell half is soft.
+#[test]
+fn a_mixed_cluster_contributes_to_both_halves() {
+    let c = [contribution(AreaKind::MixedCluster, 0, 100_000, 500_000)];
+    // Hard 500,000, leaving 500,000; soft 100,000 at 0.5 inflates to 200,000 — fits.
+    assert!(valid_utilization(&c, 1_000_000, 0.5));
+    // Hard 500,000, leaving 100,000; 200,000 does not fit.
+    assert!(!valid_utilization(&c, 600_000, 0.5));
+}
+
+/// ⚠️ Blockages count by their physical area.
+#[test]
+fn blockages_count_as_hard_area() {
+    let c = [
+        contribution(AreaKind::Blockage, 500_000, 0, 0),
+        contribution(AreaKind::StdCellCluster, 0, 100_000, 0),
+    ];
+    assert!(!valid_utilization(&c, 550_000, 1.0), "the blockage ate the room");
+    assert!(valid_utilization(&c, 700_000, 1.0));
+}
+
+/// ⚠️ **Without the force flag an empty tiling list is declined**, unlike the shaping stage which
+/// forces the same call — so an unshaped macro cluster reaches placement with no curve at all.
+#[test]
+fn an_unshaped_macro_cluster_gets_no_curve_at_placement() {
+    assert!(set_macro_cluster_shapes(true, false, &[]).is_none());
+    assert!(set_macro_cluster_shapes(true, true, &[(10, 10)]).is_none(), "fixed is skipped");
+    assert!(set_macro_cluster_shapes(false, false, &[(10, 10)]).is_none(), "not a macro cluster");
+    assert!(set_macro_cluster_shapes(true, false, &[(10, 20)]).is_some());
+}
