@@ -194,3 +194,71 @@ fn a_cluster_is_never_its_own_terminal() {
         assert!(!walk.contains(&start), "{start} appeared in its own walk");
     }
 }
+
+// ---------------------------------------------------------------- nets, fences and guides
+
+use vyges_mpl::placement::{merge_nets, merged_region, BundledNet};
+
+fn net(source: usize, target: usize, weight: f32) -> BundledNet {
+    BundledNet { source, target, weight }
+}
+
+/// ⚠️ Duplicates collapse onto the FIRST occurrence, summing their weights.
+#[test]
+fn duplicate_nets_collapse_onto_the_first() {
+    let merged = merge_nets(&[net(1, 2, 3.0), net(4, 5, 1.0), net(1, 2, 7.0)]);
+    assert_eq!(merged.len(), 2);
+    assert_eq!(merged[0], net(1, 2, 10.0), "summed, in the first position");
+    assert_eq!(merged[1], net(4, 5, 1.0));
+}
+
+/// ⛔ **The match is DIRECTED.** `(a, b)` and `(b, a)` are NOT duplicates and both survive —
+/// treating the pair as unordered would merge nets the reference keeps apart.
+#[test]
+fn a_reversed_pair_is_not_a_duplicate() {
+    let merged = merge_nets(&[net(1, 2, 3.0), net(2, 1, 4.0)]);
+    assert_eq!(merged.len(), 2, "both survive");
+    assert_eq!(merged[0].weight, 3.0);
+    assert_eq!(merged[1].weight, 4.0);
+}
+
+/// ⚠️ Three of a kind all fold into the first.
+#[test]
+fn several_duplicates_all_fold_into_one() {
+    let merged = merge_nets(&[net(1, 2, 1.0), net(1, 2, 2.0), net(1, 2, 4.0)]);
+    assert_eq!(merged, vec![net(1, 2, 7.0)]);
+}
+
+/// ℹ️ Nothing to merge.
+#[test]
+fn merging_an_empty_or_distinct_list_changes_nothing() {
+    assert!(merge_nets(&[]).is_empty());
+    let distinct = [net(1, 2, 1.0), net(3, 4, 2.0)];
+    assert_eq!(merge_nets(&distinct), distinct.to_vec());
+}
+
+/// 🔑 **A cluster inherits the UNION of its macros' regions** — merging two far-apart boxes yields
+/// a region much larger than either, which is the intended (and lossy) consequence of grouping.
+#[test]
+fn a_clusters_region_is_the_union_of_its_macros() {
+    let outline = (0, 0, 1000, 1000);
+    let got = merged_region(&[(100, 100, 200, 200), (800, 800, 900, 900)], outline);
+    assert_eq!(got, Some((100, 100, 900, 900)), "the bounding box of both");
+}
+
+/// ⚠️ Clipped to the outline, and re-expressed against its corner.
+#[test]
+fn a_region_is_clipped_and_offset() {
+    let outline = (400, 400, 1400, 1400);
+    assert_eq!(merged_region(&[(300, 500, 600, 700)], outline), Some((0, 100, 200, 300)));
+}
+
+/// ⚠️ **A region entirely outside the outline is DROPPED**, so it constrains nothing rather than
+/// constraining everything.
+#[test]
+fn a_region_outside_the_outline_is_dropped() {
+    let outline = (0, 0, 1000, 1000);
+    assert_eq!(merged_region(&[(5000, 5000, 6000, 6000)], outline), None);
+    assert_eq!(merged_region(&[(1000, 100, 1200, 200)], outline), None, "edge-on is zero area");
+    assert_eq!(merged_region(&[], outline), None, "and no regions at all");
+}

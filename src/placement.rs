@@ -559,3 +559,75 @@ pub fn fixed_terminal_walk(
     }
     out
 }
+
+// ---------------------------------------------------------------- nets, fences and guides
+
+/// Upstream `mergeNets`: collapse duplicate nets, summing their weights.
+///
+/// ⛔ **The match is DIRECTED, despite the nets being documented as undirected.** Upstream's
+/// `operator==` compares `first` to `first` and `second` to `second`, so `(a, b)` and `(b, a)`
+/// are NOT duplicates and both survive as separate nets, each with its own weight. Treating the
+/// pair as unordered here would merge nets the reference keeps apart, halving their count and
+/// doubling a weight.
+///
+/// ⚠️ **The survivor keeps the FIRST occurrence's position**, and the weights are added in index
+/// order — a float sum, so the order is part of the answer.
+pub fn merge_nets(nets: &[BundledNet]) -> Vec<BundledNet> {
+    let mut class = vec![usize::MAX; nets.len()];
+    for i in 0..nets.len() {
+        if class[i] == usize::MAX {
+            for j in (i + 1)..nets.len() {
+                // ⛔ Directed: both terminals in the same roles.
+                if nets[i].source == nets[j].source && nets[i].target == nets[j].target {
+                    class[j] = i;
+                }
+            }
+        }
+    }
+
+    let mut merged: Vec<BundledNet> = nets.to_vec();
+    for i in 0..class.len() {
+        if class[i] != usize::MAX {
+            let weight = merged[i].weight;
+            merged[class[i]].weight += weight;
+        }
+    }
+    (0..class.len()).filter(|&i| class[i] == usize::MAX).map(|i| merged[i]).collect()
+}
+
+/// The merge of every fence or guide belonging to a cluster's hard macros, clipped to the outline.
+///
+/// 🔑 **A cluster inherits the UNION of its macros' regions, not each one separately.** Once
+/// macros are grouped into a cluster the annealer places the cluster, so the constraint has to be
+/// one box — and merging boxes that were far apart yields a region much larger than either.
+///
+/// ⚠️ **Dropped when the clipped area is zero**, so a region falling outside the outline
+/// constrains nothing rather than constraining everything.
+///
+/// ⚠️ Returned relative to the outline's corner, like every other coordinate in the stage.
+pub fn merged_region(
+    regions: &[(i32, i32, i32, i32)],
+    outline: (i32, i32, i32, i32),
+) -> Option<(i32, i32, i32, i32)> {
+    let mut merged: Option<(i32, i32, i32, i32)> = None;
+    for &r in regions {
+        merged = Some(match merged {
+            None => r,
+            Some(m) => (m.0.min(r.0), m.1.min(r.1), m.2.max(r.2), m.3.max(r.3)),
+        });
+    }
+    let m = merged?;
+    let clipped = (m.0.max(outline.0), m.1.max(outline.1), m.2.min(outline.2), m.3.min(outline.3));
+    if clipped.0 > clipped.2 || clipped.1 > clipped.3 {
+        return None;
+    }
+    if (clipped.2 - clipped.0) as i64 * (clipped.3 - clipped.1) as i64 <= 0 {
+        return None;
+    }
+    Some((
+        clipped.0 - outline.0,
+        clipped.1 - outline.1,
+        clipped.2 - outline.0,
+        clipped.3 - outline.1,
+    ))
+}
