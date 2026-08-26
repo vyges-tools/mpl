@@ -3073,3 +3073,79 @@ pub fn orientation_groups(macros: &[(usize, (i32, i32))]) -> (Vec<Vec<usize>>, V
     }
     (cols.into_values().collect(), rows.into_values().collect())
 }
+
+// ---------------------------------------------------------------- committing to the database
+
+/// What `updateMacroOnDb` writes, in the order it writes it.
+///
+/// ⛔ **ORIENTATION BEFORE LOCATION, and upstream says why at the site**: setting the orientation
+/// mirrors the macro about an axis, which moves its lower-left corner — so the location must be
+/// written afterwards to put it back. Writing them the other way round leaves every flipped macro
+/// misplaced by its own width or height.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct MacroCommit {
+    pub orientation_first: bool,
+    pub location: (i32, i32),
+    /// ⚠️ **`PLACED`, not `LOCKED`** — upstream says why: orientation improvement runs next and
+    /// needs the macros still movable. The lock comes later, in the final commit.
+    pub locked: bool,
+}
+
+/// Upstream `updateMacroOnDb`.
+///
+/// ⚠️ **A fixed instance is skipped entirely** — not written, not locked.
+///
+/// ⚠️ **The location is the macro's REAL one** — without the halo. The halo-inclusive box is what
+/// the blockage uses, later and separately.
+pub fn commit_macro(inst_is_fixed: bool, real_location: (i32, i32)) -> Option<MacroCommit> {
+    if inst_is_fixed {
+        return None;
+    }
+    Some(MacroCommit { orientation_first: true, location: real_location, locked: false })
+}
+
+/// The halo a macro carries, as the final commit sees it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum HaloKind {
+    None,
+    Soft,
+    Hard,
+}
+
+/// Upstream `commitMacroPlacementToDb`'s blockage rule.
+///
+/// ⛔ **A SOFT halo gets NO blockage.** Upstream says why: other tools capable of placement are
+/// already aware of soft halos, so a blockage would be redundant. A hard halo, or none at all, does
+/// get one.
+///
+/// ⛔ **And the blockage is created for EVERY macro, FIXED OR NOT.** The `isFixed` test guards only
+/// the snap and the lock; the blockage block sits outside it. So a fixed macro is never snapped and
+/// never locked, and still casts a blockage.
+pub fn needs_halo_blockage(halo: HaloKind) -> bool {
+    !matches!(halo, HaloKind::Soft)
+}
+
+/// What the final commit does to one macro.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct FinalCommit {
+    pub snapped: bool,
+    pub locked: bool,
+    pub blockage: bool,
+}
+
+/// Upstream `commitMacroPlacementToDb`, per macro.
+///
+/// ⚠️ **The blockage is taken from the SNAPPED location**, because `setRealLocation` is called with
+/// the instance's position after the snap and the box is read from the macro afterwards. Computing
+/// it before the snap would place every blockage a fraction off its macro.
+///
+/// ⚠️ The box is the macro's halo-INCLUSIVE one — `HardMacro`'s default coordinates include the
+/// halo — so the blockage covers the keep-out, not just the macro.
+pub fn final_commit(inst_is_fixed: bool, halo: HaloKind) -> FinalCommit {
+    FinalCommit {
+        snapped: !inst_is_fixed,
+        locked: !inst_is_fixed,
+        // ⛔ Outside the `isFixed` guard; see `needs_halo_blockage`.
+        blockage: needs_halo_blockage(halo),
+    }
+}

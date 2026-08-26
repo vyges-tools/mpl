@@ -407,6 +407,55 @@ pub const MUTATIONS: &[Mutation] = &[
     let mut deferred_io: Vec<&AssemblyChild> = Vec::new();"#,
         want: r#"a_blockage_has_no_name"#,
     },
+    // ---------------------------------------------------------------- committing to the database
+    Mutation {
+        name: r#"location-written-before-orientation"#,
+        file: r#"src/placement.rs"#,
+        find: r#"    Some(MacroCommit { orientation_first: true, location: real_location, locked: false })"#,
+        replace: r#"    Some(MacroCommit { orientation_first: false, location: real_location, locked: false })"#,
+        want: r#"orientation_is_written_before_location"#,
+    },
+    Mutation {
+        name: r#"first-write-locks-the-macro"#,
+        file: r#"src/placement.rs"#,
+        find: r#"    Some(MacroCommit { orientation_first: true, location: real_location, locked: false })"#,
+        replace: r#"    Some(MacroCommit { orientation_first: true, location: real_location, locked: true })"#,
+        want: r#"the_first_write_does_not_lock_the_macro"#,
+    },
+    Mutation {
+        name: r#"fixed-instance-written-anyway"#,
+        file: r#"src/placement.rs"#,
+        find: r#"    if inst_is_fixed {
+        return None;
+    }
+    Some(MacroCommit"#,
+        replace: r#"    if false {
+        return None;
+    }
+    Some(MacroCommit"#,
+        want: r#"a_fixed_instance_is_not_written"#,
+    },
+    Mutation {
+        name: r#"soft-halo-casts-a-blockage"#,
+        file: r#"src/placement.rs"#,
+        find: r#"    !matches!(halo, HaloKind::Soft)"#,
+        replace: r#"    !matches!(halo, HaloKind::None)"#,
+        want: r#"a_soft_halo_casts_no_blockage"#,
+    },
+    Mutation {
+        name: r#"fixed-macro-casts-no-blockage"#,
+        file: r#"src/placement.rs"#,
+        find: r#"        blockage: needs_halo_blockage(halo),"#,
+        replace: r#"        blockage: !inst_is_fixed && needs_halo_blockage(halo),"#,
+        want: r#"a_fixed_macro_is_not_snapped_but_still_casts_a_blockage"#,
+    },
+    Mutation {
+        name: r#"fixed-macro-still-snapped"#,
+        file: r#"src/placement.rs"#,
+        find: r#"        snapped: !inst_is_fixed,"#,
+        replace: r#"        snapped: true,"#,
+        want: r#"a_fixed_macro_is_not_snapped_but_still_casts_a_blockage"#,
+    },
     // ---------------------------------------------------------------- orientation correction
     Mutation {
         name: r#"orientation-branch-inverted"#,
