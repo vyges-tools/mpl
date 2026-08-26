@@ -589,11 +589,15 @@ fn a_degenerate_interval_resizes_to_exactly_that_tiling() {
     }
 }
 
-/// ⛔ **The area is taken from the interval's `min` width and `max` height, not from the width just
-/// chosen.** On a wide range that makes the returned height inconsistent with the chosen width,
-/// which is the reference's behaviour and not an accident of rounding.
+/// ⚠️ **The height is recovered from the interval's corner area, then truncated.**
+///
+/// ℹ️ The product `width * height` therefore falls slightly short of the cluster's area, and the
+/// shortfall is INTEGER TRUNCATION of `area / width` — not a mismatched corner. `w.min * h.max`
+/// reconstructs `A` because `h.max` was built as `A / w.min`; `set_width` uses `w.max * h.min`
+/// and recovers the same `A`. An earlier reading of this file called the two corners an
+/// asymmetry; they are not.
 #[test]
-fn the_recovered_area_ignores_the_chosen_width() {
+fn the_recovered_height_is_truncated_against_the_corner_area() {
     let intervals = [Interval { min: 100, max: 400 }];
     let (curve, ..) = shape_curve_from_intervals(&intervals, 40_000).expect("shapeable");
 
@@ -611,10 +615,12 @@ fn the_recovered_area_ignores_the_chosen_width() {
     let (width, height) = interior.expect("no interior width found; the fixture proves nothing");
     // area used = min_width * max_height = 100 * 400 = 40000, so height = 40000 / width.
     assert_eq!(height, 40_000 / width);
-    assert_ne!(
-        width as i64 * height as i64,
-        40_000,
-        "the chosen width times the recovered height is NOT the cluster's area"
+    // Short of the area, by less than one row — the remainder of the integer division.
+    let product = width as i64 * height as i64;
+    assert!(product <= 40_000, "never exceeds the area");
+    assert!(
+        40_000 - product < width as i64,
+        "and falls short by less than the width, which is what truncation costs"
     );
 }
 

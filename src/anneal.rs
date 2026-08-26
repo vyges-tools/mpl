@@ -570,9 +570,11 @@ pub fn shape_curve_from_intervals(
 /// inside it. That count is the load-bearing part; the values only matter afterwards.
 ///
 /// ⚠️ **The area is recomputed from the interval's `min` width and `max` height, NOT from the
-/// width just chosen.** So a resize that lands in the middle of a range still uses the area of the
-/// range's tallest, narrowest corner, and the height that comes back does not multiply out to the
-/// chosen width times anything in particular.
+/// width just chosen.** ℹ️ That is not the anomaly it first looks like: the height bounds were
+/// built as `A / width`, so `w.min * h.max` reconstructs the cluster's area `A` — exactly when
+/// the division was exact, and short by less than `w.min` when it truncated. `set_width`'s
+/// interior branch uses the OTHER corner, `w.max * h.min`, and recovers the same `A` the same
+/// way. The two are equivalent up to truncation, not two different areas.
 ///
 /// ⚠️ **`min + draw * (max - min)` is computed in `f32` and TRUNCATED toward zero** on assignment
 /// to an `int`. On a degenerate interval `max - min` is zero, so the width is exactly `min`.
