@@ -395,3 +395,167 @@ fn area_to_microns_f32(dbu_area: i64, dbu_per_micron: i32) -> f32 {
     let d = dbu_per_micron as f64;
     (dbu_area as f64 / (d * d)) as f32
 }
+
+// ---------------------------------------------------------------- blockages into the outline
+
+/// Upstream `findOffsetIntersections`: the parts of each blockage that fall inside the outline,
+/// re-expressed relative to the outline's corner.
+///
+/// 🔑 **Everything inside a placement problem is outline-relative.** The parent's outline becomes
+/// the origin, so a blockage at absolute `(500, 500)` inside an outline starting at `(400, 400)`
+/// arrives as `(100, 100)`.
+///
+/// ⚠️ **A zero-AREA intersection is dropped, not kept as a degenerate box.** A blockage touching
+/// the outline edge-on contributes nothing, so the test is on the area rather than on the
+/// individual dimensions — which also rejects the inverted rectangle a complete miss produces.
+pub fn find_offset_intersections(
+    candidates: &[(i32, i32, i32, i32)],
+    outline: (i32, i32, i32, i32),
+) -> Vec<(i32, i32, i32, i32)> {
+    let mut out = Vec::new();
+    for &(cx0, cy0, cx1, cy1) in candidates {
+        let x0 = cx0.max(outline.0);
+        let y0 = cy0.max(outline.1);
+        let x1 = cx1.min(outline.2);
+        let y1 = cy1.min(outline.3);
+        // `isInverted()`, then a zero area — a miss gives one or both, a touch gives the second.
+        if x0 > x1 || y0 > y1 {
+            continue;
+        }
+        if (x1 - x0) as i64 * (y1 - y0) as i64 == 0 {
+            continue;
+        }
+        out.push((x0 - outline.0, y0 - outline.1, x1 - outline.0, y1 - outline.1));
+    }
+    out
+}
+
+/// Why a blockage set could not be reduced.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct NeedsPolygonUnion;
+
+/// Upstream `eliminateOverlaps`: merge the blockages and re-cut them into disjoint rectangles.
+///
+/// ⛔ **Upstream does this with `boost::polygon`'s `polygon_90_set_data`, and the rectangles that
+/// come back are that library's DECOMPOSITION, not a canonical answer.** How a merged region is
+/// sliced — how many rectangles, where the cuts fall, what order they arrive in — is boost's
+/// choice. Reimplementing it by eye would produce a plausible set that is not the same set, which
+/// is the one thing this programme never does.
+///
+/// 🔑 **Zero or one rectangle needs no library.** A set built from a single rectangle decomposes
+/// back to that rectangle, so those cases are exact. Every design in the reference suite that has
+/// a placement blockage at all has exactly one, so this covers the corpus.
+///
+/// ⛔ Two or more is REFUSED by name. Note that it is refused even when they do not overlap:
+/// boost merges rectangles that merely touch, so "no overlap" is not the same as "no work".
+pub fn eliminate_overlaps(
+    blockages: &[(i32, i32, i32, i32)],
+) -> Result<Vec<(i32, i32, i32, i32)>, NeedsPolygonUnion> {
+    match blockages.len() {
+        0 => Ok(Vec::new()),
+        1 => Ok(blockages.to_vec()),
+        _ => Err(NeedsPolygonUnion),
+    }
+}
+
+/// Upstream `createSoftMacrosForBlockages`: each blockage becomes a fixed, zero-cluster macro.
+///
+/// ⚠️ **They are appended BEFORE any cluster**, so blockage macros occupy the lowest ids and every
+/// cluster's id is offset by their count. The sequence pair indexes into this list.
+pub fn soft_macros_for_blockages(blockages: &[(i32, i32, i32, i32)]) -> Vec<crate::anneal::SoftMacro> {
+    blockages
+        .iter()
+        .map(|&(x0, y0, x1, y1)| crate::anneal::SoftMacro {
+            x: x0,
+            y: y0,
+            width: x1 - x0,
+            height: y1 - y0,
+            fixed: true,
+            area: (x1 - x0) as i64 * (y1 - y0) as i64,
+            is_macro_cluster: false,
+        })
+        .collect()
+}
+
+// ---------------------------------------------------------------- fixed terminals
+
+/// A cluster, as the fixed-terminal builder needs to see it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct TerminalCluster {
+    pub center: (i32, i32),
+    pub origin: (i32, i32),
+    pub width: i32,
+    pub height: i32,
+    /// ⚠️ Decides which of two quite different things this becomes.
+    pub is_cluster_of_unplaced_io_pins: bool,
+}
+
+/// Upstream `createFixedTerminal`.
+///
+/// 🔑 **Two shapes in one function.** An ordinary terminal is a POINT at the cluster's CENTRE with
+/// no size and no cluster attached — it exists only to pull wirelength toward where that cluster
+/// sits. A cluster of unplaced IO pins is different: it keeps its real ORIGIN, its real extent and
+/// its cluster identity, because the wirelength model measures distance to the region it covers.
+///
+/// ⚠️ **Centre for one, origin for the other** — not a uniform anchor.
+///
+/// ⚠️ **The area is ZERO either way**, even for the sized one. Upstream's comment says so
+/// explicitly: the area is what distinguishes a terminal from a placeable macro inside the
+/// annealer, so giving the IO region its real area would make it placeable.
+pub fn fixed_terminal(cluster: &TerminalCluster, outline_origin: (i32, i32)) -> crate::anneal::SoftMacro {
+    let (location, width, height) = if cluster.is_cluster_of_unplaced_io_pins {
+        (cluster.origin, cluster.width, cluster.height)
+    } else {
+        (cluster.center, 0, 0)
+    };
+    crate::anneal::SoftMacro {
+        x: location.0 - outline_origin.0,
+        y: location.1 - outline_origin.1,
+        width,
+        height,
+        fixed: true,
+        // ⚠️ Zero on purpose — see above.
+        area: 0,
+        is_macro_cluster: false,
+    }
+}
+
+/// Upstream `createFixedTerminals`' walk: every SIBLING at every level above the cluster.
+///
+/// 🔑 **It climbs the tree, gathering aunts and uncles.** Placing a cluster's children means
+/// knowing where everything else in the design already sits, so at each level it takes the
+/// current node's siblings and then steps up. The node itself is always excluded.
+///
+/// ⛔ **It stops when the grandparent runs out, not the parent** — so the ROOT's own children are
+/// never added as terminals, and a cluster whose parent is the root gets its siblings and nothing
+/// more.
+///
+/// ⚠️ Returns nothing at all for a cluster with no parent.
+pub fn fixed_terminal_walk(
+    start: usize,
+    parent_of: &dyn Fn(usize) -> Option<usize>,
+    children_of: &dyn Fn(usize) -> Vec<usize>,
+) -> Vec<usize> {
+    let mut out = Vec::new();
+    if parent_of(start).is_none() {
+        return out;
+    }
+    let mut frontier = std::collections::VecDeque::new();
+    frontier.push_back(start);
+
+    while let Some(node) = frontier.pop_front() {
+        let Some(grandparent) = parent_of(node) else { continue };
+        for sibling in children_of(grandparent) {
+            if sibling != node {
+                out.push(sibling);
+            }
+        }
+        // ⛔ The GRANDparent's own parent is the test — climbing stops one level below the root.
+        if let Some(parent) = parent_of(node) {
+            if parent_of(parent).is_some() {
+                frontier.push_back(parent);
+            }
+        }
+    }
+    out
+}
