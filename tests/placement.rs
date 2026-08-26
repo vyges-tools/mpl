@@ -335,3 +335,119 @@ fn an_unshaped_macro_cluster_gets_no_curve_at_placement() {
     assert!(set_macro_cluster_shapes(false, false, &[(10, 10)]).is_none(), "not a macro cluster");
     assert!(set_macro_cluster_shapes(true, false, &[(10, 20)]).is_some());
 }
+
+// ---------------------------------------------------------------- fine shaping
+
+use vyges_mpl::placement::{
+    mixed_cluster_shape, single_array_single_std_cell_cluster, std_cell_cluster_shape,
+};
+
+/// 🔑 Exactly one macro array and exactly one cell cluster, and nothing else.
+#[test]
+fn the_single_array_case_needs_exactly_one_of_each() {
+    let one_each = [(AreaKind::HardMacroCluster, true), (AreaKind::StdCellCluster, false)];
+    assert!(single_array_single_std_cell_cluster(&one_each));
+
+    let two_arrays = [
+        (AreaKind::HardMacroCluster, true),
+        (AreaKind::HardMacroCluster, true),
+        (AreaKind::StdCellCluster, false),
+    ];
+    assert!(!single_array_single_std_cell_cluster(&two_arrays));
+    assert!(!single_array_single_std_cell_cluster(&[(AreaKind::HardMacroCluster, true)]), "no cells");
+    assert!(!single_array_single_std_cell_cluster(&[(AreaKind::StdCellCluster, false)]), "no array");
+}
+
+/// ⛔ **Any mixed cluster fails it outright**, and a macro cluster that is not an ARRAY does too.
+#[test]
+fn a_mixed_cluster_or_a_non_array_disqualifies_it() {
+    let with_mixed = [
+        (AreaKind::HardMacroCluster, true),
+        (AreaKind::StdCellCluster, false),
+        (AreaKind::MixedCluster, false),
+    ];
+    assert!(!single_array_single_std_cell_cluster(&with_mixed));
+
+    let not_an_array = [(AreaKind::HardMacroCluster, false), (AreaKind::StdCellCluster, false)];
+    assert!(!single_array_single_std_cell_cluster(&not_an_array));
+}
+
+/// ℹ️ Blockages and IO clusters are skipped, so they cannot disqualify it.
+#[test]
+fn blockages_and_io_clusters_do_not_disqualify_the_single_array_case() {
+    let with_extras = [
+        (AreaKind::Blockage, false),
+        (AreaKind::IoCluster, false),
+        (AreaKind::HardMacroCluster, true),
+        (AreaKind::StdCellCluster, false),
+    ];
+    assert!(single_array_single_std_cell_cluster(&with_extras));
+}
+
+/// 🔑 **A tiny cluster is collapsed to ONE unit square** — erased, not shrunk. It still exists for
+/// the netlist, but occupies nothing.
+#[test]
+fn a_tiny_cluster_is_collapsed_to_a_unit_square() {
+    let (interval, area) = std_cell_cluster_shape(1_000_000, 5, 10, false, 0.5, 0.33);
+    assert_eq!((interval.min, interval.max), (1, 1));
+    assert_eq!(area, 1, "not zero — a zero area would make it a fixed terminal");
+}
+
+/// ⚠️ The lone cell cluster of a single-array design gets the same treatment, however large.
+#[test]
+fn the_lone_cell_cluster_of_a_single_array_design_is_also_collapsed() {
+    let (interval, area) = std_cell_cluster_shape(1_000_000, 99_999, 0, true, 0.5, 0.33);
+    assert_eq!((interval.min, interval.max, area), (1, 1, 1));
+}
+
+/// ⚠️ Otherwise the area inflates by the utilization and the width comes from the aspect limit.
+#[test]
+fn an_ordinary_cell_cluster_inflates_by_the_utilization() {
+    let (interval, area) = std_cell_cluster_shape(100_000, 5_000, 10, false, 0.5, 0.33);
+    assert_eq!(area, 200_000, "halved utilization doubles the area");
+    // width = sqrt(200000 / 0.33) = sqrt(606060.6) = 778.
+    assert_eq!(interval.max, 778);
+    assert_eq!(interval.min, 200_000 / 778, "the narrow end is area over that width");
+    assert!(interval.min <= interval.max);
+}
+
+/// ⛔ **The macro area comes from the LAST tiling — the largest — not the first.** Using the first
+/// would under-inflate every mixed cluster.
+#[test]
+fn a_mixed_cluster_inflates_against_its_largest_tiling() {
+    // Tilings ordered by area: 100x100 = 10,000 then 300x300 = 90,000.
+    let tilings = [(100, 100), (300, 300)];
+    let (_, inflated) = mixed_cluster_shape(&tilings, 10_000, 0.5).expect("has tilings");
+    assert_eq!(inflated, 90_000 + 20_000, "the LAST tiling's area plus the inflated cells");
+    assert_ne!(inflated, 10_000 + 20_000, "not the first tiling's");
+}
+
+/// 🔑 **Only the cell half is inflated** — macros do not compress, so the macro area is added back
+/// at full size.
+#[test]
+fn only_the_cell_half_of_a_mixed_cluster_inflates() {
+    let tilings = [(100, 100)];
+    let (_, half) = mixed_cluster_shape(&tilings, 10_000, 0.5).expect("has tilings");
+    let (_, quarter) = mixed_cluster_shape(&tilings, 10_000, 0.25).expect("has tilings");
+    assert_eq!(half, 10_000 + 20_000);
+    assert_eq!(quarter, 10_000 + 40_000, "only the cells scaled");
+}
+
+/// ⚠️ One interval per tiling: a tall thin tiling permits a wide range, a short wide one almost
+/// none.
+#[test]
+fn each_tiling_gets_its_own_width_range() {
+    let tilings = [(100, 400), (400, 100)];
+    let (intervals, inflated) = mixed_cluster_shape(&tilings, 0, 1.0).expect("has tilings");
+    assert_eq!(inflated, 400 * 100, "the last tiling's area, with no cells to inflate");
+    assert_eq!(intervals[0].min, 100);
+    assert_eq!(intervals[0].max, inflated as i32 / 400);
+    assert_eq!(intervals[1].min, 400);
+    assert_eq!(intervals[1].max, inflated as i32 / 100);
+}
+
+/// ℹ️ No tilings, no shape.
+#[test]
+fn a_mixed_cluster_without_tilings_has_no_shape() {
+    assert!(mixed_cluster_shape(&[], 1000, 0.5).is_none());
+}

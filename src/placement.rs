@@ -725,3 +725,106 @@ pub fn set_macro_cluster_shapes(
     }
     Some(crate::anneal::shape_curve_from_tilings(tilings))
 }
+
+// ---------------------------------------------------------------- fine shaping
+
+/// Upstream `singleArraySingleStdCellCluster`.
+///
+/// 🔑 **Exactly one macro array and exactly one standard-cell cluster, and nothing else.** That
+/// shape of design gets special treatment below: the cell cluster is shrunk to nothing so the
+/// array can use the whole outline.
+///
+/// ⛔ **Any mixed cluster fails it outright**, before anything is counted.
+/// ⛔ A macro cluster that is not an ARRAY of interconnected macros also fails it.
+pub fn single_array_single_std_cell_cluster(
+    entries: &[(AreaKind, bool)],
+) -> bool {
+    let mut arrays = 0;
+    let mut std_clusters = 0;
+    for &(kind, is_array_of_interconnected_macros) in entries {
+        if kind == AreaKind::MixedCluster {
+            return false;
+        }
+        if kind == AreaKind::Blockage || kind == AreaKind::IoCluster {
+            continue;
+        }
+        match kind {
+            AreaKind::HardMacroCluster => {
+                if !is_array_of_interconnected_macros {
+                    return false;
+                }
+                arrays += 1;
+            }
+            AreaKind::StdCellCluster => std_clusters += 1,
+            _ => {}
+        }
+        if arrays > 1 || std_clusters > 1 {
+            return false;
+        }
+    }
+    arrays != 0 && std_clusters != 0
+}
+
+/// The shape a standard-cell cluster is given at fine shaping.
+///
+/// 🔑 **A cluster small enough to be "tiny" is collapsed to ONE DATABASE UNIT SQUARE.** Not
+/// shrunk — erased. The same happens to the lone cell cluster of a single-array design. It still
+/// exists, so the netlist still pulls on it, but it occupies nothing and the macros place as if
+/// it were not there.
+///
+/// ⚠️ Otherwise the area is inflated by the utilization and the width comes from
+/// `sqrt(area / min_ar)`, which is the widest the cluster may be at its aspect-ratio limit. The
+/// interval then runs from `area / width` up to that width.
+///
+/// ⚠️ Every division truncates on the way back to an integer, and the square root truncates too.
+pub fn std_cell_cluster_shape(
+    cluster_area: i64,
+    num_std_cell: i32,
+    tiny_threshold: i32,
+    single_array_single_std_cell: bool,
+    utilization: f32,
+    min_ar: f32,
+) -> (crate::anneal::Interval, i64) {
+    if num_std_cell <= tiny_threshold || single_array_single_std_cell {
+        // ⚠️ One unit square, not zero — a zero area would make it a fixed terminal.
+        const NEGLIGIBLE_WIDTH: i32 = 1;
+        return (
+            crate::anneal::Interval { min: NEGLIGIBLE_WIDTH, max: NEGLIGIBLE_WIDTH },
+            NEGLIGIBLE_WIDTH as i64 * NEGLIGIBLE_WIDTH as i64,
+        );
+    }
+    let area = (cluster_area as f32 / utilization) as i64;
+    let width = (area as f32 / min_ar).sqrt() as i32;
+    let minimum_width = if width != 0 { (area / width as i64) as i32 } else { 0 };
+    (crate::anneal::Interval { min: minimum_width, max: width }, area)
+}
+
+/// The shape curve a mixed cluster is given at fine shaping.
+///
+/// ⛔ **The macro area comes from the LAST tiling, not the first.** The tilings are ordered by
+/// area, so the last is the LARGEST — the inflation is sized against the worst case the cluster
+/// might take, and using `front()` would under-inflate every mixed cluster.
+///
+/// 🔑 **Only the standard-cell half is inflated.** Macros do not compress, so the utilization is
+/// applied to the cell area alone and the macro area is added back at full size.
+///
+/// ⚠️ One interval per tiling: from that tiling's own width up to whatever width the inflated area
+/// allows at that tiling's height. So a tall thin tiling permits a wide range and a short wide one
+/// permits almost none.
+pub fn mixed_cluster_shape(
+    tilings: &[(i32, i32)],
+    cluster_std_cell_area: i64,
+    utilization: f32,
+) -> Option<(Vec<crate::anneal::Interval>, i64)> {
+    let macro_area = tilings.last()?.0 as i64 * tilings.last()?.1 as i64;
+    let inflated_area =
+        (macro_area as f32 + cluster_std_cell_area as f32 / utilization) as i64;
+    let intervals = tilings
+        .iter()
+        .map(|&(width, height)| crate::anneal::Interval {
+            min: width,
+            max: if height != 0 { (inflated_area / height as i64) as i32 } else { 0 },
+        })
+        .collect();
+    Some((intervals, inflated_area))
+}
