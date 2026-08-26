@@ -347,8 +347,8 @@ fn base(die: Rect) -> CoarseInput<'static> {
         fixed_ios: 1,
         constrained_regions: &[],
         unfixed_ios: 1,
-        available_regions: &[],
-        any_blocked_regions: false,
+        blocked_regions_for_pins: &[],
+        has_unconstrained_ios: false,
         base_depth: &|_| 50,
     }
 }
@@ -404,11 +404,8 @@ fn a_design_with_io_pads_casts_no_pin_access_blockages() {
     let mut root = root_with_one_macro_child();
     let mut input = base(DIE);
     input.has_io_pads = true;
-    input.available_regions = &[BoundaryRegion {
-        line: Rect { x_min: 0, y_min: 0, x_max: 0, y_max: 1000 },
-        boundary: Boundary::L,
-    }];
-    input.any_blocked_regions = true;
+    input.blocked_regions_for_pins = &[Rect { x_min: 0, y_min: 0, x_max: 0, y_max: 500 }];
+    input.has_unconstrained_ios = true;
     let got = run_coarse_shaping(&mut root, &input).expect("shapeable");
     assert!(got.io_blockages.is_empty(), "the pads carry the connectivity instead");
 }
@@ -419,11 +416,8 @@ fn a_design_with_no_standard_cells_casts_no_pin_access_blockages() {
     let mut root = root_with_one_macro_child();
     let mut input = base(DIE);
     input.top_std_cell_area = 0;
-    input.any_blocked_regions = true;
-    input.available_regions = &[BoundaryRegion {
-        line: Rect { x_min: 0, y_min: 0, x_max: 0, y_max: 1000 },
-        boundary: Boundary::L,
-    }];
+    input.blocked_regions_for_pins = &[Rect { x_min: 0, y_min: 0, x_max: 0, y_max: 500 }];
+    input.has_unconstrained_ios = true;
     let got = run_coarse_shaping(&mut root, &input).expect("shapeable");
     assert!(got.io_blockages.is_empty());
 }
@@ -442,10 +436,16 @@ fn the_three_builders_append_in_upstreams_order() {
         },
         ios: 1,
     };
-    let avail = BoundaryRegion {
-        line: Rect { x_min: 1000, y_min: 0, x_max: 1000, y_max: 100 },
-        boundary: Boundary::R,
-    };
+    // ⛔ The available regions are DERIVED, not supplied — so to leave exactly one, every other
+    // edge is blocked in full. A blocked region that covers a whole edge removes it: both pieces
+    // of the subtraction collapse to a single point and are dropped. What survives here is the
+    // right edge below y=100, which is the one region this test wants to see land second.
+    let blocked = [
+        Rect { x_min: 0, y_min: 0, x_max: 1000, y_max: 0 },
+        Rect { x_min: 0, y_min: 0, x_max: 0, y_max: 1000 },
+        Rect { x_min: 0, y_min: 1000, x_max: 1000, y_max: 1000 },
+        Rect { x_min: 1000, y_min: 100, x_max: 1000, y_max: 1000 },
+    ];
     let constrained = IoRegion {
         region: BoundaryRegion {
             line: Rect { x_min: 400, y_min: 0, x_max: 500, y_max: 0 },
@@ -456,8 +456,8 @@ fn the_three_builders_append_in_upstreams_order() {
     let mut root = root_with_one_macro_child();
     let mut input = base(DIE);
     input.io_bundles = std::slice::from_ref(&bundle);
-    input.available_regions = std::slice::from_ref(&avail);
-    input.any_blocked_regions = true;
+    input.blocked_regions_for_pins = &blocked;
+    input.has_unconstrained_ios = true;
     input.constrained_regions = std::slice::from_ref(&constrained);
     // ⚠️ A different IO total for the constraint regions, so its depth differs from the bundle's.
     // With both at 1 the two rectangles come out IDENTICAL and the order is unobservable again.
@@ -492,4 +492,66 @@ fn the_placement_blockages_come_through_untouched() {
     input.blockages = &bs;
     let got = run_coarse_shaping(&mut root, &input).expect("shapeable");
     assert_eq!(got.placement_blockages, bs.to_vec());
+}
+
+// ---------------------------------------------------------------- the search, in sequence
+
+/// ⛔ **The gate closes the whole search, not one builder.** With no unconstrained IO cluster the
+/// available-region list stays empty, so however much of the boundary is free, none of it casts a
+/// blockage. Upstream `searchAvailableRegionsForUnconstrainedPins` returns before computing
+/// anything.
+#[test]
+fn without_unconstrained_ios_no_available_region_is_searched() {
+    let mut root = root_with_one_macro_child();
+    let mut input = base(DIE);
+    input.blocked_regions_for_pins = &[Rect { x_min: 0, y_min: 100, x_max: 0, y_max: 200 }];
+    input.has_unconstrained_ios = false;
+    let closed = run_coarse_shaping(&mut root, &input).expect("shapeable");
+
+    let mut root = root_with_one_macro_child();
+    input.has_unconstrained_ios = true;
+    let open = run_coarse_shaping(&mut root, &input).expect("shapeable");
+
+    assert!(closed.io_blockages.is_empty(), "the gate was shut");
+    assert!(!open.io_blockages.is_empty(), "and the fixture can actually produce some");
+}
+
+/// 🔑 **The order is the algorithm.** Upstream runs the search BETWEEN the tilings and the
+/// blockages, so its `Found blocked region` lines precede the pin-access depth table that the
+/// blockages are clamped by. A search hoisted above the tilings would emit them the other way
+/// round, and this is the cheapest place that difference is visible.
+#[test]
+fn the_search_traces_before_the_depth_table() {
+    use vyges_mpl::shaping::run_coarse_shaping_traced;
+    use vyges_mpl::trace::CoarseTrace;
+
+    let mut root = root_with_one_macro_child();
+    let mut input = base(DIE);
+    input.blocked_regions_for_pins = &[Rect { x_min: 0, y_min: 100, x_max: 0, y_max: 200 }];
+    input.has_unconstrained_ios = true;
+
+    let mut trace = CoarseTrace::recording();
+    run_coarse_shaping_traced(&mut root, &input, 2000, &mut trace).expect("shapeable");
+    let out = trace.finish();
+
+    let found = out.find("Found blocked region").expect("the search traced");
+    let table = out.find("Pin Access Depth").expect("the limits traced");
+    assert!(found < table, "the search runs before the blockages it feeds");
+}
+
+/// ⚠️ **A blocked region that covers a whole edge REMOVES it.** Both pieces of the subtraction
+/// collapse to a single point and are dropped, so the edge casts no blockage at all — which is
+/// how the order fixture above leaves exactly one region standing.
+#[test]
+fn an_edge_blocked_end_to_end_leaves_no_available_region() {
+    let mut root = root_with_one_macro_child();
+    let mut input = base(DIE);
+    let whole_left = [Rect { x_min: 0, y_min: 0, x_max: 0, y_max: 1000 }];
+    input.blocked_regions_for_pins = &whole_left;
+    input.has_unconstrained_ios = true;
+    let got = run_coarse_shaping(&mut root, &input).expect("shapeable");
+    assert!(
+        !got.io_blockages.iter().any(|b| b.x_min == 0 && b.x_max <= 0),
+        "the left edge was consumed by the blocked region"
+    );
 }

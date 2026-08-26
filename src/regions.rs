@@ -98,6 +98,24 @@ pub fn available_regions(die: &Rect, blocked: &[Rect]) -> Vec<Rect> {
     out
 }
 
+/// Upstream `searchAvailableRegionsForUnconstrainedPins`'s middle two steps: build the
+/// boundary-to-blocked-regions map, tracing as it goes, then compute the available regions.
+///
+/// ⚠️ **The trace order is the order the blocked regions were READ, not the order they come out
+/// in.** Upstream traces while filling the map, one line per input region; the regions themselves
+/// then emerge grouped by boundary in `BOUNDARY_ORDER`. Tracing from the output would reorder
+/// every line on any design with blocked regions on more than one edge.
+pub fn available_regions_traced(
+    die: &Rect,
+    blocked: &[Rect],
+    trace: &mut CoarseTrace,
+) -> Vec<Rect> {
+    for region in blocked {
+        trace.found_blocked_region(region, boundary_of(die, region));
+    }
+    available_regions(die, blocked)
+}
+
 /// Does `outer` wholly contain `inner`? ⚠️ Inclusive on every side, as `odb::Rect::contains` is —
 /// a blocked region flush against the end of an edge is still contained.
 fn contains(outer: &Rect, inner: &Rect) -> bool {
@@ -110,6 +128,7 @@ fn contains(outer: &Rect, inner: &Rect) -> bool {
 // ---------------------------------------------------------------- pin access blockages
 
 use crate::shaping::DepthLimits;
+use crate::trace::CoarseTrace;
 
 /// A stretch of one die edge, and which edge it is.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -236,4 +255,68 @@ pub fn blockages_for_available_regions(
     let span: i64 = available.iter().map(|r| region_length(&r.line)).sum();
     let base = base_depth_for_span(span);
     available.iter().map(|r| pin_access_blockage(r, base, limits)).collect()
+}
+
+// ---------------------------------------------------------------- the builders, traced
+
+/// As [`blockages_for_regions`], recording upstream's `coarse_shaping` trace.
+///
+/// ⚠️ **The base depth is traced HERE, not by the caller.** Upstream emits it from the end of
+/// `computePinAccessBaseDepth`, which runs once per builder and only after that builder's
+/// empty-guard — so a design whose bundles are empty prints no base depth at all, even though
+/// another builder on the same design may print one.
+///
+/// ℹ️ The blockages are traced in a pass of their own rather than inside the `map`. Construction
+/// emits nothing else, so the line order is identical to upstream's interleaving, and the built
+/// path stays byte-for-byte the untraced one.
+pub fn blockages_for_regions_traced(
+    regions: &[IoRegion],
+    ios_total: i64,
+    base_depth_for_span: &dyn Fn(i64) -> i64,
+    limits: &DepthLimits,
+    dbu_per_micron: i32,
+    trace: &mut CoarseTrace,
+) -> Vec<Rect> {
+    if regions.is_empty() {
+        return Vec::new();
+    }
+    if trace.is_recording() {
+        let span: i64 = regions.iter().map(|r| region_length(&r.region.line)).sum();
+        let base = base_depth_for_span(span);
+        trace.base_depth(base, dbu_per_micron);
+        for r in regions {
+            let depth = scale_depth(base, io_density_factor(r.ios, ios_total));
+            // ⚠️ Upstream prints the depth AFTER clamping, and the region's own line UNCLAMPED.
+            let clamped = clamp_depth(depth, r.region.boundary, limits);
+            trace.creating_blockage(r.region.boundary, &r.region.line, clamped, dbu_per_micron);
+        }
+    }
+    blockages_for_regions(regions, ios_total, base_depth_for_span, limits)
+}
+
+/// As [`blockages_for_available_regions`], recording upstream's `coarse_shaping` trace.
+///
+/// 🔑 **No density factor**, so every region traces the same base depth — clamped per boundary,
+/// which is why two regions on different edges can still print different numbers.
+pub fn blockages_for_available_regions_traced(
+    available: &[BoundaryRegion],
+    any_blocked: bool,
+    base_depth_for_span: &dyn Fn(i64) -> i64,
+    limits: &DepthLimits,
+    dbu_per_micron: i32,
+    trace: &mut CoarseTrace,
+) -> Vec<Rect> {
+    if !any_blocked {
+        return Vec::new();
+    }
+    if trace.is_recording() {
+        let span: i64 = available.iter().map(|r| region_length(&r.line)).sum();
+        let base = base_depth_for_span(span);
+        trace.base_depth(base, dbu_per_micron);
+        for r in available {
+            let clamped = clamp_depth(base, r.boundary, limits);
+            trace.creating_blockage(r.boundary, &r.line, clamped, dbu_per_micron);
+        }
+    }
+    blockages_for_available_regions(available, any_blocked, base_depth_for_span, limits)
 }

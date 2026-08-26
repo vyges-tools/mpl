@@ -365,8 +365,19 @@ pub struct CoarseInput<'a> {
     pub fixed_ios: i64,
     pub constrained_regions: &'a [crate::regions::IoRegion],
     pub unfixed_ios: i64,
-    pub available_regions: &'a [crate::regions::BoundaryRegion],
-    pub any_blocked_regions: bool,
+    /// The die-edge stretches where pins may NOT go, as read from the database.
+    ///
+    /// 🔑 **The available regions are derived from this INSIDE the stage, not handed in.**
+    /// Upstream computes them in `searchAvailableRegionsForUnconstrainedPins`, called between the
+    /// tilings and the blockages — so their position in the order is part of the algorithm, and a
+    /// caller that computed them earlier would be free to do so against different state.
+    pub blocked_regions_for_pins: &'a [Rect],
+    /// Upstream `treeHasUnconstrainedIOs`: at least one unplaced-IO cluster is unconstrained.
+    ///
+    /// ⚠️ **Gates the SEARCH, not the builder.** With this false the available-region list stays
+    /// empty, yet `createBlockagesForAvailableRegions` still runs — its own guard is on the
+    /// BLOCKED regions. Upstream then divides by a zero span; the corpus never reaches it.
+    pub has_unconstrained_ios: bool,
     /// `computePinAccessBaseDepth`, which needs tree state this function does not carry.
     pub base_depth: &'a dyn Fn(i64) -> i64,
 }
@@ -423,7 +434,14 @@ pub fn run_coarse_shaping_traced(
     let ctx = ShapingCtx { outline: input.floorplan, macro_dims: input.macro_dims };
     calculate_children_tilings_traced(root, &ctx, trace)?;
 
-    let io_blockages = pin_access_blockages(root, input, dbu_per_micron, trace);
+    // 🔑 **Here, between the tilings and the blockages** — upstream's own position for
+    // `searchAvailableRegionsForUnconstrainedPins`. It reads no tiling, so moving it earlier
+    // would compute the same regions today; it is kept here because the order IS the algorithm,
+    // and the next stage to land is the one that makes that stop being true.
+    let available_regions = search_available_regions_for_unconstrained_pins(input, trace);
+
+    let io_blockages =
+        pin_access_blockages(root, input, &available_regions, dbu_per_micron, trace);
     Ok(CoarseShaping {
         root_shape,
         depth_limits: depth_limits_for(root, input).unwrap_or_default(),
@@ -442,10 +460,32 @@ fn depth_limits_for(root: &Cluster, input: &CoarseInput) -> Option<DepthLimits> 
     Some(pin_access_depth_limits(&input.die, *root.tilings.first()?))
 }
 
+/// Upstream `searchAvailableRegionsForUnconstrainedPins`.
+///
+/// ⛔ **Returns nothing at all when no unplaced-IO cluster is unconstrained.** That is the whole
+/// of the gate: with it closed the design casts no available-region blockages, however much of
+/// its boundary is free.
+fn search_available_regions_for_unconstrained_pins(
+    input: &CoarseInput,
+    trace: &mut CoarseTrace,
+) -> Vec<crate::regions::BoundaryRegion> {
+    if !input.has_unconstrained_ios {
+        return Vec::new();
+    }
+    crate::regions::available_regions_traced(&input.die, input.blocked_regions_for_pins, trace)
+        .into_iter()
+        .map(|line| crate::regions::BoundaryRegion {
+            boundary: crate::regions::boundary_of(&input.die, &line),
+            line,
+        })
+        .collect()
+}
+
 /// Upstream `createPinAccessBlockages`: two guards, then the three builders in order.
 fn pin_access_blockages(
     root: &Cluster,
     input: &CoarseInput,
+    available_regions: &[crate::regions::BoundaryRegion],
     dbu_per_micron: i32,
     trace: &mut CoarseTrace,
 ) -> Vec<Rect> {
@@ -456,23 +496,29 @@ fn pin_access_blockages(
     // `computePinAccessDepthLimits`, which runs after the two guards and BEFORE the three
     // blockage builders. Printing it later would put it after the blockage lines it bounds.
     trace.depth_limits(&limits, dbu_per_micron);
-    let mut out = crate::regions::blockages_for_regions(
+    let mut out = crate::regions::blockages_for_regions_traced(
         input.io_bundles,
         input.fixed_ios,
         input.base_depth,
         &limits,
+        dbu_per_micron,
+        trace,
     );
-    out.extend(crate::regions::blockages_for_available_regions(
-        input.available_regions,
-        input.any_blocked_regions,
+    out.extend(crate::regions::blockages_for_available_regions_traced(
+        available_regions,
+        !input.blocked_regions_for_pins.is_empty(),
         input.base_depth,
         &limits,
+        dbu_per_micron,
+        trace,
     ));
-    out.extend(crate::regions::blockages_for_regions(
+    out.extend(crate::regions::blockages_for_regions_traced(
         input.constrained_regions,
         input.unfixed_ios,
         input.base_depth,
         &limits,
+        dbu_per_micron,
+        trace,
     ));
     out
 }
