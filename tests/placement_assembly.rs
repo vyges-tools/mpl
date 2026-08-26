@@ -164,3 +164,123 @@ fn an_empty_parent_assembles_to_an_empty_problem() {
     assert!(got.macros.is_empty());
     assert_eq!(got.number_of_sequence_pair_macros, 0);
 }
+
+// ---------------------------------------------------------------- closing out a parent
+
+use vyges_mpl::placement::{
+    placement_action, update_children_shapes_and_locations, PlacementAction, UnknownChild,
+};
+
+/// ⚠️ **The macro-cluster test comes FIRST**, before the leaf test. A hard-macro cluster is almost
+/// always a leaf, so reordering the two would place nothing at all for the commonest case.
+#[test]
+fn a_leaf_macro_cluster_is_placed_not_skipped() {
+    assert_eq!(
+        placement_action(AreaKind::HardMacroCluster, false, true),
+        PlacementAction::PlaceMacros,
+        "a leaf, and still placed"
+    );
+    assert_eq!(
+        placement_action(AreaKind::HardMacroCluster, false, false),
+        PlacementAction::PlaceMacros
+    );
+}
+
+/// ⛔ **A fixed macro cluster reaches macro placement and is refused by its first line.** Its type
+/// is `HardMacroCluster`, so the type test cannot tell it apart — the two guards are not redundant.
+#[test]
+fn a_fixed_macro_cluster_reaches_macro_placement_and_is_refused() {
+    assert_eq!(
+        placement_action(AreaKind::HardMacroCluster, true, true),
+        PlacementAction::PlaceMacrosButRefused
+    );
+}
+
+/// ⚠️ Everything else that is a leaf does nothing — IO clusters and leaf standard-cell clusters.
+#[test]
+fn other_leaves_do_nothing() {
+    for kind in [AreaKind::IoCluster, AreaKind::StdCellCluster, AreaKind::MixedCluster] {
+        assert_eq!(placement_action(kind, false, true), PlacementAction::Nothing, "{kind:?}");
+    }
+}
+
+/// ⚠️ A cluster with children is the only thing that recurses.
+#[test]
+fn only_a_non_leaf_non_macro_cluster_recurses() {
+    assert_eq!(
+        placement_action(AreaKind::MixedCluster, false, false),
+        PlacementAction::PlaceChildren
+    );
+    assert_eq!(
+        placement_action(AreaKind::StdCellCluster, false, false),
+        PlacementAction::PlaceChildren
+    );
+}
+
+// ---------------------------------------------------------------- writing the result back
+
+/// ⛔ **An IO cluster is SKIPPED.** Its soft macro was built at clustering time and is the
+/// authoritative one — the edge slice the pins occupy. The annealer's copy is a zero-area
+/// stand-in that exists only to be a net terminal.
+#[test]
+fn an_io_clusters_own_soft_macro_is_left_alone() {
+    let children_in = [
+        child("A", AreaKind::MixedCluster),
+        child("io_1", AreaKind::IoCluster),
+    ];
+    let assembly = assemble(&[], &children_in, OUTLINE, &[]);
+
+    let shaped = [sm(11, 22, 33, 44), sm(99, 99, 0, 0)];
+    let tree = [("A".to_string(), AreaKind::MixedCluster), ("io_1".to_string(), AreaKind::IoCluster)];
+    let got = update_children_shapes_and_locations(&tree, &shaped, &assembly).unwrap();
+
+    assert_eq!(got.len(), 1, "only the placeable cluster is written back");
+    assert_eq!(got[0].0, "A");
+    assert_eq!(got[0].1, shaped[0]);
+}
+
+/// 🔑 **A FIXED macro cluster IS overwritten**, though its soft macro was also built at clustering
+/// time. The two clustering-time soft macros are treated in opposite ways, a few lines apart —
+/// which is the whole reason this is pinned.
+#[test]
+fn a_fixed_macro_clusters_soft_macro_is_overwritten() {
+    let children_in = [child("FIXED", AreaKind::FixedMacro)];
+    let assembly = assemble(&[], &children_in, OUTLINE, &[]);
+    let shaped = [sm(7, 8, 9, 10)];
+    let tree = [("FIXED".to_string(), AreaKind::FixedMacro)];
+    let got = update_children_shapes_and_locations(&tree, &shaped, &assembly).unwrap();
+    assert_eq!(got, vec![("FIXED".to_string(), shaped[0])]);
+}
+
+/// ⚠️ **The whole macro is assigned, shape included** — not just its position. That is how a mixed
+/// cluster keeps the dimensions the annealer chose.
+#[test]
+fn the_shape_is_written_back_along_with_the_location() {
+    let children_in = [child("A", AreaKind::MixedCluster)];
+    let assembly = assemble(&[], &children_in, OUTLINE, &[]);
+    let shaped = [sm(100, 200, 300, 400)];
+    let tree = [("A".to_string(), AreaKind::MixedCluster)];
+    let got = update_children_shapes_and_locations(&tree, &shaped, &assembly).unwrap();
+    assert_eq!((got[0].1.width, got[0].1.height), (300, 400));
+    assert_eq!((got[0].1.x, got[0].1.y), (100, 200));
+}
+
+/// ⛔ Upstream indexes with `std::map::at`, so a child missing from the id map THROWS rather than
+/// being quietly skipped.
+#[test]
+fn a_child_missing_from_the_id_map_is_an_error() {
+    let assembly = assemble(&[], &[child("A", AreaKind::MixedCluster)], OUTLINE, &[]);
+    let tree = [("GHOST".to_string(), AreaKind::MixedCluster)];
+    assert_eq!(
+        update_children_shapes_and_locations(&tree, &[sm(0, 0, 1, 1)], &assembly),
+        Err(UnknownChild("GHOST".to_string()))
+    );
+}
+
+/// ⚠️ **A missing IO cluster is NOT an error**, because it is skipped before the lookup.
+#[test]
+fn a_missing_io_cluster_is_skipped_before_the_lookup() {
+    let assembly = assemble(&[], &[], OUTLINE, &[]);
+    let tree = [("io_ghost".to_string(), AreaKind::IoCluster)];
+    assert!(update_children_shapes_and_locations(&tree, &[], &assembly).unwrap().is_empty());
+}

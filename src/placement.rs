@@ -2187,3 +2187,81 @@ impl Assembly {
         self.id_of.iter().rev().find(|(n, _)| n == name).map(|(_, id)| *id)
     }
 }
+
+// ---------------------------------------------------------------- closing out a parent
+
+/// What `placeChildren` does when handed a cluster.
+///
+/// ⚠️ **The macro-cluster test comes FIRST**, before the leaf test — so a hard-macro cluster that
+/// is also a leaf goes to macro placement, not to the leaf return. Reordering the two would place
+/// nothing at all for the commonest case there is.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PlacementAction {
+    /// A hard-macro cluster: hand it to macro placement.
+    PlaceMacros,
+    /// ⛔ **Also reached by a FIXED macro cluster**, whose type is `HardMacroCluster` — it takes
+    /// this branch and is then refused by macro placement's own first line. Two guards, one
+    /// outcome, and neither is redundant: the type test does not know about fixedness.
+    PlaceMacrosButRefused,
+    /// A leaf: nothing to place. Upstream's comment names what lands here — IO clusters, leaf
+    /// standard-cell clusters and fixed macros.
+    Nothing,
+    /// Place this cluster's children, then recurse into each of them.
+    PlaceChildren,
+}
+
+/// Upstream `placeChildren`'s two opening guards, and `placeMacros`' first line.
+pub fn placement_action(kind: AreaKind, is_fixed_macro: bool, is_leaf: bool) -> PlacementAction {
+    if kind == AreaKind::HardMacroCluster || is_fixed_macro {
+        // ⚠️ A fixed macro cluster's TYPE is `HardMacroCluster`, so it arrives here either way.
+        return if is_fixed_macro {
+            PlacementAction::PlaceMacrosButRefused
+        } else {
+            PlacementAction::PlaceMacros
+        };
+    }
+    if is_leaf {
+        return PlacementAction::Nothing;
+    }
+    PlacementAction::PlaceChildren
+}
+
+/// A child named in the tree but not in the assembled problem — upstream's `std::map::at` throws.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct UnknownChild(pub String);
+
+/// Upstream `updateChildrenShapesAndLocations`: write each annealed macro back onto its cluster.
+///
+/// ⛔ **An IO cluster is SKIPPED, and that is not an optimisation.** Its soft macro was built at
+/// CLUSTERING time by `setAsIOBundle` / `setAsIOPadCluster` / `setAsClusterOfUnplacedIOPins`, and
+/// it is the authoritative one — the edge slice or region the pins actually occupy. The annealer's
+/// copy is a zero-area stand-in that exists only to be a net terminal. Overwriting the real one
+/// with it would lose the region.
+///
+/// 🔑 **The same is NOT true of a fixed macro cluster, and that asymmetry is the point.** Its soft
+/// macro is also built at clustering time (`setAsFixedMacro`), in ABSOLUTE, unclipped coordinates
+/// — and here it IS overwritten, by the annealer's outline-relative, clipped copy. So the two
+/// clustering-time soft macros are treated in opposite ways, a few lines apart.
+///
+/// ⚠️ **The whole macro is assigned, not just its position** — shape included, which is how a
+/// mixed cluster keeps the dimensions the annealer chose for it.
+///
+/// ⛔ Upstream indexes with `std::map::at`, so a child missing from the id map THROWS rather than
+/// being skipped. Returned as a typed error here.
+pub fn update_children_shapes_and_locations(
+    children: &[(String, AreaKind)],
+    shaped: &[crate::anneal::SoftMacro],
+    assembly: &Assembly,
+) -> Result<Vec<(String, crate::anneal::SoftMacro)>, UnknownChild> {
+    let mut out = Vec::new();
+    for (name, kind) in children {
+        if *kind == AreaKind::IoCluster {
+            continue;
+        }
+        let Some(id) = assembly.id(name) else {
+            return Err(UnknownChild(name.clone()));
+        };
+        out.push((name.clone(), shaped[id]));
+    }
+    Ok(out)
+}

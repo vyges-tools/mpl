@@ -407,6 +407,63 @@ pub const MUTATIONS: &[Mutation] = &[
     let mut deferred_io: Vec<&AssemblyChild> = Vec::new();"#,
         want: r#"a_blockage_has_no_name"#,
     },
+    // ---------------------------------------------------------------- closing out a parent
+    Mutation {
+        name: r#"leaf-tested-before-macro-cluster"#,
+        file: r#"src/placement.rs"#,
+        find: r#"    if kind == AreaKind::HardMacroCluster || is_fixed_macro {"#,
+        replace: r#"    if is_leaf {
+        return PlacementAction::Nothing;
+    }
+    if kind == AreaKind::HardMacroCluster || is_fixed_macro {"#,
+        want: r#"a_leaf_macro_cluster_is_placed_not_skipped"#,
+    },
+    Mutation {
+        name: r#"fixed-macro-cluster-not-distinguished"#,
+        file: r#"src/placement.rs"#,
+        find: r#"        return if is_fixed_macro {
+            PlacementAction::PlaceMacrosButRefused
+        } else {
+            PlacementAction::PlaceMacros
+        };"#,
+        replace: r#"        return PlacementAction::PlaceMacros;"#,
+        want: r#"a_fixed_macro_cluster_reaches_macro_placement_and_is_refused"#,
+    },
+    Mutation {
+        name: r#"io-clusters-written-back-too"#,
+        file: r#"src/placement.rs"#,
+        find: r#"        if *kind == AreaKind::IoCluster {
+            continue;
+        }
+        let Some(id) = assembly.id(name) else {"#,
+        replace: r#"        if false {
+            continue;
+        }
+        let Some(id) = assembly.id(name) else {"#,
+        want: r#"an_io_clusters_own_soft_macro_is_left_alone"#,
+    },
+    Mutation {
+        name: r#"fixed-macro-cluster-not-written-back"#,
+        file: r#"src/placement.rs"#,
+        find: r#"        if *kind == AreaKind::IoCluster {
+            continue;
+        }"#,
+        replace: r#"        if *kind == AreaKind::IoCluster || *kind == AreaKind::FixedMacro {
+            continue;
+        }"#,
+        want: r#"a_fixed_macro_clusters_soft_macro_is_overwritten"#,
+    },
+    Mutation {
+        name: r#"unknown-child-skipped-not-refused"#,
+        file: r#"src/placement.rs"#,
+        find: r#"        let Some(id) = assembly.id(name) else {
+            return Err(UnknownChild(name.clone()));
+        };"#,
+        replace: r#"        let Some(id) = assembly.id(name) else {
+            continue;
+        };"#,
+        want: r#"a_child_missing_from_the_id_map_is_an_error"#,
+    },
     // ---------------------------------------------------------------- numeric types
     Mutation {
         name: r#"double-added-into-float-narrows-first"#,
