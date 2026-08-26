@@ -315,6 +315,75 @@ pub const MUTATIONS: &[Mutation] = &[
         }"#,
         want: r#"only_macro_clusters_are_aligned"#,
     },
+    // ---------------------------------------------------------------- choosing a run
+    Mutation {
+        name: r#"utilization-ramp-all-one-precision"#,
+        file: r#"src/placement.rs"#,
+        find: r#"        .map(|i| (target_utilization as f64 * (exponential_ratio as f64).powf(i as f64)) as f32)"#,
+        replace: r#"        .map(|i| target_utilization * exponential_ratio.powi(i))"#,
+        want: r#"the_utilization_list_matches_the_reference_bit_for_bit"#,
+    },
+    Mutation {
+        name: r#"utilization-ratio-divided-in-f64"#,
+        file: r#"src/placement.rs"#,
+        find: r#"    let base = (maximum_utilization / target_utilization) as f64;"#,
+        replace: r#"    let base = maximum_utilization as f64 / target_utilization as f64;"#,
+        want: r#"the_division_happens_in_f32_and_the_reference_says_so"#,
+    },
+    Mutation {
+        name: r#"utilization-exponent-off-by-one"#,
+        file: r#"src/placement.rs"#,
+        find: r#"    let exponential_ratio = base.powf(1.0 / (total_number_of_runs as f64 - 1.0)) as f32;"#,
+        replace: r#"    let exponential_ratio = base.powf(1.0 / total_number_of_runs as f64) as f32;"#,
+        want: r#"the_utilization_list_matches_the_reference_bit_for_bit"#,
+    },
+    Mutation {
+        name: r#"skipped-utilization-does-not-spend-its-slot"#,
+        file: r#"src/placement.rs"#,
+        find: r#"            let index = run_id;
+            run_id += 1;"#,
+        replace: r#"            let index = run_id;"#,
+        want: r#"a_skipped_utilization_still_spends_its_slot"#,
+    },
+    Mutation {
+        name: r#"batch-judged-as-it-anneals"#,
+        file: r#"src/placement.rs"#,
+        find: r#"        let results: Vec<bool> = batch.iter().map(|&i| run(i, utilizations[i])).collect();"#,
+        replace: r#"        let mut results: Vec<bool> = Vec::new();
+        for &i in &batch {
+            let ok = run(i, utilizations[i]);
+            results.push(ok);
+            if ok {
+                break;
+            }
+        }"#,
+        want: r#"a_single_thread_does_less_work_for_the_same_answer"#,
+    },
+    Mutation {
+        name: r#"first-run-reported-as-adjusted"#,
+        file: r#"src/placement.rs"#,
+        find: r#"                    utilization_was_adjusted: index != 0,"#,
+        replace: r#"                    utilization_was_adjusted: true,"#,
+        want: r#"the_asked_for_utilization_is_not_an_adjustment"#,
+    },
+    Mutation {
+        name: r#"root-and-child-share-one-code"#,
+        file: r#"src/placement.rs"#,
+        find: r#"    if is_root {
+        crate::options::MplError::new(
+            40,"#,
+        replace: r#"    if false {
+        crate::options::MplError::new(
+            40,"#,
+        want: r#"the_root_and_a_child_fail_with_different_codes"#,
+    },
+    Mutation {
+        name: r#"real-location-added-in-integers"#,
+        file: r#"src/placement.rs"#,
+        find: r#"        *x = (*x as f32 + offset.0 as f32) as i32;"#,
+        replace: r#"        *x = *x + offset.0;"#,
+        want: r#"a_large_coordinate_loses_precision_in_the_round_trip"#,
+    },
     // ---------------------------------------------------------------- the nine-term cost
     Mutation {
         name: r#"cost-area-term-divided"#,

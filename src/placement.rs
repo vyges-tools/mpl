@@ -1885,3 +1885,157 @@ impl PlacementInputs {
         notch_penalty(&view, outline, packing, valid, self.weights.notch)
     }
 }
+
+// ---------------------------------------------------------------- choosing a run
+
+/// Upstream `computeUtilizationList`.
+///
+/// 🔑 **Ten utilizations, ramped GEOMETRICALLY from the target up to exactly 1.0.** The first is
+/// the utilization the user asked for; each later one packs the clusters tighter, so the annealer
+/// gets progressively more room to find something that fits. The last is the degenerate case where
+/// the clusters are shrunk to their bare area.
+///
+/// ⚠️ **The ratio is `pow(1 / target, 1 / (runs - 1))`**, computed with the division in `f32` and
+/// the power in `f64`, then narrowed — and each entry is `target * pow(ratio, i)`, `f64` again and
+/// narrowed again. Doing the whole thing in one precision gives different last bits, and these
+/// values feed `applyUtilization`, which sizes every macro.
+///
+/// ⛔ **Which operand is divided in `f32` cannot be established from the default target.** At
+/// `0.25` — and at most plausible targets — an `f32` division and an `f64` one give the same ten
+/// values. Roughly one target in thirty separates them; `0.32` is one, and the reference's own
+/// `fine_shaping` output at `0.32` agrees with the `f32` division. Pinned in
+/// `tests/placement_runs.rs`, which carries both captures.
+///
+/// ⚠️ Upstream's parameter is a `float` and its loop counter an `int`, compared against it. At ten
+/// runs both are exact; the shape is kept so the oddity stays visible.
+///
+/// ⛔ **A target of zero divides by zero** and every entry comes back infinite. Upstream does not
+/// guard it and neither does this — `-target_util 0` is the user's to get wrong.
+pub fn utilization_list(target_utilization: f32, total_number_of_runs: i32) -> Vec<f32> {
+    let maximum_utilization = 1.0f32;
+    // ⚠️ The division is in `f32`; only the exponent and the power are wider.
+    let base = (maximum_utilization / target_utilization) as f64;
+    let exponential_ratio = base.powf(1.0 / (total_number_of_runs as f64 - 1.0)) as f32;
+
+    (0..total_number_of_runs)
+        .map(|i| (target_utilization as f64 * (exponential_ratio as f64).powf(i as f64)) as f32)
+        .collect()
+}
+
+/// The run `placeChildren` settled on.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct SelectedRun {
+    pub index: usize,
+    pub utilization: f32,
+    /// ⚠️ **Set when the chosen run is not the first**, which is upstream's MPL-55 warning:
+    /// "Couldn't find a solution for the specified utilization. The utilization was adjusted."
+    /// It is a warning, not an error — the run still counts.
+    pub utilization_was_adjusted: bool,
+}
+
+/// Nobody produced a valid solution. Upstream raises MPL-40 at the root and MPL-8 below it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct NoValidSolution;
+
+/// Upstream `placeChildren`'s run loop: try utilizations in order until one anneals to a valid
+/// solution.
+///
+/// 🔑 **The FIRST valid run wins, in index order — not the cheapest.** The batch exists only to
+/// spread the work across threads; the scan that picks a winner walks the batch in the order it
+/// was built, which is index order, and breaks immediately.
+///
+/// 🔑 **So the answer does not depend on the thread count.** With one thread the runs are tried
+/// one at a time and the first valid one ends the loop; with ten, all ten run and the first valid
+/// one is chosen. Same winner, different amount of wasted work. That is what makes running them
+/// sequentially here a faithful transcription rather than an approximation.
+///
+/// ⛔ **A run skipped for an invalid utilization still CONSUMES its slot.** `run_id` advances
+/// before the test, and the batch size is subtracted from the remaining count whether or not an
+/// annealer was built — so a design with three unusable utilizations gets seven attempts, not ten.
+///
+/// ⚠️ **`valid_utilization` is asked before any annealing**, and `run` is asked for every attempt
+/// in a batch before any result is examined. Examining as you go would stop earlier and is a
+/// different amount of work, though not a different winner.
+pub fn select_run(
+    utilizations: &[f32],
+    num_threads: usize,
+    valid_utilization: &mut dyn FnMut(f32) -> bool,
+    run: &mut dyn FnMut(usize, f32) -> bool,
+) -> Result<SelectedRun, NoValidSolution> {
+    let mut remaining_runs = utilizations.len();
+    let mut run_id = 0usize;
+
+    while remaining_runs > 0 {
+        let number_of_attempts = remaining_runs.min(num_threads.max(1));
+
+        let mut batch: Vec<usize> = Vec::new();
+        for _ in 0..number_of_attempts {
+            let index = run_id;
+            run_id += 1;
+            // ⛔ The slot is spent either way; see above.
+            if !valid_utilization(utilizations[index]) {
+                continue;
+            }
+            batch.push(index);
+        }
+
+        // The whole batch anneals before any of it is judged.
+        let results: Vec<bool> = batch.iter().map(|&i| run(i, utilizations[i])).collect();
+
+        remaining_runs -= number_of_attempts;
+
+        for (position, &index) in batch.iter().enumerate() {
+            if results[position] {
+                return Ok(SelectedRun {
+                    index,
+                    utilization: utilizations[index],
+                    utilization_was_adjusted: index != 0,
+                });
+            }
+        }
+    }
+
+    Err(NoValidSolution)
+}
+
+/// The error upstream raises when no run produced a valid solution.
+///
+/// ⚠️ **Two different codes for the same condition.** At the root it is MPL-40 and blames the
+/// core utilization, which the user can act on; anywhere below it is MPL-8 and asks for a bug
+/// report, because a child outline that cannot be filled is upstream's own doing.
+pub fn no_valid_solution_error(
+    is_root: bool,
+    cluster_id: i32,
+    cluster_name: &str,
+) -> crate::options::MplError {
+    if is_root {
+        crate::options::MplError::new(
+            40,
+            "Annealing engine failed to find a valid solution. Core utilization is probably too \
+             high. Please, reduce it and try again.",
+        )
+    } else {
+        crate::options::MplError::new(
+            8,
+            &format!(
+                "Annealing engine failed to find a valid solution. Please, report this internal \
+                 error.\nFailed at cluster ({cluster_id}): {cluster_name}"
+            ),
+        )
+    }
+}
+
+/// Upstream `updateChildrenRealLocation`: move every child out of the parent's coordinates and
+/// into the die's.
+///
+/// ⛔ **The offsets are `float` upstream while the coordinates are `int`**, so every coordinate
+/// makes an `int` → `float` → `int` round trip. Above 2^24 database units — 8.4 mm at 2000 units
+/// per micron, which a real die reaches — a `float` cannot hold every integer, so the result can
+/// be a unit or two off. The narrowing then truncates toward zero. Reproduced, not tidied: doing
+/// the addition in integers is more correct and is a different program.
+pub fn to_real_locations(children: &mut [(i32, i32)], offset: (i32, i32)) {
+    for (x, y) in children.iter_mut() {
+        *x = (*x as f32 + offset.0 as f32) as i32;
+        *y = (*y as f32 + offset.1 as f32) as i32;
+    }
+}
