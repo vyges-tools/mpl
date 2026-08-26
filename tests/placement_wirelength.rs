@@ -171,3 +171,122 @@ fn only_the_target_takes_the_io_path() {
     );
     assert_ne!(as_target, as_source, "the model is asymmetric in the pair");
 }
+
+// ---------------------------------------------------------------- the placement penalties
+
+use vyges_mpl::placement::{guidance_penalty, soft_blockage_penalty, BlockageMacro};
+
+fn blockage_macro(x: i32, y: i32, w: i32, h: i32, num_macro: i32, macro_area: i64, area: i64) -> BlockageMacro {
+    BlockageMacro {
+        x,
+        y,
+        width: w,
+        height: h,
+        num_macro,
+        cluster_macro_area: macro_area,
+        cluster_area: area,
+    }
+}
+
+/// 🔑 **A cluster that is mostly standard cells costs little; one that is all macros costs the
+/// full overlap.** That ratio is the whole point of the term.
+#[test]
+fn the_soft_blockage_cost_scales_with_macro_dominance() {
+    let blockage = [(0, 0, 100, 100)];
+    let all_macro = [blockage_macro(0, 0, 100, 100, 1, 1000, 1000)];
+    let half_macro = [blockage_macro(0, 0, 100, 100, 1, 500, 1000)];
+
+    let full = soft_blockage_penalty(&all_macro, &[0], &blockage, 50.0);
+    let half = soft_blockage_penalty(&half_macro, &[0], &blockage, 50.0);
+    assert_eq!(full, 10_000.0, "the whole overlap");
+    assert_eq!(half, 5_000.0, "half of it");
+}
+
+/// ⚠️ A macro holding no macros, or a cluster of zero area, contributes nothing — the second guard
+/// also stops the dominance ratio dividing by zero.
+#[test]
+fn a_cluster_with_no_macros_or_no_area_is_skipped() {
+    let blockage = [(0, 0, 100, 100)];
+    let no_macros = [blockage_macro(0, 0, 100, 100, 0, 1000, 1000)];
+    assert_eq!(soft_blockage_penalty(&no_macros, &[0], &blockage, 50.0), 0.0);
+
+    // A macro count keeps the normalisation alive while the zero-area cluster is skipped.
+    let zero_area = [
+        blockage_macro(0, 0, 100, 100, 1, 0, 0),
+        blockage_macro(500, 500, 10, 10, 1, 10, 10),
+    ];
+    let got = soft_blockage_penalty(&zero_area, &[0, 1], &blockage, 50.0);
+    assert_eq!(got, 0.0, "the overlapping one has no area, the other does not overlap");
+}
+
+/// ⛔ **A diagonal miss has a POSITIVE area product** — both dimensions negative. The guard is
+/// what stops it being counted as an overlap.
+#[test]
+fn a_diagonally_missing_blockage_is_not_counted() {
+    let blockage = [(0, 0, 10, 10)];
+    let far = [blockage_macro(100, 100, 10, 10, 1, 100, 100)];
+    assert_eq!(soft_blockage_penalty(&far, &[0], &blockage, 50.0), 0.0);
+}
+
+/// ⚠️ Normalised by the TOTAL macro count across the sequence, not by the blockage count.
+#[test]
+fn the_soft_blockage_penalty_divides_by_the_macro_count() {
+    let blockage = [(0, 0, 100, 100)];
+    let one = [blockage_macro(0, 0, 100, 100, 1, 100, 100)];
+    let two = [
+        blockage_macro(0, 0, 100, 100, 1, 100, 100),
+        blockage_macro(900, 900, 10, 10, 1, 100, 100),
+    ];
+    let a = soft_blockage_penalty(&one, &[0], &blockage, 50.0);
+    let b = soft_blockage_penalty(&two, &[0, 1], &blockage, 50.0);
+    assert_eq!(b, a / 2.0, "the second macro doubles the divisor without adding overlap");
+}
+
+/// ℹ️ No blockages, or a zero weight, and the term is dark.
+#[test]
+fn the_soft_blockage_term_is_dark_without_blockages_or_weight() {
+    let m = [blockage_macro(0, 0, 100, 100, 1, 100, 100)];
+    assert_eq!(soft_blockage_penalty(&m, &[0], &[], 50.0), 0.0);
+    assert_eq!(soft_blockage_penalty(&m, &[0], &[(0, 0, 100, 100)], 0.0), 0.0);
+}
+
+/// 🔑 **A macro wholly inside its guide scores ZERO** — the penalty is the shortfall from the best
+/// possible overlap, not the overlap.
+#[test]
+fn a_macro_inside_its_guide_costs_nothing() {
+    let macros = [macro_at(100, 100, 50, 50)];
+    let guides = [(0usize, (0, 0, 1000, 1000))];
+    assert_eq!(guidance_penalty(&guides, &macros, 10.0, 2000), 0.0);
+}
+
+/// ⚠️ **A macro entirely outside its guide pays the FULL best-possible overlap**, which is bounded
+/// by the smaller of the two extents on each axis — not by the guide's area.
+#[test]
+fn a_macro_outside_its_guide_pays_the_best_possible_overlap() {
+    // A 50 x 50 macro far from a 1000 x 1000 guide: best possible is 50 x 50 = 2500 dbu².
+    let macros = [macro_at(5000, 5000, 50, 50)];
+    let guides = [(0usize, (0, 0, 1000, 1000))];
+    let got = guidance_penalty(&guides, &macros, 10.0, 10);
+    assert_eq!(got, 2500.0 / 100.0, "2500 dbu² at 10 dbu per micron is 25 µm²");
+}
+
+/// ⚠️ Partial overlap pays the difference.
+#[test]
+fn a_partly_overlapping_macro_pays_the_shortfall() {
+    // A 100 x 100 macro half inside a 1000 x 1000 guide: best 10000, actual 5000, shortfall 5000.
+    let macros = [macro_at(-50, 100, 100, 100)];
+    let guides = [(0usize, (0, 0, 1000, 1000))];
+    let got = guidance_penalty(&guides, &macros, 10.0, 10);
+    assert_eq!(got, 5000.0 / 100.0);
+}
+
+/// ℹ️ Averaged over the guides, and dark without weight or guides.
+#[test]
+fn the_guidance_penalty_averages_over_its_guides() {
+    let macros = [macro_at(5000, 5000, 50, 50), macro_at(100, 100, 50, 50)];
+    let guides = [(0usize, (0, 0, 1000, 1000)), (1usize, (0, 0, 1000, 1000))];
+    // One pays 2500, the other zero, so the mean is 1250 dbu².
+    assert_eq!(guidance_penalty(&guides, &macros, 10.0, 10), 1250.0 / 100.0);
+    assert_eq!(guidance_penalty(&[], &macros, 10.0, 10), 0.0);
+    assert_eq!(guidance_penalty(&guides, &macros, 0.0, 10), 0.0);
+}

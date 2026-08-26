@@ -277,3 +277,121 @@ pub fn compute_nets_wire_length(
 
     total / weight_sum / (outline.0 + outline.1) as f32
 }
+
+// ---------------------------------------------------------------- the placement penalties
+
+/// A macro as the soft-blockage term sees it: a box, a macro count, and its cluster's areas.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct BlockageMacro {
+    pub x: i32,
+    pub y: i32,
+    pub width: i32,
+    pub height: i32,
+    pub num_macro: i32,
+    /// The cluster's macro area and total area — their ratio is how much the term weighs it.
+    pub cluster_macro_area: i64,
+    pub cluster_area: i64,
+}
+
+/// The overlap of two boxes, or `None` when they miss.
+///
+/// ⚠️ **`< 0`, not `<= 0`.** A zero-area touching overlap is kept and contributes nothing — but
+/// two boxes that miss diagonally have BOTH dimensions negative and so a POSITIVE product, which
+/// is exactly what this guard exists to reject.
+fn overlap_area(a: (i32, i32, i32, i32), b: (i32, i32, i32, i32)) -> Option<i64> {
+    let (x0, y0) = (a.0.max(b.0), a.1.max(b.1));
+    let (x1, y1) = (a.2.min(b.2), a.3.min(b.3));
+    let (dx, dy) = (x1 - x0, y1 - y0);
+    if dx < 0 || dy < 0 {
+        return None;
+    }
+    Some(dx as i64 * dy as i64)
+}
+
+/// Upstream `SACoreSoftMacro::calSoftBlockagePenalty`.
+///
+/// 🔑 **Weighted by how macro-dominated each cluster is.** A cluster that is mostly standard cells
+/// overlapping a soft blockage costs little; one that is nearly all macros costs the full overlap.
+/// That is the whole point of the term — a soft blockage is somewhere macros should not go, not
+/// somewhere nothing may go.
+///
+/// ⚠️ **Blockages OUTER, macros INNER.** Floating-point addition is not associative, so swapping
+/// the loops changes the sum's last bits.
+///
+/// ⚠️ A macro with no macros in it, or a cluster of zero area, is skipped entirely — the second
+/// guard also keeps the dominance ratio from dividing by zero.
+///
+/// ⚠️ Normalised by the TOTAL macro count across the sequence, not by the number of blockages.
+pub fn soft_blockage_penalty(
+    macros: &[BlockageMacro],
+    order: &[usize],
+    blockages: &[(i32, i32, i32, i32)],
+    weight: f32,
+) -> f32 {
+    if blockages.is_empty() || weight <= 0.0 {
+        return 0.0;
+    }
+    let total_macros: i32 = order.iter().map(|&i| macros[i].num_macro).sum();
+    if total_macros <= 0 {
+        return 0.0;
+    }
+
+    let mut penalty = 0.0f32;
+    for blockage in blockages {
+        for &i in order {
+            let m = &macros[i];
+            if m.num_macro > 0 && m.cluster_area > 0 {
+                let box_ = (m.x, m.y, m.x + m.width, m.y + m.height);
+                let Some(area) = overlap_area(*blockage, box_) else { continue };
+                let dominance = m.cluster_macro_area as f32 / m.cluster_area as f32;
+                penalty += (area * m.num_macro as i64) as f32 * dominance;
+            }
+        }
+    }
+    penalty / total_macros as f32
+}
+
+/// Upstream `calGuidancePenalty`.
+///
+/// 🔑 **It measures the SHORTFALL from the best possible overlap, not the overlap.** The penalty
+/// starts at the largest area the macro could share with its guide — `min` of the two widths times
+/// `min` of the two heights — and the actual overlap is subtracted. A macro sitting wholly inside
+/// its guide therefore scores ZERO, and one entirely outside scores the full best-possible area.
+///
+/// ⚠️ **The subtraction is guarded by `> 0` on BOTH dimensions**, so a degenerate touching overlap
+/// subtracts nothing. It would have subtracted zero anyway; the guard matters because a diagonal
+/// miss has a positive area.
+///
+/// ⚠️ Converted to microns per guide, then averaged over the number of guides.
+pub fn guidance_penalty(
+    guides: &[(usize, (i32, i32, i32, i32))],
+    macros: &[WirelengthMacro],
+    weight: f32,
+    dbu_per_micron: i32,
+) -> f32 {
+    if weight <= 0.0 || guides.is_empty() {
+        return 0.0;
+    }
+    let mut penalty = 0.0f32;
+    for &(id, guide) in guides {
+        let m = &macros[id];
+        let (guide_dx, guide_dy) = (guide.2 - guide.0, guide.3 - guide.1);
+        // The largest area this macro could possibly share with the guide.
+        let mut best = m.width.min(guide_dx) as i64 * m.height.min(guide_dy) as i64;
+
+        let box_ = (m.x, m.y, m.x + m.width, m.y + m.height);
+        let (x0, y0) = (box_.0.max(guide.0), box_.1.max(guide.1));
+        let (x1, y1) = (box_.2.min(guide.2), box_.3.min(guide.3));
+        if x1 - x0 > 0 && y1 - y0 > 0 {
+            best -= (x1 - x0) as i64 * (y1 - y0) as i64;
+        }
+        penalty += area_to_microns_f32(best, dbu_per_micron);
+    }
+    penalty / guides.len() as f32
+}
+
+/// `dbuAreaToMicrons`, narrowed to the `f32` the penalty accumulates in.
+fn area_to_microns_f32(dbu_area: i64, dbu_per_micron: i32) -> f32 {
+    let d = dbu_per_micron as f64;
+    (dbu_area as f64 / (d * d)) as f32
+}
