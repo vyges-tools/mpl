@@ -32,6 +32,7 @@ pub mod pipeline;
 #[cfg(unix)]
 pub mod read;
 pub mod regions;
+pub mod rng;
 pub mod report;
 pub mod shaping;
 pub mod status;
