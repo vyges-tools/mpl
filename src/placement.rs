@@ -396,6 +396,111 @@ fn area_to_microns_f32(dbu_area: i64, dbu_per_micron: i32) -> f32 {
     (dbu_area as f64 / (d * d)) as f32
 }
 
+/// `dbuToMicrons`: a LENGTH, in `f64`, exactly as the database returns it.
+fn length_to_microns(dbu: i32, dbu_per_micron: i32) -> f64 {
+    dbu as f64 / dbu_per_micron as f64
+}
+
+/// A macro, as the boundary term sees it: a box, whether it may move, and how many hard macros
+/// it stands for.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct BoundaryMacro {
+    pub x: i32,
+    pub y: i32,
+    pub width: i32,
+    pub height: i32,
+    pub fixed: bool,
+    /// ⚠️ The count of hard macros in the cluster, **not** a flag. A standard-cell cluster is
+    /// zero and a hard-macro cluster is however many it holds — the term is a macro-weighted
+    /// average, so a cluster of ten pulls ten times as hard as a cluster of one.
+    pub num_macro: i32,
+}
+
+/// The root cluster's own box, which the boundary term measures against.
+///
+/// ⚠️ **Its `width` and `height` are used as if they were the far-edge COORDINATES.** That is
+/// upstream's arithmetic and it is consistent, because the macro's position is first rebased onto
+/// the root's origin — but it only reads as correct once that rebasing is in view.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Root {
+    pub x: i32,
+    pub y: i32,
+    pub width: i32,
+    pub height: i32,
+}
+
+/// Upstream `SACoreSoftMacro::calBoundaryPenalty`.
+///
+/// 🔑 **It rewards macros for hugging the ROOT's edges, not this cluster's outline.** Each
+/// movable macro is rebased from outline-relative coordinates into root-relative ones, and then
+/// charged its distance to the nearer vertical edge plus its distance to the nearer horizontal
+/// one. A macro already on a die edge costs nothing; one in the middle costs the most.
+///
+/// ⛔ **The two sides are NOT symmetric.** The left/bottom distance is the raw coordinate, while
+/// the right/top distance is wrapped in `abs`. So a macro pushed out past the root's LEFT edge
+/// scores a negative distance and *reduces* the penalty, whereas one pushed out past the RIGHT
+/// edge scores a positive one and increases it. Making both `abs` would be more sensible and
+/// would not reproduce the reference.
+///
+/// ⚠️ **Two passes over the sequence, and the denominators differ in principle.** The first pass
+/// sums `num_macro` over every non-fixed macro; the second accumulates only where `num_macro > 0`.
+/// They agree only because a macro with none contributes zero to both.
+///
+/// ⚠️ **The two distances are summed in DATABASE UNITS and converted once**, then multiplied by
+/// the macro count in `f64` and added to an `f32` accumulator — so each step rounds through the
+/// wider type before narrowing. Converting each distance separately, or accumulating in `f32`,
+/// gives a different number in the last bits.
+///
+/// ⚠️ A zero weight, or a sequence with no movable macros in it, returns zero without measuring
+/// anything.
+pub fn boundary_penalty(
+    macros: &[BoundaryMacro],
+    order: &[usize],
+    outline_origin: (i32, i32),
+    root: &Root,
+    weight: f32,
+    dbu_per_micron: i32,
+) -> f32 {
+    if weight <= 0.0 {
+        return 0.0;
+    }
+
+    let mut number_of_movable_macros = 0i32;
+    for &i in order {
+        let m = &macros[i];
+        if m.fixed {
+            continue;
+        }
+        number_of_movable_macros += m.num_macro;
+    }
+    if number_of_movable_macros == 0 {
+        return 0.0;
+    }
+
+    let mut penalty = 0.0f32;
+    for &i in order {
+        let m = &macros[i];
+        if m.fixed {
+            continue;
+        }
+        if m.num_macro > 0 {
+            let global_lx = m.x + outline_origin.0 - root.x;
+            let global_ly = m.y + outline_origin.1 - root.y;
+            let global_ux = global_lx + m.width;
+            let global_uy = global_ly + m.height;
+
+            // ⛔ The left/bottom term is unsigned only by accident of position; see above.
+            let x_dist_from_root = global_lx.min((root.width - global_ux).abs());
+            let y_dist_from_root = global_ly.min((root.height - global_uy).abs());
+
+            let microns = length_to_microns(x_dist_from_root + y_dist_from_root, dbu_per_micron);
+            penalty = (penalty as f64 + microns * m.num_macro as f64) as f32;
+        }
+    }
+
+    penalty / number_of_movable_macros as f32
+}
+
 // ---------------------------------------------------------------- blockages into the outline
 
 /// Upstream `findOffsetIntersections`: the parts of each blockage that fall inside the outline,

@@ -290,3 +290,137 @@ fn the_guidance_penalty_averages_over_its_guides() {
     assert_eq!(guidance_penalty(&[], &macros, 10.0, 10), 0.0);
     assert_eq!(guidance_penalty(&guides, &macros, 0.0, 10), 0.0);
 }
+
+use vyges_mpl::placement::{boundary_penalty, BoundaryMacro, Root};
+
+fn bm(x: i32, y: i32, w: i32, h: i32, num_macro: i32) -> BoundaryMacro {
+    BoundaryMacro { x, y, width: w, height: h, fixed: false, num_macro }
+}
+
+/// The root as most of these fixtures see it: a 1000 x 1000 die at the origin.
+fn root() -> Root {
+    Root { x: 0, y: 0, width: 1000, height: 1000 }
+}
+
+/// 🔑 **A macro on a die edge costs nothing; one in the middle costs the most.** That is the whole
+/// intent of the term — push macro clusters out to the boundary.
+#[test]
+fn a_macro_on_the_boundary_costs_nothing_and_the_centre_costs_most() {
+    let corner = [bm(0, 0, 100, 100, 1)];
+    assert_eq!(boundary_penalty(&corner, &[0], (0, 0), &root(), 50.0, 10), 0.0);
+
+    // Centred: 450 to the nearer vertical edge and 450 to the nearer horizontal one.
+    let centre = [bm(450, 450, 100, 100, 1)];
+    let got = boundary_penalty(&centre, &[0], (0, 0), &root(), 50.0, 10);
+    assert_eq!(got, 90.0, "900 dbu at 10 dbu per micron");
+}
+
+/// ⚠️ **Only ONE axis needs to be satisfied per direction.** A macro hugging the left edge but
+/// vertically central still pays the vertical distance.
+#[test]
+fn hugging_one_edge_only_forgives_one_axis() {
+    let macros = [bm(0, 450, 100, 100, 1)];
+    let got = boundary_penalty(&macros, &[0], (0, 0), &root(), 50.0, 10);
+    assert_eq!(got, 45.0, "x costs nothing, y costs 450 dbu");
+}
+
+/// ⛔ **The left and right sides are NOT symmetric.** Past the LEFT edge the raw coordinate goes
+/// negative and *reduces* the penalty; past the RIGHT edge `abs` makes the same overhang
+/// *increase* it. Making both `abs` would be more sensible and would not be the reference.
+#[test]
+fn overhanging_left_and_right_are_scored_differently() {
+    // 100 wide, hanging 200 past the left edge: global_lx = -200, right distance = |1000 - -100|.
+    let left = [bm(-200, 0, 100, 100, 1)];
+    let got_left = boundary_penalty(&left, &[0], (0, 0), &root(), 50.0, 10);
+    assert_eq!(got_left, -20.0, "NEGATIVE, and the y term is zero");
+
+    // The mirror image, hanging 200 past the right edge: global_lx = 1100, |1000 - 1200| = 200.
+    let right = [bm(1100, 0, 100, 100, 1)];
+    let got_right = boundary_penalty(&right, &[0], (0, 0), &root(), 50.0, 10);
+    assert_eq!(got_right, 20.0, "POSITIVE for the same overhang on the other side");
+}
+
+/// ⚠️ **Coordinates are rebased onto the root twice over** — the outline's origin is added and the
+/// root's is subtracted. A cluster deep inside the die measures from the DIE's edges, not its
+/// parent's.
+#[test]
+fn the_distance_is_measured_from_the_root_not_the_outline() {
+    // A macro at the origin of an outline that itself sits 400 into the die is 400 from the edge.
+    let macros = [bm(0, 0, 100, 100, 1)];
+    let got = boundary_penalty(&macros, &[0], (400, 400), &root(), 50.0, 10);
+    assert_eq!(got, 80.0, "400 + 400 dbu");
+
+    // A root that does not start at the origin subtracts its own corner back out.
+    let offset_root = Root { x: 400, y: 400, width: 1000, height: 1000 };
+    let got = boundary_penalty(&macros, &[0], (400, 400), &offset_root, 50.0, 10);
+    assert_eq!(got, 0.0, "the macro is on the root's corner after all");
+}
+
+/// ⚠️ **A macro-weighted average.** A cluster of ten pulls ten times as hard as a cluster of one,
+/// in the numerator AND in the divisor.
+#[test]
+fn the_penalty_is_averaged_over_hard_macros_not_clusters() {
+    // One central cluster of 1 macro and one cornered cluster of 9: 900 dbu * 1 over 10 macros.
+    let macros = [bm(450, 450, 100, 100, 1), bm(0, 0, 100, 100, 9)];
+    let got = boundary_penalty(&macros, &[0, 1], (0, 0), &root(), 50.0, 10);
+    assert_eq!(got, 9.0, "90 µm of cost spread over ten macros");
+
+    // Swap the counts and the same geometry costs nine times as much.
+    let heavy_centre = [bm(450, 450, 100, 100, 9), bm(0, 0, 100, 100, 1)];
+    let got = boundary_penalty(&heavy_centre, &[0, 1], (0, 0), &root(), 50.0, 10);
+    assert_eq!(got, 81.0);
+}
+
+/// ⚠️ **A standard-cell cluster is invisible to this term** — zero macros contributes nothing to
+/// the sum and nothing to the divisor either.
+#[test]
+fn a_cluster_with_no_hard_macros_neither_pays_nor_dilutes() {
+    let alone = [bm(450, 450, 100, 100, 1)];
+    let with_cells = [bm(450, 450, 100, 100, 1), bm(0, 0, 500, 500, 0)];
+    let a = boundary_penalty(&alone, &[0], (0, 0), &root(), 50.0, 10);
+    let b = boundary_penalty(&with_cells, &[0, 1], (0, 0), &root(), 50.0, 10);
+    assert_eq!(a, b, "the cell cluster changed neither side of the average");
+}
+
+/// ⚠️ **A FIXED macro is skipped in both passes**, so it neither pays nor dilutes — unlike a
+/// zero-macro cluster, which is skipped only in the numerator.
+#[test]
+fn a_fixed_macro_is_skipped_entirely() {
+    let mut fixed_centre = bm(450, 450, 100, 100, 4);
+    fixed_centre.fixed = true;
+    let macros = [fixed_centre, bm(450, 450, 100, 100, 1)];
+    let got = boundary_penalty(&macros, &[0, 1], (0, 0), &root(), 50.0, 10);
+    assert_eq!(got, 90.0, "only the movable macro counts, and it is not divided by five");
+}
+
+/// ⚠️ A sequence with nothing movable in it returns zero rather than dividing by zero.
+#[test]
+fn nothing_movable_returns_zero() {
+    let mut fixed = bm(450, 450, 100, 100, 4);
+    fixed.fixed = true;
+    assert_eq!(boundary_penalty(&[fixed], &[0], (0, 0), &root(), 50.0, 10), 0.0);
+    assert_eq!(boundary_penalty(&[], &[], (0, 0), &root(), 50.0, 10), 0.0);
+    // Movable, but no hard macros anywhere: the divisor is still zero.
+    let cells = [bm(450, 450, 100, 100, 0)];
+    assert_eq!(boundary_penalty(&cells, &[0], (0, 0), &root(), 50.0, 10), 0.0);
+}
+
+/// ℹ️ A zero weight leaves the term dark — which is why coarse shaping never sees it.
+#[test]
+fn the_boundary_term_is_dark_without_weight() {
+    let macros = [bm(450, 450, 100, 100, 1)];
+    assert_eq!(boundary_penalty(&macros, &[0], (0, 0), &root(), 0.0, 10), 0.0);
+}
+
+/// ⚠️ **The sequence's ORDER is the accumulation order**, and the sum is `f32`. Reversing it is a
+/// different number in the last bits whenever the addends do not fit exactly.
+#[test]
+fn the_accumulation_follows_the_sequence_order() {
+    // Distances chosen so the micron values are not representable exactly in binary.
+    let macros = [bm(301, 0, 1, 1, 1), bm(0, 307, 1, 1, 1), bm(311, 0, 1, 1, 1)];
+    let forward = boundary_penalty(&macros, &[0, 1, 2], (0, 0), &root(), 50.0, 3);
+    let reverse = boundary_penalty(&macros, &[2, 1, 0], (0, 0), &root(), 50.0, 3);
+    // They are close, and the point is that the code commits to one of them.
+    assert!((forward - reverse).abs() < 1e-3, "same geometry either way");
+    assert_eq!(forward, boundary_penalty(&macros, &[0, 1, 2], (0, 0), &root(), 50.0, 3));
+}
