@@ -2063,3 +2063,127 @@ pub fn to_real_locations(children: &mut [(i32, i32)], offset: (i32, i32)) {
         *y = (*y as f32 + offset.1 as f32) as i32;
     }
 }
+
+// ---------------------------------------------------------------- assembling one parent's problem
+
+/// One child of the parent being placed, as the assembler needs to see it.
+///
+/// ⚠️ **The soft macro is built by the caller**, because how it is built depends on what the child
+/// is — a fixed macro clips its hard macro to the outline, an IO cluster is a point with a name,
+/// and everything else comes from the cluster. What the assembler decides is the ORDER and the ids.
+#[derive(Debug, Clone)]
+pub struct AssemblyChild {
+    pub name: String,
+    pub kind: AreaKind,
+    pub macro_: crate::anneal::SoftMacro,
+    /// The fence merged over this cluster's hard macros, in the DIE's coordinates and unclipped.
+    /// `None` when the cluster declares none.
+    pub fence: Option<(i32, i32, i32, i32)>,
+    pub guide: Option<(i32, i32, i32, i32)>,
+}
+
+/// The placement problem for one parent, in the reference's own order.
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct Assembly {
+    pub macros: Vec<crate::anneal::SoftMacro>,
+    /// Name to macro id, in insertion order. ⚠️ A `Vec`, not a map: the ORDER is part of the
+    /// answer, and upstream's `std::map` is only ever read by name.
+    pub id_of: Vec<(String, usize)>,
+    /// ⛔ Captured BEFORE the IO clusters and fixed terminals are appended, so those are in the
+    /// macro list but outside the sequence pair — the annealer never moves them.
+    pub number_of_sequence_pair_macros: usize,
+    pub fences: Vec<(usize, (i32, i32, i32, i32))>,
+    pub guides: Vec<(usize, (i32, i32, i32, i32))>,
+}
+
+/// Upstream `placeChildren`'s macro-list construction.
+///
+/// 🔑 **The id order IS the answer.** Every net, fence, guide and blockage indexes into this list,
+/// and the sequence pair is `0..number_of_sequence_pair_macros`. Getting the order wrong does not
+/// produce a worse placement, it produces a different problem.
+///
+/// The order, and nothing may move between the groups:
+/// 1. **blockages**, so they occupy the lowest ids and offset every cluster;
+/// 2. **the parent's children**, in child order, with IO clusters SKIPPED;
+/// 3. — the sequence-pair count is taken here —
+/// 4. **the IO clusters**, in the order they were skipped;
+/// 5. **the fixed terminals**, from the walk up the tree.
+///
+/// ⛔ **An IO cluster is deferred, not dropped.** Upstream says why at the site: holding them back
+/// until the list is populated with the clusters actually being placed is what lets the SA moves
+/// treat everything past the sequence-pair count as immovable.
+///
+/// ⚠️ **A fixed macro cluster still takes an id**, because the name is recorded before the branch
+/// that skips building a cluster-backed soft macro for it.
+///
+/// ⛔ **A standard-cell cluster gets NO fence and NO guide**, whatever was declared for it —
+/// upstream `continue`s before the merge. It has no hard macros to merge over, so the merge would
+/// be empty anyway; the early exit is reproduced because it is what the reference does, not
+/// because the two are provably the same for every input. A **fixed macro cluster** takes the same
+/// exit, one branch earlier.
+///
+/// ⚠️ **Blockages get ids but no NAMES.** `createSoftMacrosForBlockages` never touches the id map,
+/// so a blockage is addressable only by position — which is all the sequence pair and the
+/// blockage list need.
+pub fn assemble(
+    blockages: &[crate::anneal::SoftMacro],
+    children: &[AssemblyChild],
+    outline: (i32, i32, i32, i32),
+    terminals: &[(String, crate::anneal::SoftMacro)],
+) -> Assembly {
+    let mut out = Assembly { macros: blockages.to_vec(), ..Default::default() };
+
+    let mut deferred_io: Vec<&AssemblyChild> = Vec::new();
+    for child in children {
+        if child.kind == AreaKind::IoCluster {
+            deferred_io.push(child);
+            continue;
+        }
+
+        let id = out.macros.len();
+        out.id_of.push((child.name.clone(), id));
+        out.macros.push(child.macro_);
+
+        if child.kind == AreaKind::FixedMacro || child.kind == AreaKind::StdCellCluster {
+            continue;
+        }
+
+        if let Some(fence) = child.fence {
+            if let Some(clipped) = merged_region(&[fence], outline) {
+                out.fences.push((id, clipped));
+            }
+        }
+        if let Some(guide) = child.guide {
+            if let Some(clipped) = merged_region(&[guide], outline) {
+                out.guides.push((id, clipped));
+            }
+        }
+    }
+
+    // ⛔ Taken HERE — everything appended below is outside the sequence pair.
+    out.number_of_sequence_pair_macros = out.macros.len();
+
+    for child in deferred_io {
+        out.id_of.push((child.name.clone(), out.macros.len()));
+        out.macros.push(child.macro_);
+    }
+
+    for (name, terminal) in terminals {
+        out.id_of.push((name.clone(), out.macros.len()));
+        out.macros.push(*terminal);
+    }
+
+    out
+}
+
+impl Assembly {
+    /// The id a name was given, or `None`.
+    ///
+    /// ⚠️ **The LAST binding wins**, because upstream assigns into a `std::map` and `map[k] = v`
+    /// overwrites. ℹ️ Whether a name can actually repeat is NOT established — cluster names look
+    /// unique across the tree, and no design in the suite repeats one. This reproduces the map's
+    /// rule rather than asserting that the situation arises.
+    pub fn id(&self, name: &str) -> Option<usize> {
+        self.id_of.iter().rev().find(|(n, _)| n == name).map(|(_, id)| *id)
+    }
+}

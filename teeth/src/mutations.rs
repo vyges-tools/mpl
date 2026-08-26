@@ -315,6 +315,98 @@ pub const MUTATIONS: &[Mutation] = &[
         }"#,
         want: r#"only_macro_clusters_are_aligned"#,
     },
+    // ---------------------------------------------------------------- assembling the problem
+    Mutation {
+        name: r#"io-clusters-not-deferred"#,
+        file: r#"src/placement.rs"#,
+        find: r#"        if child.kind == AreaKind::IoCluster {
+            deferred_io.push(child);
+            continue;
+        }"#,
+        replace: r#"        if false {
+            deferred_io.push(child);
+            continue;
+        }"#,
+        want: r#"io_clusters_are_appended_after_the_placeable_clusters"#,
+    },
+    Mutation {
+        name: r#"sequence-pair-counted-after-the-terminals"#,
+        file: r#"src/placement.rs"#,
+        find: r#"    out.number_of_sequence_pair_macros = out.macros.len();
+
+    for child in deferred_io {"#,
+        replace: r#"    for child in deferred_io {"#,
+        want: r#"the_sequence_pair_stops_before_the_io_clusters"#,
+    },
+    Mutation {
+        name: r#"blockages-outside-the-sequence-pair"#,
+        file: r#"src/placement.rs"#,
+        find: r#"    let mut out = Assembly { macros: blockages.to_vec(), ..Default::default() };"#,
+        replace: r#"    let mut out = Assembly::default();
+    let _ = blockages;"#,
+        want: r#"blockages_come_first_and_offset_every_cluster"#,
+    },
+    Mutation {
+        name: r#"fixed-macro-cluster-takes-no-id"#,
+        file: r#"src/placement.rs"#,
+        find: r#"        let id = out.macros.len();
+        out.id_of.push((child.name.clone(), id));"#,
+        replace: r#"        let id = out.macros.len();
+        if child.kind != AreaKind::FixedMacro {
+            out.id_of.push((child.name.clone(), id));
+        }"#,
+        want: r#"a_fixed_macro_cluster_still_takes_an_id"#,
+    },
+    Mutation {
+        name: r#"std-cell-cluster-gets-a-fence"#,
+        file: r#"src/placement.rs"#,
+        find: r#"        if child.kind == AreaKind::FixedMacro || child.kind == AreaKind::StdCellCluster {
+            continue;
+        }"#,
+        replace: r#"        if child.kind == AreaKind::FixedMacro {
+            continue;
+        }"#,
+        want: r#"a_std_cell_cluster_gets_no_fence_or_guide"#,
+    },
+    Mutation {
+        name: r#"fixed-macro-cluster-gets-a-fence"#,
+        file: r#"src/placement.rs"#,
+        find: r#"        if child.kind == AreaKind::FixedMacro || child.kind == AreaKind::StdCellCluster {
+            continue;
+        }"#,
+        replace: r#"        if child.kind == AreaKind::StdCellCluster {
+            continue;
+        }"#,
+        want: r#"a_fixed_macro_cluster_gets_no_fence_or_guide"#,
+    },
+    Mutation {
+        name: r#"fence-not-rebased-on-the-outline"#,
+        file: r#"src/placement.rs"#,
+        find: r#"            if let Some(clipped) = merged_region(&[fence], outline) {
+                out.fences.push((id, clipped));
+            }"#,
+        replace: r#"            {
+                out.fences.push((id, fence));
+            }"#,
+        want: r#"a_fence_is_clipped_rebased_and_keyed_by_id"#,
+    },
+    Mutation {
+        name: r#"first-name-binding-wins"#,
+        file: r#"src/placement.rs"#,
+        find: r#"        self.id_of.iter().rev().find(|(n, _)| n == name).map(|(_, id)| *id)"#,
+        replace: r#"        self.id_of.iter().find(|(n, _)| n == name).map(|(_, id)| *id)"#,
+        want: r#"a_repeated_name_keeps_the_last_id"#,
+    },
+    Mutation {
+        name: r#"blockages-given-names"#,
+        file: r#"src/placement.rs"#,
+        find: r#"    let mut deferred_io: Vec<&AssemblyChild> = Vec::new();"#,
+        replace: r#"    for i in 0..out.macros.len() {
+        out.id_of.push((format!("blockage_{i}"), i));
+    }
+    let mut deferred_io: Vec<&AssemblyChild> = Vec::new();"#,
+        want: r#"a_blockage_has_no_name"#,
+    },
     // ---------------------------------------------------------------- numeric types
     Mutation {
         name: r#"double-added-into-float-narrows-first"#,
