@@ -315,6 +315,51 @@ pub const MUTATIONS: &[Mutation] = &[
         }"#,
         want: r#"only_macro_clusters_are_aligned"#,
     },
+    // ---------------------------------------------------------------- numeric types
+    Mutation {
+        name: r#"double-added-into-float-narrows-first"#,
+        file: r#"src/anneal.rs"#,
+        find: r#"    (accumulator as f64 + addend) as f32
+}"#,
+        replace: r#"    accumulator + addend as f32
+}"#,
+        want: r#"adding_a_double_into_a_float_rounds_only_once"#,
+    },
+    Mutation {
+        name: r#"guidance-narrows-each-addend"#,
+        file: r#"src/placement.rs"#,
+        find: r#"        penalty = crate::anneal::plus_double(penalty, area_to_microns_f64(best, dbu_per_micron));"#,
+        replace: r#"        penalty += area_to_microns_f64(best, dbu_per_micron) as f32;"#,
+        want: r#"the_guidance_sum_is_formed_in_f64_and_rounded_once"#,
+    },
+    Mutation {
+        name: r#"io-charge-computed-in-f64"#,
+        file: r#"src/placement.rs"#,
+        find: r#"        return (net_weight * max_dist as f32) as i64;"#,
+        replace: r#"        return (net_weight as f64 * max_dist as f64) as i64;"#,
+        want: r#"the_out_of_outline_charge_is_quantised_by_f32"#,
+    },
+    Mutation {
+        name: r#"die-margin-narrowed-before-halving"#,
+        file: r#"src/placement.rs"#,
+        find: r#"    let max_dist = (die_margin / 2) as i32;"#,
+        replace: r#"    let max_dist = die_margin as i32 / 2;"#,
+        want: r#"a_die_margin_past_the_int_range_wraps"#,
+    },
+    Mutation {
+        name: r#"die-margin-not-halved"#,
+        file: r#"src/placement.rs"#,
+        find: r#"    let max_dist = (die_margin / 2) as i32;"#,
+        replace: r#"    let max_dist = die_margin as i32;"#,
+        want: r#"a_macro_outside_the_outline_is_charged_the_whole_die"#,
+    },
+    Mutation {
+        name: r#"fence-zero-area-test-widened"#,
+        file: r#"src/placement.rs"#,
+        find: r#"        if m.width.wrapping_mul(m.height) == 0 {"#,
+        replace: r#"        if m.width as i64 * m.height as i64 == 0 {"#,
+        want: r#"a_macro_whose_area_wraps_to_zero_is_skipped"#,
+    },
     // ---------------------------------------------------------------- choosing a run
     Mutation {
         name: r#"utilization-ramp-all-one-precision"#,

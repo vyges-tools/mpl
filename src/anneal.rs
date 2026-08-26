@@ -309,6 +309,20 @@ impl SoftMacro {
     }
 }
 
+/// Upstream's `float += double`, which is NOT the same as narrowing the addend first.
+///
+/// ⛔ **C++ promotes the accumulator, adds in `double`, and rounds ONCE on the assignment.**
+/// Writing `acc += addend as f32` rounds twice — the addend to `f32`, then the sum — and double
+/// rounding gives a different answer for some inputs. It is a one-ulp difference that fires on
+/// specific bit patterns rather than on large or small values, so it is invisible in a fixture and
+/// perfectly capable of changing an annealing trajectory.
+///
+/// 🔑 Every penalty that accumulates a `dbuToMicrons` or `dbuAreaToMicrons` result goes through
+/// here, because every one of them is a `float` member taking a `double` addend.
+pub fn plus_double(accumulator: f32, addend: f64) -> f32 {
+    (accumulator as f64 + addend) as f32
+}
+
 /// `dbuAreaToMicrons`: an area divided by the square of the units per micron, in `f64`.
 fn area_to_microns(dbu_area: i64, dbu_per_micron: i32) -> f64 {
     let d = dbu_per_micron as f64;
@@ -384,7 +398,9 @@ pub fn fixed_macros_penalty(
             if dx < 0 || dy < 0 {
                 continue;
             }
-            penalty += area_to_microns(dx as i64 * dy as i64, dbu_per_micron) as f32;
+            // ⛔ `float += double`: the sum is formed in `f64` and rounded once. See
+            // [`plus_double`] — narrowing the addend first is a different number.
+            penalty = plus_double(penalty, area_to_microns(dx as i64 * dy as i64, dbu_per_micron));
         }
     }
     penalty

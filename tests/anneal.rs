@@ -311,7 +311,7 @@ fn a_single_element_sequence_is_left_alone_and_draws_nothing() {
 
 use vyges_mpl::anneal::{
     area_penalty, average, fixed_macros_penalty, norm_cost, outline_penalty, Normalization,
-    Penalties, SoftWeights,
+    plus_double, Penalties, SoftWeights,
 };
 
 /// 🔑 **A packing that fits costs nothing in outline.** Both maxima pin to the outline, the
@@ -402,6 +402,34 @@ fn a_zero_normalisation_factor_drops_its_term() {
     let cost = norm_cost(&p, &w, &Normalization { area: 0.0, outline: 0.0, fixed_macros: 0.0, ..Default::default() });
     assert_eq!(cost, 0.0);
     assert!(cost.is_finite(), "and it is finite, not an infinity from dividing by zero");
+}
+
+/// ⛔ **Upstream's `float += double` rounds ONCE, on the assignment.** Narrowing the addend to
+/// `f32` first rounds twice, and double rounding is not the same function.
+///
+/// 🔑 The witness is a bit pattern, not a magnitude. `1.0 + (2^-24 + 2^-50)` sits a hair above the
+/// tie between `1.0` and the next float: adding in `f64` and rounding once sees that hair and
+/// rounds UP; narrowing the addend first destroys it and rounds to even, which is DOWN. One ulp,
+/// on ordinary-sized numbers — exactly the kind of difference no fixture built from geometry would
+/// ever show, and exactly the kind that redirects an annealing trajectory.
+#[test]
+fn adding_a_double_into_a_float_rounds_only_once() {
+    let addend = 2f64.powi(-24) + 2f64.powi(-50);
+
+    let once = plus_double(1.0, addend);
+    let twice = 1.0f32 + addend as f32;
+
+    assert_eq!(once.to_bits(), 0x3f80_0001, "rounded up, having seen the hair");
+    assert_eq!(twice.to_bits(), 0x3f80_0000, "rounded to even, the hair already gone");
+    assert_ne!(once, twice, "the two spellings are different functions");
+}
+
+/// ⚠️ For ordinary values the two agree, which is why this can sit latent for a long time.
+#[test]
+fn adding_a_double_into_a_float_usually_looks_identical() {
+    for addend in [0.0f64, 1.0, 0.5, 1234.5, 1e-3, 1e6] {
+        assert_eq!(plus_double(3.25, addend), 3.25f32 + addend as f32, "{addend}");
+    }
 }
 
 /// 🔑 **Shaping is the case where six of the nine weights are zero**, and the six dark terms each

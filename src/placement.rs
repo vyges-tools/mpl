@@ -205,12 +205,20 @@ pub fn wirelength_for_unplaced_io_pins(
     target: &WirelengthMacro,
     net_weight: f32,
     outline: (i32, i32),
-    die_span: i64,
+    die_margin: i64,
     available_regions: &[Region],
     constraint_region: Option<Region>,
 ) -> i64 {
+    // ⛔ **`int64_t` narrowed to `int`.** `Rect::margin()` returns `2*dx + 2*dy` as an `int64_t`
+    // and upstream assigns the halved value to a `const int`. On a die wider than 2^31 units the
+    // narrowing wraps; reproduced rather than widened.
+    let max_dist = (die_margin / 2) as i32;
     if is_outside_the_outline(macro_, outline) {
-        return (net_weight as f64 * die_span as f64) as i64;
+        // ⛔ **`float * int`, so the product is formed in `f32`** — not `f64`. A die distance runs
+        // to millions of database units and an `f32` carries about seven significant digits, so
+        // this result is deliberately COARSE. Computing it in `f64` gives a more accurate number
+        // and a different search.
+        return (net_weight * max_dist as f32) as i64;
     }
     let smallest = if target.is_unconstrained_io_cluster {
         // ⛔ Upstream raises MPL-47 when there is no region at all.
@@ -221,7 +229,8 @@ pub fn wirelength_for_unplaced_io_pins(
             None => 0,
         }
     };
-    (net_weight as f64 * smallest as f64) as i64
+    // ⛔ `float * int64_t` is also formed in `f32`; see above.
+    (net_weight * smallest as f32) as i64
 }
 
 /// Upstream `computeNetsWireLength`: weighted half-perimeter, normalised.
@@ -245,7 +254,7 @@ pub fn compute_nets_wire_length(
     weight_sum_nets: &[BundledNet],
     macros: &[WirelengthMacro],
     outline: (i32, i32),
-    die_span: i64,
+    die_margin: i64,
     available_regions: &[Region],
     constraint_region_of: &dyn Fn(usize) -> Option<Region>,
 ) -> f32 {
@@ -264,7 +273,7 @@ pub fn compute_nets_wire_length(
                 target,
                 net.weight,
                 outline,
-                die_span,
+                die_margin,
                 available_regions,
                 constraint_region_of(net.target),
             ) as f32;
@@ -385,7 +394,9 @@ pub fn guidance_penalty(
         if x1 - x0 > 0 && y1 - y0 > 0 {
             best -= (x1 - x0) as i64 * (y1 - y0) as i64;
         }
-        penalty += area_to_microns_f32(best, dbu_per_micron);
+        // ⛔ `float += double`: upstream adds the `dbuAreaToMicrons` result in `f64` and rounds
+        // once. See [`crate::anneal::plus_double`].
+        penalty = crate::anneal::plus_double(penalty, area_to_microns_f64(best, dbu_per_micron));
     }
     penalty / guides.len() as f32
 }
@@ -399,6 +410,10 @@ pub fn guidance_penalty(
 /// ⚠️ **A macro with zero area is skipped**, and so is one that simply does not FIT its fence — a
 /// fence smaller than the macro it constrains is treated as unsatisfiable rather than as
 /// infinitely violated.
+///
+/// ⛔ **The zero-area test WRAPS.** It is the one place upstream multiplies two `int` dimensions
+/// directly instead of going through `Rect::area()`, so a macro whose width times height is a
+/// multiple of 2^32 reads as zero-area and is skipped — see the comment at the site.
 ///
 /// ⚠️ **Both skips still count towards the divisor.** The mean is over every fence declared, not
 /// over the ones that scored, so adding an unsatisfiable fence dilutes the whole term.
@@ -427,7 +442,14 @@ pub fn fence_penalty(
         let (lx, ly) = (m.x, m.y);
         let (ux, uy) = (lx + m.width, ly + m.height);
 
-        if m.width as i64 * m.height as i64 == 0 {
+        // ⛔ **`int * int`, NOT `Rect::area()`** — upstream multiplies the two `int` dimensions
+        // directly here, where everywhere else it goes through `area()`, which widens to
+        // `int64_t` first. So the product WRAPS at 2^32 and a macro whose width times height is a
+        // multiple of 2^32 is treated as zero-area and skipped. 65536 x 65536 database units is
+        // 32.8 µm square at 2000 units per micron — an ordinary macro, not a pathological one.
+        // ⚠️ Signed overflow is undefined in C++; this reproduces what the reference BUILD does at
+        // the pin, which is to wrap. Candidate for an upstream report.
+        if m.width.wrapping_mul(m.height) == 0 {
             continue;
         }
         let (fence_dx, fence_dy) = (fence.2 - fence.0, fence.3 - fence.1);
@@ -451,10 +473,11 @@ pub fn fence_penalty(
     penalty / fences.len() as f32
 }
 
-/// `dbuAreaToMicrons`, narrowed to the `f32` the penalty accumulates in.
-fn area_to_microns_f32(dbu_area: i64, dbu_per_micron: i32) -> f32 {
+/// `dbuAreaToMicrons`: an area over the square of the units per micron, in `f64` — the type the
+/// database returns and the type every caller must add in. See [`crate::anneal::plus_double`].
+fn area_to_microns_f64(dbu_area: i64, dbu_per_micron: i32) -> f64 {
     let d = dbu_per_micron as f64;
-    (dbu_area as f64 / (d * d)) as f32
+    dbu_area as f64 / (d * d)
 }
 
 /// `dbuToMicrons`: a LENGTH, in `f64`, exactly as the database returns it.
@@ -1751,9 +1774,10 @@ pub struct PlacementInputs {
     /// The parent outline's lower-left corner in the die's coordinates.
     pub outline_origin: (i32, i32),
     pub root: Root,
-    /// The die's own width plus height — what an unplaced IO pin's macro is charged when it sits
-    /// outside the outline.
-    pub die_span: i64,
+    /// Upstream `Rect::margin()` on the die: `2 * dx + 2 * dy`, as an `int64_t`. ⚠️ **The full
+    /// margin, not the half** — the halving and its narrowing to `int` happen at the point of use,
+    /// which is where upstream does them.
+    pub die_margin: i64,
     /// The die edges an unconstrained IO cluster's pins may land on.
     pub available_regions: Vec<Region>,
     /// A constrained IO cluster's own region, by macro id.
@@ -1797,7 +1821,7 @@ impl PlacementInputs {
             &self.nets,
             &view,
             outline,
-            self.die_span,
+            self.die_margin,
             &self.available_regions,
             &constraint_of,
         )

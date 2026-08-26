@@ -4,8 +4,8 @@
 use vyges_mpl::halo::Boundary;
 use vyges_mpl::placement::{
     build_bundled_nets, compute_nets_wire_length, dist_to_nearest_region, is_outside_the_outline,
-    nearest_point_in_region, pin_center, BundledNet, Region, WirelengthMacro,
-    VIRTUAL_CONNECTION_WEIGHT,
+    nearest_point_in_region, pin_center, wirelength_for_unplaced_io_pins, BundledNet, Region,
+    WirelengthMacro, VIRTUAL_CONNECTION_WEIGHT,
 };
 
 fn macro_at(x: i32, y: i32, width: i32, height: i32) -> WirelengthMacro {
@@ -132,6 +132,10 @@ fn the_weight_sum_is_taken_from_its_own_list() {
 }
 
 /// 🔑 **A macro outside the outline is charged the whole die**, which dominates any refinement.
+///
+/// ⚠️ **The parameter is `Rect::margin()` — `2*dx + 2*dy` — and the function halves it.** So a
+/// 1000 x 1000 die is passed `4000` and charges `2000`. Passing the semi-perimeter instead doubles
+/// every out-of-outline cost.
 #[test]
 fn a_macro_outside_the_outline_is_charged_the_whole_die() {
     let mut io = macro_at(0, 0, 0, 0);
@@ -142,8 +146,54 @@ fn a_macro_outside_the_outline_is_charged_the_whole_die() {
     let regions = [Region { x0: 0, y0: 0, x1: 0, y1: 1000, boundary: Boundary::L }];
     let got =
         compute_nets_wire_length(&nets, &nets, &macros, (1000, 1000), 4000, &regions, &|_| None);
-    // 3 * 4000 = 12000, then normalised by weight 3 and semi-perimeter 2000.
-    assert_eq!(got, 12000.0 / 3.0 / 2000.0);
+    // 3 * (4000 / 2) = 6000, then normalised by weight 3 and semi-perimeter 2000.
+    assert_eq!(got, 6000.0 / 3.0 / 2000.0);
+}
+
+/// ⛔ **The product is formed in `f32`, and that is deliberately COARSE.** A die distance runs to
+/// millions of database units; `f32` carries about seven significant digits, so the charge is
+/// quantised. Computing it in `f64` gives a more accurate number and a different search — this
+/// pins which one upstream does.
+#[test]
+fn the_out_of_outline_charge_is_quantised_by_f32() {
+    let mut io = macro_at(0, 0, 0, 0);
+    io.is_cluster_of_unplaced_io_pins = true;
+    io.is_unconstrained_io_cluster = true;
+    let macros = vec![macro_at(5_000_000, 0, 100, 100), io];
+    let nets = vec![BundledNet { source: 0, target: 1, weight: 1.0 }];
+    let regions = [Region { x0: 0, y0: 0, x1: 0, y1: 1000, boundary: Boundary::L }];
+
+    // 2^24 + 1 is the first integer an f32 cannot represent; the charge rounds down to 2^24.
+    let margin = 2 * (16_777_217i64);
+    let got = wirelength_for_unplaced_io_pins(
+        &macros[0],
+        &macros[1],
+        1.0,
+        (1000, 1000),
+        margin,
+        &regions,
+        None,
+    );
+    assert_eq!(got, 16_777_216, "quantised, not 16_777_217");
+    assert_ne!(got, 16_777_217, "which is what an f64 product would have given");
+    let _ = nets;
+}
+
+/// ⛔ **`max_dist` is an `int64_t` narrowed to `int`**, so a die margin past 2^32 wraps rather than
+/// saturating. Upstream's own narrowing; reproduced, not widened.
+#[test]
+fn a_die_margin_past_the_int_range_wraps() {
+    let mut io = macro_at(0, 0, 0, 0);
+    io.is_cluster_of_unplaced_io_pins = true;
+    io.is_unconstrained_io_cluster = true;
+    let outside = macro_at(5000, 0, 100, 100);
+    let regions = [Region { x0: 0, y0: 0, x1: 0, y1: 1000, boundary: Boundary::L }];
+
+    // Half of this is 2^31, one past the largest `int`, so it wraps to the most negative one.
+    let margin = 2i64 * 2_147_483_648;
+    let got =
+        wirelength_for_unplaced_io_pins(&outside, &io, 1.0, (1000, 1000), margin, &regions, None);
+    assert_eq!(got, -2_147_483_648, "wrapped negative, exactly as the narrowing does");
 }
 
 /// ⚠️ **Only the TARGET is tested.** With the IO cluster as the SOURCE the ordinary half-perimeter
@@ -513,4 +563,59 @@ fn the_fence_term_is_dark_without_fences_or_weight() {
     assert_eq!(fence_penalty(&[], &macros, (2000, 2000), 10.0), 0.0);
     let fence = [(0usize, (0, 0, 1000, 1000))];
     assert_eq!(fence_penalty(&fence, &macros, (2000, 2000), 0.0), 0.0);
+}
+
+/// ⛔ **The zero-area test WRAPS at 2^32.** It is the one place upstream multiplies two `int`
+/// dimensions directly rather than going through `Rect::area()`, which widens first — so a macro
+/// whose width times height is a multiple of 2^32 is treated as zero-area and skipped entirely.
+///
+/// ⚠️ **65536 x 65536 database units is 32.8 µm square at 2000 units per micron.** That is an
+/// ordinary macro, not a pathological one, so this is reachable on a real design rather than a
+/// curiosity — which is exactly why it is pinned instead of quietly widened.
+#[test]
+fn a_macro_whose_area_wraps_to_zero_is_skipped() {
+    let fence = [(0usize, (0, 0, 1_000_000, 1_000_000))];
+
+    // 65536 * 65536 = 2^32, which wraps to 0 in 32 bits.
+    let wrapping = [macro_at(5_000_000, 5_000_000, 65_536, 65_536)];
+    assert_eq!(
+        fence_penalty(&fence, &wrapping, (2_000_000, 2_000_000), 10.0),
+        0.0,
+        "skipped as zero-area, though it is 32.8 µm square"
+    );
+
+    // One unit narrower does not wrap, and the same macro is scored.
+    let ordinary = [macro_at(5_000_000, 5_000_000, 65_535, 65_536)];
+    assert!(
+        fence_penalty(&fence, &ordinary, (2_000_000, 2_000_000), 10.0) > 0.0,
+        "one unit narrower and it is scored"
+    );
+}
+
+/// ⛔ **The rounding rule is not academic: it changes a real penalty.** Upstream's
+/// `guidance_penalty_ += dbuAreaToMicrons(...)` is a `float` taking a `double`, so the sum is
+/// formed in `f64` and rounded once. Narrowing each addend to `f32` first rounds twice, and this
+/// fixture — two guides whose shortfalls are `1.0` µm² and `2^-24 + 2^-50` µm² — lands on the
+/// exact bit pattern where the two disagree.
+///
+/// 🔑 It takes a contrived fixture to SHOW, and no contrivance at all to HAPPEN: any long
+/// accumulation of areas eventually meets one of these patterns, and a one-ulp difference in a
+/// penalty redirects an annealing trajectory.
+#[test]
+fn the_guidance_sum_is_formed_in_f64_and_rounded_once() {
+    let d: i32 = 1 << 25;
+    // Both macros sit far outside their guides, so each pays its whole best-possible overlap.
+    let macros = [
+        macro_at(1 << 28, 1 << 28, 1 << 25, 1 << 25),
+        macro_at(1 << 28, 1 << 28, (1 << 26) + 1, 1),
+    ];
+    let guides = [
+        (0usize, (0, 0, 1 << 26, 1 << 26)),
+        (1usize, (0, 0, 1 << 27, 1 << 27)),
+    ];
+    let got = guidance_penalty(&guides, &macros, 10.0, d);
+
+    // 1.0 + (2^-24 + 2^-50), summed in f64 and rounded once, then averaged over two guides.
+    assert_eq!(got.to_bits(), 0.500_000_06f32.to_bits(), "got {got:.10}");
+    assert_ne!(got, 0.5, "narrowing each addend first would have given exactly a half");
 }
