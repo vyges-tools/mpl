@@ -66,6 +66,12 @@ pub struct ShapingHandoff {
     /// `(width, height)` WITH halo, by instance index. ⚠️ `(0, 0)` for anything that is not a
     /// macro; the shaping stage only ever asks about macros.
     pub macro_dims: Vec<(i64, i64)>,
+    /// The halo-inclusive bounding box, by instance index. Needed for the FIXED macros, whose
+    /// position is part of what the tiling search has to pack around.
+    pub macro_bboxes: Vec<Rect>,
+    /// ⚠️ Whether the design has any standard cells at all — it selects the search's action
+    /// probabilities, because the reference zeroes the resize share when it does not.
+    pub has_std_cells: bool,
     /// Summed over the UNFIXED macros, as `init` computed it for the MPL-16 test.
     pub macro_with_halo_area: i64,
     pub io_bundles: Vec<crate::regions::IoRegion>,
@@ -183,6 +189,26 @@ pub fn run_clustering(input: &DesignInputs, opts: &ClusterOptions) -> Clustering
             None => (0, 0),
         })
         .collect();
+    // The same geometry as a box, for the fixed macros the search must pack around.
+    //
+    // ⛔ **The halo is subtracted from the MINIMUM corner, not added to the maximum one.** The
+    // reference anchors a fixed macro at `bbox.xMin() - halo.left, bbox.yMin() - halo.bottom` and
+    // then sizes it from the MASTER's dimensions plus both halos. Growing right and top instead
+    // gives a box of the right size in the wrong place, which survives everywhere except where it
+    // is clipped to the outline — and there it silently changes the clipped extent.
+    let macro_bboxes: Vec<Rect> = (0..design.instances.len())
+        .map(|i| match input.geometry[i].as_ref() {
+            Some(_) => {
+                let (w, h) = macro_dims[i];
+                let b = design.instances[i].bbox;
+                let halo = halos[i];
+                let x_min = b.x_min - halo.left;
+                let y_min = b.y_min - halo.bottom;
+                Rect { x_min, y_min, x_max: x_min + w, y_max: y_min + h }
+            }
+            None => Rect { x_min: 0, y_min: 0, x_max: 0, y_max: 0 },
+        })
+        .collect();
 
     if !crate::feasibility::movable_cells_fit(
         design,
@@ -297,6 +323,7 @@ pub fn run_clustering(input: &DesignInputs, opts: &ClusterOptions) -> Clustering
                 design_metrics.std_cell_area,
                 macro_with_halo_area,
                 macro_dims,
+                macro_bboxes,
                 &io,
                 !pads.is_empty(),
                 design_metrics.num_std_cell,
@@ -357,6 +384,7 @@ pub fn run_clustering(input: &DesignInputs, opts: &ClusterOptions) -> Clustering
             design_metrics.std_cell_area,
             macro_with_halo_area,
             macro_dims,
+            macro_bboxes,
             &io,
             !pads.is_empty(),
             design_metrics.num_std_cell,
@@ -431,6 +459,7 @@ fn shaping_handoff(
     top_std_cell_area: i64,
     macro_with_halo_area: i64,
     macro_dims: Vec<(i64, i64)>,
+    macro_bboxes: Vec<Rect>,
     io: &IoClusters,
     has_io_pads: bool,
     num_std_cell: i32,
@@ -455,6 +484,8 @@ fn shaping_handoff(
         has_io_pads,
         top_std_cell_area,
         macro_dims,
+        macro_bboxes,
+        has_std_cells: num_std_cell > 0,
         macro_with_halo_area,
         io_bundles: io.bundles.iter().filter_map(as_region).collect(),
         // ⚠️ The CONSTRAINED ones only. An unconstrained cluster is served by the available-region

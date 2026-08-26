@@ -1184,7 +1184,8 @@ fn every_returned_tiling_fits_the_outline() {
     let probabilities = ActionProbabilities::normalized(0.2, 0.2, 0.2, 0.2, 0.2);
     let tilings =
         search_tilings(&macros, &curves, 5_000, 5_000, 2000, probabilities, &quick_search())
-            .expect("shapeable");
+            .expect("shapeable")
+            .chosen;
     assert!(!tilings.is_empty());
     for (w, h) in &tilings {
         assert!(*w <= 5_000 && *h <= 5_000, "{w} x {h} does not fit");
@@ -1199,7 +1200,8 @@ fn the_tilings_come_back_ordered_by_area_then_width() {
     let probabilities = ActionProbabilities::normalized(0.2, 0.2, 0.2, 0.2, 0.2);
     let tilings =
         search_tilings(&macros, &curves, 5_000, 5_000, 2000, probabilities, &quick_search())
-            .expect("shapeable");
+            .expect("shapeable")
+            .chosen;
     for pair in tilings.windows(2) {
         let (a, b) = (pair[0], pair[1]);
         let (area_a, area_b) = (a.0 as i64 * a.1 as i64, b.0 as i64 * b.1 as i64);
@@ -1218,7 +1220,8 @@ fn duplicate_results_are_collapsed() {
     let probabilities = ActionProbabilities::normalized(0.2, 0.2, 0.2, 0.2, 0.2);
     let tilings =
         search_tilings(&macros, &curves, 5_000, 5_000, 2000, probabilities, &quick_search())
-            .expect("shapeable");
+            .expect("shapeable")
+            .chosen;
     let mut unique = tilings.clone();
     unique.sort_unstable();
     unique.dedup();
@@ -1235,6 +1238,7 @@ fn the_tiling_search_is_reproducible() {
     let run = || {
         search_tilings(&macros, &curves, 5_000, 5_000, 2000, probabilities, &quick_search())
             .expect("shapeable")
+            .chosen
     };
     assert_eq!(run(), run());
 }
@@ -1259,6 +1263,7 @@ fn an_impossible_aspect_ratio_band_keeps_the_tilings_anyway() {
     let strict = TilingSearch { min_ar: 0.999, ..quick_search() };
     let tilings =
         search_tilings(&macros, &curves, 5_000, 5_000, 2000, probabilities, &strict)
-            .expect("shapeable");
+            .expect("shapeable")
+            .chosen;
     assert!(!tilings.is_empty(), "the filter must not empty the list");
 }

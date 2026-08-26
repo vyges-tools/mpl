@@ -144,7 +144,21 @@ fn macro_cluster(id: i32, name: &str, macros: &[usize]) -> Cluster {
 }
 
 fn ctx(w: i64, h: i64) -> ShapingCtx<'static> {
-    ShapingCtx { outline: outline(w, h), macro_dims: &|_| (10, 10) }
+    ShapingCtx {
+        outline: outline(w, h),
+        macro_dims: &|_| (10, 10),
+        macro_bbox: &|_| Rect { x_min: 0, y_min: 0, x_max: 10, y_max: 10 },
+        dbu_per_micron: 2000,
+        has_std_cells: true,
+        // ⚠️ A short search: these fixtures exercise the recursion, not the annealer.
+        search: vyges_mpl::anneal::TilingSearch {
+            sa: vyges_mpl::anneal::SaParameters {
+                max_num_step: 5,
+                ..vyges_mpl::anneal::SaParameters::default()
+            },
+            ..vyges_mpl::anneal::TilingSearch::default()
+        },
+    }
 }
 
 #[test]
@@ -203,28 +217,49 @@ fn a_lone_FIXED_macro_leaves_the_parent_with_no_tilings() {
 }
 
 #[test]
-fn two_macro_bearing_children_need_the_annealing_search() {
-    // ⛔ Refused by name. A plausible tiling set is not the same tiling set.
+fn two_macro_bearing_children_are_shaped_by_the_search() {
+    // 🔑 Two contributors is the case that anneals. The search must produce tilings that fit.
     let mut root = Cluster::new(0, "root");
     root.metrics.num_macro = 2;
+    // ℹ️ No tilings are set here on purpose: these are hard macro clusters, so the recursion
+    // recomputes them from the context's macro dimensions and would overwrite anything assigned.
     root.children.push(macro_cluster(1, "A", &[0]));
     root.children.push(macro_cluster(2, "B", &[1]));
-    let e = calculate_children_tilings(&mut root, &ctx(1000, 1000)).expect_err("needs SA");
-    assert_eq!(e, ShapingRefusal::NeedsAnnealing(0), "and it names the cluster");
+
+    calculate_children_tilings(&mut root, &ctx(1000, 1000)).expect("the search found tilings");
+    assert!(!root.tilings.is_empty(), "the parent was shaped");
+    for tiling in &root.tilings {
+        assert!(tiling.width <= 1000 && tiling.height <= 1000, "{tiling:?} does not fit");
+    }
 }
 
 #[test]
-fn a_fixed_macro_beside_a_movable_one_still_needs_the_search() {
-    // 🔑 This is why `fixed_covers` and `fixed_macros*` are in the annealing group despite having
-    // one movable macro apiece: the fixed one occupies space the parent must shape around.
+fn a_fixed_macro_beside_a_movable_one_is_packed_around() {
+    // 🔑 This is why `fixed_covers` and `fixed_macros*` anneal despite having one movable macro
+    // apiece: the fixed one occupies space the parent must shape around.
     let mut root = Cluster::new(0, "root");
     root.metrics.num_macro = 2;
     let mut fixed = macro_cluster(1, "F", &[0]);
     fixed.is_fixed_macro = true;
     root.children.push(fixed);
     root.children.push(macro_cluster(2, "M", &[1]));
-    let e = calculate_children_tilings(&mut root, &ctx(1000, 1000)).expect_err("needs SA");
-    assert_eq!(e, ShapingRefusal::NeedsAnnealing(0));
+
+    calculate_children_tilings(&mut root, &ctx(1000, 1000)).expect("the search found tilings");
+    assert!(!root.tilings.is_empty());
+}
+
+#[test]
+fn an_outline_nothing_fits_is_reported_as_mpl_3() {
+    // ⛔ Not an empty tiling list — "no valid tiling" and "not shaped" are different statements.
+    let mut root = Cluster::new(0, "root");
+    root.metrics.num_macro = 2;
+    root.children.push(macro_cluster(1, "A", &[0]));
+    root.children.push(macro_cluster(2, "B", &[1]));
+
+    // ⚠️ Each 10 x 10 child fits a 15 x 15 outline on its own; together they need 20 in one
+    // direction, and a degenerate shape curve gives the search no way to make them narrower.
+    let e = calculate_children_tilings(&mut root, &ctx(15, 15)).expect_err("nothing fits");
+    assert_eq!(e, ShapingRefusal::NoValidTilings(0), "and it names the cluster");
 }
 
 #[test]
@@ -343,6 +378,15 @@ fn base(die: Rect) -> CoarseInput<'static> {
         top_std_cell_area: 5_000,
         blockages: &[],
         macro_dims: &|_| (100, 100),
+        macro_bbox: &|_| Rect { x_min: 0, y_min: 0, x_max: 100, y_max: 100 },
+        has_std_cells: true,
+        search: vyges_mpl::anneal::TilingSearch {
+            sa: vyges_mpl::anneal::SaParameters {
+                max_num_step: 5,
+                ..vyges_mpl::anneal::SaParameters::default()
+            },
+            ..vyges_mpl::anneal::TilingSearch::default()
+        },
         io_bundles: &[],
         fixed_ios: 1,
         constrained_regions: &[],

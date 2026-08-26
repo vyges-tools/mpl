@@ -129,6 +129,38 @@ impl CoarseTrace {
         self.debug_line(&line);
     }
 
+    // ------------------------------------------------------------ the annealing search
+
+    /// One tiling the search found, before the aspect-ratio filter.
+    ///
+    /// ⚠️ **Emitted for EVERY tiling found, not for the ones kept.** The filter runs after these
+    /// lines, so a tiling that is about to be discarded still appears here.
+    ///
+    /// ⚠️ `aspect_ratio` is `height / width` in `f32`, printed at full precision.
+    pub fn mixed_tiling_candidate(&mut self, width: i32, height: i32, min_ar: f32) {
+        let aspect_ratio = height as f32 / width as f32;
+        self.debug_line(&format!(
+            "width: {width}, height: {height}, aspect_ratio: {aspect_ratio}, min_ar: {min_ar}"
+        ));
+    }
+
+    /// The shapes a mixed cluster ended up with.
+    ///
+    /// ⚠️ **TWO spaces after the cluster name**, then each tiling wrapped in single spaces with
+    /// two after its closing bracket — upstream builds the line by concatenation and the spacing
+    /// is load-bearing. ⚠️ Not emitted at all when the list is empty.
+    pub fn mixed_cluster_tilings(&mut self, name: &str, tilings: &[(i32, i32)]) {
+        if !self.on || tilings.is_empty() {
+            return;
+        }
+        let mut line = format!("The macro tiling for mixed cluster {name}  ");
+        for (width, height) in tilings {
+            line.push_str(&format!(" < {width} , {height} >  "));
+        }
+        line.push('\n');
+        self.debug_line(&line);
+    }
+
     // ------------------------------------------------------------ pin access
 
     /// ⚠️ `{:>5.2}` and `{:>6.2}` — the two columns have DIFFERENT widths, and the header rule is

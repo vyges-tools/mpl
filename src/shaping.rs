@@ -143,6 +143,28 @@ pub struct ShapingCtx<'a> {
     pub outline: crate::design::Rect,
     /// A macro's dimensions **with halo**, by instance.
     pub macro_dims: &'a dyn Fn(usize) -> (i64, i64),
+    /// A macro's bounding box **with halo**, in absolute database units, by instance.
+    ///
+    /// ⚠️ Needed only for a FIXED macro, whose position is part of its contribution — every other
+    /// macro is placed by the search and its starting position is irrelevant.
+    pub macro_bbox: &'a dyn Fn(usize) -> Rect,
+    pub dbu_per_micron: i32,
+    /// ⚠️ **`resetSAParameters` zeroes the resize share for a design with no standard cells**, and
+    /// it runs before this stage. The two probability sets are otherwise identical.
+    pub has_std_cells: bool,
+    pub search: crate::anneal::TilingSearch,
+}
+
+impl ShapingCtx<'_> {
+    /// The action shares the search is driven with, already normalised.
+    ///
+    /// ⚠️ The reference divides each share by the sum of all five, and the sums differ between
+    /// the two cases — `1.2` normally and `0.8` once resize is zeroed — so the four swap
+    /// probabilities are NOT the same in both.
+    pub fn probabilities(&self) -> crate::anneal::ActionProbabilities {
+        let resize = if self.has_std_cells { 0.4 } else { 0.0 };
+        crate::anneal::ActionProbabilities::normalized(0.2, 0.2, 0.2, 0.2, resize)
+    }
 }
 
 /// Why shaping stopped.
@@ -150,7 +172,10 @@ pub struct ShapingCtx<'a> {
 pub enum ShapingRefusal {
     /// ⛔ A cluster whose tilings upstream generates by simulated annealing. Refused by name;
     /// **never approximated**, because a plausible tiling set is not the same tiling set.
+    /// ℹ️ No longer produced — the search is built. Kept so a caller matching on it still compiles.
     NeedsAnnealing(ClusterId),
+    /// MPL-3: the search produced no tiling that fits the outline.
+    NoValidTilings(ClusterId),
     /// MPL-4: no arrangement of the cluster's macros fits the outline.
     Unshapeable(ClusterId, Unshapeable),
 }
@@ -231,9 +256,118 @@ pub fn calculate_children_tilings_traced(
         return Ok(());
     }
 
-    // ⛔ Two or more contributors: upstream varies the outline and runs `SACoreSoftMacro` to
-    // find tilings. Not built here.
-    Err(ShapingRefusal::NeedsAnnealing(parent.id))
+    // Two or more contributors: vary the outline and anneal, as upstream does.
+    let (macros, curves) = build_soft_macros(parent, ctx);
+    match crate::anneal::search_tilings(
+        &macros,
+        &curves,
+        (ctx.outline.x_max - ctx.outline.x_min) as i32,
+        (ctx.outline.y_max - ctx.outline.y_min) as i32,
+        ctx.dbu_per_micron,
+        ctx.probabilities(),
+        &ctx.search,
+    ) {
+        Ok(result) => {
+            // ⚠️ Traced BEFORE the filter and over EVERY tiling found — the reference prints the
+            // unfiltered list here and only then narrows it.
+            for &(width, height) in &result.all {
+                trace.mixed_tiling_candidate(width, height, ctx.search.min_ar);
+            }
+            parent.tilings = result
+                .chosen
+                .iter()
+                .map(|&(width, height)| Tiling { width: width as i64, height: height as i64 })
+                .collect();
+            // ⚠️ The summary line reports the KEPT list, not the one above.
+            trace.mixed_cluster_tilings(&parent.name, &result.chosen);
+            Ok(())
+        }
+        // MPL-3: the search found nothing that fits.
+        Err(_) => Err(ShapingRefusal::NoValidTilings(parent.id)),
+    }
+}
+
+/// The soft macros a parent's children contribute to the search.
+///
+/// 🔑 **Order follows the CHILD order**, fixed and movable interleaved — the sequence pair indexes
+/// into this list, so a different order is a different search.
+///
+/// ⚠️ A fixed macro is clipped to the outline and translated to be RELATIVE to it, and carries no
+/// shape curve: it cannot be resized, and an empty curve is what makes a resize action spend no
+/// randomness on it.
+fn build_soft_macros(
+    parent: &Cluster,
+    ctx: &ShapingCtx,
+) -> (Vec<crate::anneal::SoftMacro>, Vec<crate::anneal::ShapeCurve>) {
+    use crate::anneal::{shape_curve_from_intervals, shape_curve_from_tilings, ShapeCurve, SoftMacro};
+
+    let outline = ctx.outline;
+    let mut macros = Vec::new();
+    let mut curves = Vec::new();
+
+    for child in &parent.children {
+        if child.is_fixed_macro {
+            let Some(&inst) = child.leaf_macros.first() else { continue };
+            let bbox = (ctx.macro_bbox)(inst);
+            // ⚠️ Clipped to the outline, THEN moved so the outline's corner is the origin.
+            let x_min = bbox.x_min.max(outline.x_min);
+            let y_min = bbox.y_min.max(outline.y_min);
+            let x_max = bbox.x_max.min(outline.x_max);
+            let y_max = bbox.y_max.min(outline.y_max);
+            let width = (x_max - x_min) as i32;
+            let height = (y_max - y_min) as i32;
+            macros.push(SoftMacro {
+                x: (x_min - outline.x_min) as i32,
+                y: (y_min - outline.y_min) as i32,
+                width,
+                height,
+                fixed: true,
+                area: width as i64 * height as i64,
+                // ⚠️ Its cluster IS a macro cluster, and the resize action tests that FIRST —
+                // which routes it to a random resize that then finds no curve and draws nothing.
+                is_macro_cluster: true,
+            });
+            curves.push(ShapeCurve::default());
+            continue;
+        }
+
+        if child.num_macro() == 0 {
+            continue;
+        }
+
+        if child.cluster_type == ClusterType::HardMacro {
+            let tilings: Vec<(i32, i32)> =
+                child.tilings.iter().map(|t| (t.width as i32, t.height as i32)).collect();
+            let (curve, width, height, area) = shape_curve_from_tilings(&tilings);
+            macros.push(SoftMacro {
+                width,
+                height,
+                area,
+                is_macro_cluster: true,
+                ..Default::default()
+            });
+            curves.push(curve);
+        } else {
+            let intervals: Vec<crate::anneal::Interval> = compute_width_intervals(&child.tilings)
+                .into_iter()
+                .map(|i| crate::anneal::Interval { min: i.min as i32, max: i.max as i32 })
+                .collect();
+            // ⚠️ "We can use the area of any tiling" — upstream takes the first.
+            let area = child.tilings.first().map(|t| t.area()).unwrap_or(0);
+            match shape_curve_from_intervals(&intervals, area) {
+                Some((curve, width, height, area)) => {
+                    macros.push(SoftMacro { width, height, area, ..Default::default() });
+                    curves.push(curve);
+                }
+                None => {
+                    // Upstream's `setShapes` returns leaving the macro at its defaults.
+                    macros.push(SoftMacro::default());
+                    curves.push(ShapeCurve::default());
+                }
+            }
+        }
+    }
+    (macros, curves)
 }
 
 /// Upstream `calculateMacroTilings` against the tree.
@@ -361,6 +495,12 @@ pub struct CoarseInput<'a> {
     pub blockages: &'a [Rect],
     /// A macro's dimensions **with halo**, by instance.
     pub macro_dims: &'a dyn Fn(usize) -> (i64, i64),
+    /// A macro's bounding box **with halo**, in absolute database units, by instance.
+    pub macro_bbox: &'a dyn Fn(usize) -> Rect,
+    /// ⚠️ Whether the design has ANY standard cells — it selects the action probabilities, because
+    /// `resetSAParameters` zeroes the resize share when it does not.
+    pub has_std_cells: bool,
+    pub search: crate::anneal::TilingSearch,
     pub io_bundles: &'a [crate::regions::IoRegion],
     pub fixed_ios: i64,
     pub constrained_regions: &'a [crate::regions::IoRegion],
@@ -431,7 +571,14 @@ pub fn run_coarse_shaping_traced(
         });
     }
 
-    let ctx = ShapingCtx { outline: input.floorplan, macro_dims: input.macro_dims };
+    let ctx = ShapingCtx {
+        outline: input.floorplan,
+        macro_dims: input.macro_dims,
+        macro_bbox: input.macro_bbox,
+        dbu_per_micron,
+        has_std_cells: input.has_std_cells,
+        search: input.search,
+    };
     calculate_children_tilings_traced(root, &ctx, trace)?;
 
     // 🔑 **Here, between the tilings and the blockages** — upstream's own position for

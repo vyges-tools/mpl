@@ -1243,13 +1243,18 @@ pub struct TilingSearch {
     /// randomness — so two runs given the same outline would produce identical answers.
     pub random_seed: u32,
     /// The aspect-ratio band a tiling must fall in to survive the final filter.
+    ///
+    /// ⛔ **`0.33`, from the COMMAND, not the `0.3` the C++ member is initialised with.** The Tcl
+    /// layer passes its own default down on every run, so the member's value is never the one in
+    /// effect — and the difference is visible in the reference's own trace, which prints
+    /// `min_ar: 0.33`.
     pub min_ar: f32,
     pub sa: SaParameters,
 }
 
 impl Default for TilingSearch {
     fn default() -> Self {
-        Self { num_runs: 10, random_seed: 0, min_ar: 0.3, sa: SaParameters::default() }
+        Self { num_runs: 10, random_seed: 0, min_ar: 0.33, sa: SaParameters::default() }
     }
 }
 
@@ -1300,11 +1305,11 @@ pub fn search_tilings(
     dbu_per_micron: i32,
     probabilities: ActionProbabilities,
     search: &TilingSearch,
-) -> Result<Vec<(i32, i32)>, NoValidTilings> {
+) -> Result<TilingResult, NoValidTilings> {
     let factors = search.vary_factors();
     let mut found: Vec<(i32, i32)> = Vec::new();
 
-    let mut run_one = |width: i32, height: i32, found: &mut Vec<(i32, i32)>| {
+    let run_one = |width: i32, height: i32, found: &mut Vec<(i32, i32)>| {
         let mut state = new_search(
             macros,
             curves,
@@ -1359,7 +1364,21 @@ pub fn search_tilings(
         .collect();
 
     // ⚠️ Only if something survived; otherwise the extreme tilings are kept.
-    Ok(if filtered.is_empty() { found } else { filtered })
+    let chosen = if filtered.is_empty() { found.clone() } else { filtered };
+    Ok(TilingResult { all: found, chosen })
+}
+
+/// What the search produced.
+///
+/// 🔑 **Both lists are needed, because the reference TRACES one and USES the other.** The
+/// per-tiling debug line is emitted for every tiling found, before the aspect-ratio filter runs;
+/// the summary line and the cluster's shapes come from the filtered list.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct TilingResult {
+    /// Everything that fit, ordered by area then width — before the aspect-ratio filter.
+    pub all: Vec<(i32, i32)>,
+    /// What the filter left, or everything if it left nothing.
+    pub chosen: Vec<(i32, i32)>,
 }
 
 /// A search over a fresh copy of the macros, packed from the identity sequence pair.
