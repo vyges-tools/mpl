@@ -407,6 +407,100 @@ pub const MUTATIONS: &[Mutation] = &[
     let mut deferred_io: Vec<&AssemblyChild> = Vec::new();"#,
         want: r#"a_blockage_has_no_name"#,
     },
+    // ---------------------------------------------------------------- the hard-macro core
+    Mutation {
+        name: r#"hard-cost-includes-the-soft-penalties"#,
+        file: r#"src/placement.rs"#,
+        find: r#"        &crate::anneal::Penalties {
+            boundary: 0.0,
+            soft_blockage: 0.0,
+            fixed_macros: 0.0,
+            notch: 0.0,
+            ..*p
+        },"#,
+        replace: r#"        p,"#,
+        want: r#"the_four_soft_only_penalties_are_ignored"#,
+    },
+    Mutation {
+        name: r#"hard-perturb-has-a-fourth-threshold"#,
+        file: r#"src/placement.rs"#,
+        find: r#"        } else {
+            crate::anneal::Action::Exchange
+        }
+    }
+}"#,
+        replace: r#"        } else if draw <= three + self.exchange {
+            crate::anneal::Action::Exchange
+        } else {
+            crate::anneal::Action::Resize
+        }
+    }
+}"#,
+        want: r#"a_draw_past_every_threshold_is_an_exchange"#,
+    },
+    Mutation {
+        name: r#"hard-action-thresholds-exclusive"#,
+        file: r#"src/placement.rs"#,
+        find: r#"        if draw <= one {
+            crate::anneal::Action::SwapPositive"#,
+        replace: r#"        if draw < one {
+            crate::anneal::Action::SwapPositive"#,
+        want: r#"exchange_takes_everything_past_the_third_threshold"#,
+    },
+    Mutation {
+        name: r#"norm-floor-exclusive"#,
+        file: r#"src/placement.rs"#,
+        find: r#"    if value <= 1e-4 {
+        1.0
+    } else {
+        value
+    }"#,
+        replace: r#"    if value < 1e-4 {
+        1.0
+    } else {
+        value
+    }"#,
+        want: r#"a_tiny_normalisation_factor_becomes_exactly_one"#,
+    },
+    Mutation {
+        name: r#"norm-floor-clamps-instead-of-replacing"#,
+        file: r#"src/placement.rs"#,
+        find: r#"    if value <= 1e-4 {
+        1.0"#,
+        replace: r#"    if value <= 1e-4 {
+        1e-4"#,
+        want: r#"a_tiny_normalisation_factor_becomes_exactly_one"#,
+    },
+    Mutation {
+        name: r#"temperature-from-the-spread"#,
+        file: r#"src/placement.rs"#,
+        find: r#"        delta_cost += (costs[i] - costs[i - 1]).abs();"#,
+        replace: r#"        delta_cost += (costs[i] - costs[0]).abs();"#,
+        want: r#"the_temperature_measures_change_not_spread"#,
+    },
+    Mutation {
+        name: r#"temperature-divides-by-the-sample-count"#,
+        file: r#"src/placement.rs"#,
+        find: r#"        -(delta_cost / (costs.len() - 1) as f32) / init_prob.ln()"#,
+        replace: r#"        -(delta_cost / costs.len() as f32) / init_prob.ln()"#,
+        want: r#"the_temperature_measures_change_not_spread"#,
+    },
+    Mutation {
+        name: r#"still-sweep-does-not-give-one"#,
+        file: r#"src/placement.rs"#,
+        find: r#"    if costs.len() > 1 && delta_cost > 0.0 {"#,
+        replace: r#"    if costs.len() > 1 {"#,
+        want: r#"a_still_or_empty_sweep_gives_a_temperature_of_one"#,
+    },
+    Mutation {
+        name: r#"hard-sampled-width-kept-as-int"#,
+        file: r#"src/placement.rs"#,
+        find: r#"    extent as f32 as i32
+}"#,
+        replace: r#"    extent
+}"#,
+        want: r#"a_hard_cores_sampled_width_makes_a_lossy_round_trip"#,
+    },
     // ---------------------------------------------------------------- per-macro-cluster inputs
     Mutation {
         name: r#"missing-fence-dropped-instead-of-degenerate"#,

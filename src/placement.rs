@@ -2561,3 +2561,105 @@ pub fn array_sequence_pair(
     }
     out
 }
+
+// ---------------------------------------------------------------- the hard-macro annealer
+
+/// Upstream `SACoreHardMacro::calNormCost`: the FIVE terms the base core owns.
+///
+/// 🔑 **Boundary, soft blockage, fixed macros and notch do not exist here.** They are
+/// `SACoreSoftMacro`'s own members, not the base class's — so a hard-macro run has no notion of
+/// them at all, rather than weighting them at zero.
+///
+/// ℹ️ Delegating to [`crate::anneal::norm_cost`] with those four penalties forced to zero is
+/// **bit-identical** to writing the five terms out: they are the first five in the same order, and
+/// each of the other four then contributes an exact `0.0`, which leaves an `f32` sum unchanged.
+/// Written this way so the relationship between the two cores is visible rather than duplicated.
+pub fn hard_norm_cost(
+    p: &crate::anneal::Penalties,
+    w: &crate::anneal::SoftWeights,
+    n: &crate::anneal::Normalization,
+) -> f32 {
+    crate::anneal::norm_cost(
+        &crate::anneal::Penalties {
+            boundary: 0.0,
+            soft_blockage: 0.0,
+            fixed_macros: 0.0,
+            notch: 0.0,
+            ..*p
+        },
+        w,
+        n,
+    )
+}
+
+impl HardActionProbabilities {
+    /// Upstream `SACoreHardMacro::perturb`'s action choice.
+    ///
+    /// ⛔ **THREE thresholds for FOUR actions**, so exchange is the `else` and takes everything
+    /// left over — including whatever slack the normalisation left behind. The soft core has four
+    /// thresholds and gives the remainder to resize instead; there is no resize here, because a
+    /// hard macro has one shape.
+    ///
+    /// ⚠️ `<=` at every threshold, matching the reference.
+    pub fn action_for(&self, draw: f32) -> crate::anneal::Action {
+        let one = self.pos_swap;
+        let two = one + self.neg_swap;
+        let three = two + self.double_swap;
+        if draw <= one {
+            crate::anneal::Action::SwapPositive
+        } else if draw <= two {
+            crate::anneal::Action::SwapNegative
+        } else if draw <= three {
+            crate::anneal::Action::SwapBoth
+        } else {
+            crate::anneal::Action::Exchange
+        }
+    }
+}
+
+/// Upstream `calAverage`'s result after the `<= 1e-4` floor.
+///
+/// ⚠️ **Not a clamp to something small — it becomes exactly `1.0`.** A penalty that is almost
+/// always zero therefore reaches the cost undamped on the rare step where it is not.
+///
+/// ⚠️ `<=`, so a factor of exactly `1e-4` is floored too.
+pub fn norm_floor(value: f32) -> f32 {
+    if value <= 1e-4 {
+        1.0
+    } else {
+        value
+    }
+}
+
+/// Upstream's initial temperature, identical in both cores.
+///
+/// 🔑 **It comes from the mean ABSOLUTE step-to-step CHANGE in cost, not from the spread.** Two
+/// runs with the same range of costs but different orderings get different temperatures.
+///
+/// ⚠️ **Fewer than two samples, or no change at all, gives exactly `1.0`** rather than dividing by
+/// zero — and a sweep that recorded nothing lands here.
+pub fn init_temperature(costs: &[f32], init_prob: f32) -> f32 {
+    let mut delta_cost = 0.0f32;
+    for i in 1..costs.len() {
+        delta_cost += (costs[i] - costs[i - 1]).abs();
+    }
+    if costs.len() > 1 && delta_cost > 0.0 {
+        -(delta_cost / (costs.len() - 1) as f32) / init_prob.ln()
+    } else {
+        1.0
+    }
+}
+
+/// Upstream's `std::vector<float> width_list` in the HARD core's `initialize`.
+///
+/// ⛔ **The soft core stores its widths as `int`; the hard core stores them as `float`.** The
+/// replay then assigns `width_ = width_list[i]`, narrowing back to `int` — so every sampled width
+/// makes an `int → float → int` round trip that the soft core does not.
+///
+/// ⚠️ Above 2^24 database units — 8.4 mm at 2000 units per micron, which a real die reaches — an
+/// `f32` cannot hold every integer, so the replayed width can differ from the sampled one. It
+/// feeds `getAreaPenalty()`, so it moves the replayed cost, the mean delta, and the initial
+/// temperature with it.
+pub fn hard_sampled_extent(extent: i32) -> i32 {
+    extent as f32 as i32
+}

@@ -320,3 +320,117 @@ fn a_cluster_narrower_than_one_macro_yields_no_grid() {
     assert!(!got.has_empty_space);
     assert_eq!(got.pos, vec![0, 1, 2, 3], "the positive sequence is still every macro");
 }
+
+// ---------------------------------------------------------------- the hard-macro core
+
+use vyges_mpl::anneal::{Action, Normalization, Penalties};
+use vyges_mpl::placement::{hard_norm_cost, hard_sampled_extent, init_temperature, norm_floor};
+
+/// 🔑 **Boundary, soft blockage, fixed macros and notch do not exist for a hard-macro run** — they
+/// are the soft core's own members, not the base class's.
+#[test]
+fn the_hard_cost_has_only_five_terms() {
+    let all_ones = Penalties {
+        area: 1.0,
+        outline: 1.0,
+        wirelength: 1.0,
+        guidance: 1.0,
+        fence: 1.0,
+        boundary: 1.0,
+        soft_blockage: 1.0,
+        fixed_macros: 1.0,
+        notch: 1.0,
+    };
+    let w = SoftWeights::placement_defaults();
+    let got = hard_norm_cost(&all_ones, &w, &Normalization::default());
+    assert_eq!(got, w.area + w.outline + w.wirelength + w.guidance + w.fence);
+}
+
+/// ⚠️ The four terms it does not have are ignored rather than weighted at zero — changing them
+/// changes nothing.
+#[test]
+fn the_four_soft_only_penalties_are_ignored() {
+    let base = Penalties { area: 0.5, outline: 0.25, ..Default::default() };
+    let loud = Penalties { boundary: 99.0, notch: 99.0, soft_blockage: 99.0, fixed_macros: 99.0, ..base };
+    let w = SoftWeights::placement_defaults();
+    let n = Normalization::default();
+    assert_eq!(hard_norm_cost(&base, &w, &n), hard_norm_cost(&loud, &w, &n));
+}
+
+/// ⛔ **THREE thresholds for FOUR actions** — exchange is the `else` and takes everything left
+/// over, including any slack the normalisation left behind.
+#[test]
+fn exchange_takes_everything_past_the_third_threshold() {
+    let p = HardActionProbabilities {
+        pos_swap: 0.25,
+        neg_swap: 0.25,
+        double_swap: 0.25,
+        exchange: 0.25,
+    };
+    assert_eq!(p.action_for(0.0), Action::SwapPositive);
+    assert_eq!(p.action_for(0.25), Action::SwapPositive, "inclusive at the threshold");
+    assert_eq!(p.action_for(0.26), Action::SwapNegative);
+    assert_eq!(p.action_for(0.5), Action::SwapNegative);
+    assert_eq!(p.action_for(0.51), Action::SwapBoth);
+    assert_eq!(p.action_for(0.75), Action::SwapBoth);
+    assert_eq!(p.action_for(0.76), Action::Exchange);
+    assert_eq!(p.action_for(1.0), Action::Exchange);
+}
+
+/// ⛔ **There is no resize.** A draw past every threshold is an exchange, not a fifth action —
+/// which is where the soft core sends it.
+#[test]
+fn a_draw_past_every_threshold_is_an_exchange() {
+    // Probabilities that deliberately do not reach 1.0.
+    let p = HardActionProbabilities {
+        pos_swap: 0.1,
+        neg_swap: 0.1,
+        double_swap: 0.1,
+        exchange: 0.1,
+    };
+    assert_eq!(p.action_for(0.99), Action::Exchange, "the slack goes to exchange");
+}
+
+// ---------------------------------------------------------------- initialisation
+
+/// ⚠️ **Not a clamp to something small — the factor becomes exactly `1.0`.** So a penalty that is
+/// almost always zero reaches the cost undamped on the rare step where it is not.
+#[test]
+fn a_tiny_normalisation_factor_becomes_exactly_one() {
+    assert_eq!(norm_floor(0.0), 1.0);
+    assert_eq!(norm_floor(1e-5), 1.0);
+    assert_eq!(norm_floor(1e-4), 1.0, "inclusive at the threshold");
+    assert_eq!(norm_floor(1.1e-4), 1.1e-4, "just above it, and kept");
+    assert_eq!(norm_floor(500.0), 500.0);
+}
+
+/// 🔑 **The temperature comes from the mean absolute step-to-step CHANGE, not the spread.** Two
+/// runs with the same set of costs in a different order get different temperatures.
+#[test]
+fn the_temperature_measures_change_not_spread() {
+    let smooth = init_temperature(&[0.0, 1.0, 2.0, 3.0], 0.9);
+    let jagged = init_temperature(&[0.0, 3.0, 1.0, 2.0], 0.9);
+    assert!(jagged > smooth, "same range, more movement: {jagged} vs {smooth}");
+
+    // Smooth: deltas 1,1,1 -> mean 1. -1/ln(0.9).
+    assert!((smooth - (-1.0 / 0.9f32.ln())).abs() < 1e-6);
+}
+
+/// ⚠️ **Fewer than two samples, or no change at all, gives exactly `1.0`** — and a sweep that
+/// recorded nothing lands here.
+#[test]
+fn a_still_or_empty_sweep_gives_a_temperature_of_one() {
+    assert_eq!(init_temperature(&[], 0.9), 1.0);
+    assert_eq!(init_temperature(&[5.0], 0.9), 1.0);
+    assert_eq!(init_temperature(&[2.0, 2.0, 2.0], 0.9), 1.0, "no change at all");
+}
+
+/// ⛔ **The hard core stores its sampled widths as `float`; the soft core stores them as `int`.**
+/// Above 2^24 database units — 8.4 mm at 2000 units per micron, which a real die reaches — the
+/// round trip is lossy, and the replayed width feeds the area penalty and so the temperature.
+#[test]
+fn a_hard_cores_sampled_width_makes_a_lossy_round_trip() {
+    assert_eq!(hard_sampled_extent(16_777_215), 16_777_215, "below the limit, exact");
+    assert_eq!(hard_sampled_extent(16_777_217), 16_777_216, "one unit lost");
+    assert_eq!(hard_sampled_extent(20_000_001), 20_000_000, "10 mm at 2000 units per micron");
+}
