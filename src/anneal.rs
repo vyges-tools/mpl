@@ -459,3 +459,142 @@ pub fn average(values: &[f32]) -> f32 {
     let sum = values.iter().fold(0.0f32, |a, b| a + b);
     sum / values.len() as f32
 }
+
+// ---------------------------------------------------------------- shapes
+
+/// A width or height range a soft macro may take.
+///
+/// ⚠️ **32-bit, like upstream's `Interval`.** The shaping stage's own `Interval` is 64-bit because
+/// it carries database units around; inside the annealer the arithmetic is `int`, and the two must
+/// not be conflated.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Interval {
+    pub min: i32,
+    pub max: i32,
+}
+
+/// The shape curve a soft macro may be resized along.
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub struct ShapeCurve {
+    pub width_intervals: Vec<Interval>,
+    pub height_intervals: Vec<Interval>,
+}
+
+/// Upstream `SoftMacro::setShapes(TilingList, force)` — the **hard macro cluster** form.
+///
+/// 🔑 **Every interval is DEGENERATE**: a hard cluster's tilings are exact shapes, so `min` and
+/// `max` are the same number and a "random" resize along one of them can only return that shape.
+/// The randomness picks WHICH tiling, not a size within it.
+///
+/// ⚠️ The intervals are deliberately left UNSORTED — upstream says so in a comment. The order is
+/// the tiling order, and the index the resize draws is an index into that order.
+pub fn shape_curve_from_tilings(tilings: &[(i32, i32)]) -> (ShapeCurve, i32, i32, i64) {
+    let mut curve = ShapeCurve::default();
+    for &(width, height) in tilings {
+        curve.width_intervals.push(Interval { min: width, max: width });
+        curve.height_intervals.push(Interval { min: height, max: height });
+    }
+    let (width, height) = tilings.first().copied().unwrap_or((0, 0));
+    let area = width as i64 * height as i64;
+    (curve, width, height, area)
+}
+
+/// Upstream `SoftMacro::setShapes(IntervalList, area)` — the **mixed cluster** form.
+///
+/// 🔑 **A piecewise shape curve at constant area.** The widths are merged into disjoint ranges and
+/// each gets the height range that keeps the area: a wider macro is a shorter one.
+///
+/// ⚠️ **The merge is `min > back().max`, so intervals that merely TOUCH are merged.** Two
+/// degenerate intervals at the same width collapse to one, which is why a cluster with repeated
+/// tiling widths offers fewer choices than it has tilings.
+///
+/// ⚠️ **The height bounds are integer divisions, and they cross over**: the minimum height comes
+/// from the maximum width and the maximum height from the minimum width. Truncation means the
+/// recovered area is generally a little under the real one.
+///
+/// ⛔ Returns `None` when upstream would return leaving the curve EMPTY — an empty interval list
+/// or a non-positive area. An empty curve makes `resize_randomly` consume no randomness at all,
+/// so the distinction is not cosmetic.
+pub fn shape_curve_from_intervals(
+    width_intervals: &[Interval],
+    area: i64,
+) -> Option<(ShapeCurve, i32, i32, i64)> {
+    if width_intervals.is_empty() || area <= 0 {
+        return None;
+    }
+    let mut sorted = width_intervals.to_vec();
+    // ⚠️ `isMinWidthSmaller` compares the MINIMUM only, and `std::ranges::sort` is not stable.
+    // Two intervals sharing a minimum have no defined order upstream either.
+    sorted.sort_by_key(|i| i.min);
+
+    let mut merged: Vec<Interval> = Vec::new();
+    for interval in sorted {
+        match merged.last_mut() {
+            Some(back) if interval.min <= back.max => {
+                if interval.max > back.max {
+                    back.max = interval.max;
+                }
+            }
+            _ => merged.push(interval),
+        }
+    }
+
+    let heights: Vec<Interval> = merged
+        .iter()
+        .map(|w| Interval {
+            min: (area / w.max as i64) as i32,
+            max: (area / w.min as i64) as i32,
+        })
+        .collect();
+
+    let width = merged[0].min;
+    let height = heights[0].max;
+    let curve = ShapeCurve { width_intervals: merged, height_intervals: heights };
+    Some((curve, width, height, area))
+}
+
+/// Upstream `SoftMacro::resizeRandomly`: pick an interval, pick a width inside it, and recover the
+/// height from the area.
+///
+/// ⛔ **An empty curve consumes NO randomness.** Upstream returns before either draw, so a macro
+/// with no shapes leaves the generator untouched — drawing anyway would desynchronise every later
+/// step of the search.
+///
+/// ⚠️ **Two draws when it does run**: an integer for the interval, then a float for the position
+/// inside it. That count is the load-bearing part; the values only matter afterwards.
+///
+/// ⚠️ **The area is recomputed from the interval's `min` width and `max` height, NOT from the
+/// width just chosen.** So a resize that lands in the middle of a range still uses the area of the
+/// range's tallest, narrowest corner, and the height that comes back does not multiply out to the
+/// chosen width times anything in particular.
+///
+/// ⚠️ **`min + draw * (max - min)` is computed in `f32` and TRUNCATED toward zero** on assignment
+/// to an `int`. On a degenerate interval `max - min` is zero, so the width is exactly `min`.
+pub fn resize_randomly(rng: &mut Mt19937, curve: &ShapeCurve, macro_: &mut SoftMacro) -> i64 {
+    if curve.width_intervals.is_empty() {
+        return macro_.width as i64 * macro_.height as i64;
+    }
+    let index = uniform_int(rng, curve.width_intervals.len() as u32) as usize;
+    let width_interval = curve.width_intervals[index];
+    let draw = canonical_f32(rng);
+
+    let span = (width_interval.max - width_interval.min) as f32;
+    macro_.width = (width_interval.min as f32 + draw * span) as i32;
+
+    let area = width_interval.min as i64 * curve.height_intervals[index].max as i64;
+    // ⛔ Upstream divides without guarding. A zero width can only arise from a zero-width
+    // interval, which `generateTilingsForMacroCluster` never produces.
+    macro_.height = if macro_.width != 0 { (area / macro_.width as i64) as i32 } else { 0 };
+    area
+}
+
+/// Upstream `initSequencePair`: both sequences start as the identity.
+///
+/// 🔑 **The search therefore starts from a single ROW.** Same order in both sequences means every
+/// macro is left of the next, so the first packing is as wide as the sum of the widths — usually
+/// far outside the outline, which is what gives the outline penalty something to work against.
+///
+/// ℹ️ No randomness at all. The shaping caller never supplies an initial pair.
+pub fn init_sequence_pair(macro_count: usize) -> SequencePair {
+    SequencePair { pos: (0..macro_count).collect(), neg: (0..macro_count).collect() }
+}

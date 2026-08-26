@@ -470,3 +470,150 @@ fn the_average_accumulates_in_single_precision() {
 fn an_empty_average_is_zero() {
     assert_eq!(average(&[]), 0.0);
 }
+
+// ---------------------------------------------------------------- shapes and resizing
+
+use vyges_mpl::anneal::{
+    init_sequence_pair, resize_randomly, shape_curve_from_intervals, shape_curve_from_tilings,
+    Interval, ShapeCurve,
+};
+
+/// 🔑 **The search starts from a single ROW.** Identical sequences mean every macro is left of the
+/// next, so the opening packing is as wide as the sum of the widths — normally far outside the
+/// outline, which is what gives the outline penalty something to work against.
+#[test]
+fn the_initial_sequence_pair_is_the_identity_and_packs_as_a_row() {
+    let sp = init_sequence_pair(3);
+    assert_eq!(sp.pos, vec![0, 1, 2]);
+    assert_eq!(sp.neg, vec![0, 1, 2]);
+
+    let mut macros = [m(10, 7), m(20, 3), m(30, 5)];
+    let (w, h) = pack_floorplan(&mut macros, &sp);
+    assert_eq!((w, h), (60, 7), "one row: widths add, height is the tallest");
+}
+
+/// ⚠️ A hard cluster's intervals are DEGENERATE — the resize picks a tiling, not a size.
+#[test]
+fn a_hard_clusters_intervals_are_degenerate() {
+    let (curve, width, height, area) = shape_curve_from_tilings(&[(200, 100), (100, 200)]);
+    assert_eq!(curve.width_intervals, vec![Interval { min: 200, max: 200 }, Interval { min: 100, max: 100 }]);
+    assert_eq!(curve.height_intervals, vec![Interval { min: 100, max: 100 }, Interval { min: 200, max: 200 }]);
+    assert_eq!((width, height, area), (200, 100, 20_000), "it starts at the first tiling");
+}
+
+/// ⚠️ **Unsorted, on purpose.** The order is the tiling order, and the resize draws an index into
+/// it — sorting would silently change which tiling a given draw selects.
+#[test]
+fn hard_cluster_intervals_keep_the_tiling_order() {
+    let (curve, ..) = shape_curve_from_tilings(&[(300, 10), (100, 30), (200, 20)]);
+    let mins: Vec<i32> = curve.width_intervals.iter().map(|i| i.min).collect();
+    assert_eq!(mins, vec![300, 100, 200], "not sorted");
+}
+
+/// ⚠️ **Touching intervals merge.** The test is `min <= back.max`, so two tilings of the same width
+/// collapse into one choice — a cluster then offers fewer shapes than it has tilings.
+#[test]
+fn intervals_that_touch_are_merged() {
+    let intervals = [
+        Interval { min: 100, max: 100 },
+        Interval { min: 100, max: 100 },
+        Interval { min: 200, max: 200 },
+    ];
+    let (curve, ..) = shape_curve_from_intervals(&intervals, 20_000).expect("shapeable");
+    assert_eq!(
+        curve.width_intervals,
+        vec![Interval { min: 100, max: 100 }, Interval { min: 200, max: 200 }],
+        "three tilings, two choices"
+    );
+}
+
+/// ⚠️ **The height bounds CROSS OVER**: minimum height from the maximum width, maximum height from
+/// the minimum width, because the area is held constant.
+#[test]
+fn the_height_range_is_inverted_relative_to_the_width_range() {
+    let intervals = [Interval { min: 100, max: 400 }];
+    let (curve, width, height, area) =
+        shape_curve_from_intervals(&intervals, 40_000).expect("shapeable");
+    assert_eq!(curve.height_intervals, vec![Interval { min: 100, max: 400 }]);
+    assert_eq!((width, height, area), (100, 400, 40_000), "it starts narrowest and tallest");
+}
+
+/// ⛔ An empty interval list or a non-positive area leaves the curve empty — which the resize
+/// treats as "consume nothing", so this is not cosmetic.
+#[test]
+fn an_unshapeable_mixed_cluster_gets_no_curve() {
+    assert!(shape_curve_from_intervals(&[], 1000).is_none());
+    assert!(shape_curve_from_intervals(&[Interval { min: 1, max: 2 }], 0).is_none());
+    assert!(shape_curve_from_intervals(&[Interval { min: 1, max: 2 }], -5).is_none());
+}
+
+/// ⛔ **An empty curve consumes NO randomness.** Anything else desynchronises the whole search.
+#[test]
+fn resizing_an_empty_curve_draws_nothing() {
+    let mut g = Mt19937::new(4);
+    let mut macro_ = m(10, 20);
+    resize_randomly(&mut g, &ShapeCurve::default(), &mut macro_);
+    assert_eq!((macro_.width, macro_.height), (10, 20), "unchanged");
+    let mut fresh = Mt19937::new(4);
+    assert_eq!(g.next(), fresh.next(), "and the generator did not advance");
+}
+
+/// ⚠️ **Exactly two draws** — an integer for the interval, a float for the position in it.
+#[test]
+fn a_resize_consumes_exactly_two_generator_words() {
+    let (curve, ..) = shape_curve_from_tilings(&[(200, 100), (100, 200)]);
+    let mut g = Mt19937::new(4);
+    let mut macro_ = m(10, 20);
+    resize_randomly(&mut g, &curve, &mut macro_);
+
+    let mut replay = Mt19937::new(4);
+    let _ = uniform_int(&mut replay, 2);
+    let _ = vyges_mpl::rng::canonical_f32(&mut replay);
+    assert_eq!(g.next(), replay.next(), "one integer draw then one float draw");
+}
+
+/// On a degenerate interval the span is zero, so the width is exactly the tiling's and the height
+/// comes back exactly too.
+#[test]
+fn a_degenerate_interval_resizes_to_exactly_that_tiling() {
+    let (curve, ..) = shape_curve_from_tilings(&[(200, 100), (100, 200)]);
+    for seed in 0..40u32 {
+        let mut g = Mt19937::new(seed);
+        let mut macro_ = m(1, 1);
+        resize_randomly(&mut g, &curve, &mut macro_);
+        assert!(
+            (macro_.width, macro_.height) == (200, 100) || (macro_.width, macro_.height) == (100, 200),
+            "seed {seed} gave {:?}",
+            (macro_.width, macro_.height)
+        );
+    }
+}
+
+/// ⛔ **The area is taken from the interval's `min` width and `max` height, not from the width just
+/// chosen.** On a wide range that makes the returned height inconsistent with the chosen width,
+/// which is the reference's behaviour and not an accident of rounding.
+#[test]
+fn the_recovered_area_ignores_the_chosen_width() {
+    let intervals = [Interval { min: 100, max: 400 }];
+    let (curve, ..) = shape_curve_from_intervals(&intervals, 40_000).expect("shapeable");
+
+    // Find a seed whose float draw lands away from the ends, so the chosen width is interior.
+    let mut interior = None;
+    for seed in 0..200u32 {
+        let mut g = Mt19937::new(seed);
+        let mut macro_ = m(1, 1);
+        resize_randomly(&mut g, &curve, &mut macro_);
+        if macro_.width > 150 && macro_.width < 350 {
+            interior = Some((macro_.width, macro_.height));
+            break;
+        }
+    }
+    let (width, height) = interior.expect("no interior width found; the fixture proves nothing");
+    // area used = min_width * max_height = 100 * 400 = 40000, so height = 40000 / width.
+    assert_eq!(height, 40_000 / width);
+    assert_ne!(
+        width as i64 * height as i64,
+        40_000,
+        "the chosen width times the recovered height is NOT the cluster's area"
+    );
+}
