@@ -202,3 +202,121 @@ fn no_valid_run_is_none() {
     assert_eq!(best_macro_run(&[(false, 1.0), (false, 2.0)]), None);
     assert_eq!(best_macro_run(&[]), None);
 }
+
+// ---------------------------------------------------------------- fences, guides, and the grid
+
+use vyges_mpl::placement::{array_sequence_pair, clip_region_to_outline, macro_fences_and_guides};
+
+const OUT: (i32, i32, i32, i32) = (1000, 1000, 3000, 3000);
+
+/// 🔑 A fence overlapping the outline is clipped to it and rebased onto it.
+#[test]
+fn a_fence_is_clipped_and_rebased() {
+    assert_eq!(clip_region_to_outline((0, 0, 2000, 2000), OUT), (0, 0, 1000, 1000));
+    assert_eq!(clip_region_to_outline((1500, 1500, 2500, 2500), OUT), (500, 500, 1500, 1500));
+}
+
+/// ⛔ **A fence that MISSES the outline becomes a degenerate box at a NEGATIVE position** — the
+/// reference's `intersection` writes a zero rect on a miss, and the rebase then shifts it by the
+/// outline's origin. It is not dropped, unlike on the cluster path.
+#[test]
+fn a_missing_fence_becomes_a_degenerate_box_at_a_negative_position() {
+    assert_eq!(clip_region_to_outline((0, 0, 500, 500), OUT), (-1000, -1000, -1000, -1000));
+}
+
+/// ⚠️ **Clipping is INCLUSIVE**, so a fence touching the outline along a line survives as a
+/// zero-width box at a real position — a different thing from the miss above.
+#[test]
+fn a_touching_fence_survives_as_a_zero_width_box() {
+    // Its right edge is exactly the outline's left edge.
+    assert_eq!(clip_region_to_outline((0, 1500, 1000, 2500), OUT), (0, 500, 0, 1500));
+}
+
+/// ⛔ **There is NO area test**, unlike the cluster path — every macro that HAS a fence gets an
+/// entry, degenerate or not, and every entry counts towards the fence term's divisor.
+#[test]
+fn every_macro_with_a_fence_gets_an_entry() {
+    let fence_of = |i: usize| match i {
+        0 => Some((1500, 1500, 2500, 2500)),
+        2 => Some((0, 0, 500, 500)), // misses the outline entirely
+        _ => None,
+    };
+    let guide_of = |_: usize| None;
+    let (fences, guides) = macro_fences_and_guides(&fence_of, &guide_of, 4, OUT);
+
+    assert_eq!(fences.len(), 2, "the missing one is recorded too, not dropped");
+    assert_eq!(fences[0], (0usize, (500, 500, 1500, 1500)));
+    assert_eq!(fences[1], (2usize, (-1000, -1000, -1000, -1000)));
+    assert!(guides.is_empty());
+}
+
+/// ⚠️ Fences and guides are looked up independently and kept separate.
+#[test]
+fn fences_and_guides_are_independent() {
+    let fence_of = |i: usize| (i == 1).then_some((1500, 1500, 2500, 2500));
+    let guide_of = |i: usize| (i == 3).then_some((1000, 1000, 2000, 2000));
+    let (fences, guides) = macro_fences_and_guides(&fence_of, &guide_of, 4, OUT);
+    assert_eq!(fences, vec![(1usize, (500, 500, 1500, 1500))]);
+    assert_eq!(guides, vec![(3usize, (0, 0, 1000, 1000))]);
+}
+
+// ---------------------------------------------------------------- the array grid
+
+/// 🔑 **The positive sequence is `0..n`; the negative walks the grid column by column, downwards
+/// within each column.** That pairing is what encodes "laid out as a grid".
+#[test]
+fn the_grid_is_encoded_column_by_column_downwards() {
+    // A 2 x 2 array of 100 x 100 macros in a 200 x 200 cluster.
+    let got = array_sequence_pair(4, 200, 200, 100, 100);
+    assert_eq!(got.pos, vec![0, 1, 2, 3]);
+    // i=1: (2*1)-1=1, (2*1)-2=0.  i=2: (2*2)-1=3, (2*2)-2=2.
+    assert_eq!(got.neg, vec![1, 0, 3, 2]);
+    assert!(!got.has_empty_space);
+}
+
+/// ⛔ **`std::round` is applied to an INTEGER division that has already truncated.** A cluster 2.9
+/// macros wide gives TWO columns, not three — reading it as "the ratio, rounded" gives a different
+/// grid for every cluster whose width is not an exact multiple.
+#[test]
+fn the_column_count_truncates_rather_than_rounding() {
+    // 290 / 100 = 2 by integer division. Rounding 2.9 would give 3.
+    let got = array_sequence_pair(6, 290, 100, 100, 100);
+    // One row, two columns: i=1 -> 0, i=2 -> 1.
+    assert_eq!(got.neg, vec![0, 1], "two columns, not three");
+    assert!(!got.has_empty_space, "and no gap is reported, because the third column is not tried");
+}
+
+/// ⚠️ **A grid position past the last macro sets `has_empty_space`**, and that flag is what makes
+/// the caller disallow invalid states.
+#[test]
+fn a_gap_in_the_grid_is_reported() {
+    // A 2 x 2 grid holding only three macros.
+    let got = array_sequence_pair(3, 200, 200, 100, 100);
+    assert!(got.has_empty_space);
+    assert_eq!(got.neg, vec![1, 0, 2], "the missing position is skipped, not padded");
+}
+
+/// ⛔ **The flag reports a SLOT WITH NO MACRO, never a MACRO WITH NO SLOT.** A grid too small for
+/// the macros it holds reports no empty space at all — and leaves a negative sequence SHORTER than
+/// the positive one, so the two are not permutations of each other.
+///
+/// ⚠️ Reading `has_empty_space` as "the grid and the macros disagree" gets this exactly backwards
+/// on the half that matters: an undersized grid is the case that produces a malformed sequence
+/// pair, and it is the case the flag stays silent about.
+#[test]
+fn an_undersized_grid_reports_no_empty_space_and_a_short_sequence() {
+    let got = array_sequence_pair(4, 100, 100, 100, 100);
+    assert_eq!(got.pos.len(), 4);
+    assert_eq!(got.neg, vec![0], "a one-by-one grid holding four macros");
+    assert!(!got.has_empty_space, "silent, though three macros have nowhere to go");
+}
+
+/// ℹ️ A cluster smaller than one macro yields no grid at all, and reports no gap — the loops never
+/// run.
+#[test]
+fn a_cluster_narrower_than_one_macro_yields_no_grid() {
+    let got = array_sequence_pair(4, 50, 50, 100, 100);
+    assert!(got.neg.is_empty());
+    assert!(!got.has_empty_space);
+    assert_eq!(got.pos, vec![0, 1, 2, 3], "the positive sequence is still every macro");
+}

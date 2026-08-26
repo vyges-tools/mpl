@@ -407,6 +407,86 @@ pub const MUTATIONS: &[Mutation] = &[
     let mut deferred_io: Vec<&AssemblyChild> = Vec::new();"#,
         want: r#"a_blockage_has_no_name"#,
     },
+    // ---------------------------------------------------------------- per-macro-cluster inputs
+    Mutation {
+        name: r#"missing-fence-dropped-instead-of-degenerate"#,
+        file: r#"src/placement.rs"#,
+        find: r#"    let clipped = if rects_intersect(region, outline) {"#,
+        replace: r#"    let clipped = if true {"#,
+        want: r#"a_missing_fence_becomes_a_degenerate_box_at_a_negative_position"#,
+    },
+    Mutation {
+        name: r#"fence-clipping-exclusive"#,
+        file: r#"src/placement.rs"#,
+        find: r#"    b.2 >= a.0 && b.0 <= a.2 && b.3 >= a.1 && b.1 <= a.3"#,
+        replace: r#"    b.2 > a.0 && b.0 < a.2 && b.3 > a.1 && b.1 < a.3"#,
+        want: r#"a_touching_fence_survives_as_a_zero_width_box"#,
+    },
+    Mutation {
+        name: r#"fence-not-rebased-in-macro-placement"#,
+        file: r#"src/placement.rs"#,
+        find: r#"    (clipped.0 - outline.0, clipped.1 - outline.1, clipped.2 - outline.0, clipped.3 - outline.1)
+}"#,
+        replace: r#"    clipped
+}"#,
+        want: r#"a_fence_is_clipped_and_rebased"#,
+    },
+    Mutation {
+        name: r#"degenerate-fence-skipped-by-area"#,
+        file: r#"src/placement.rs"#,
+        find: r#"        if let Some(fence) = fence_of(i) {
+            fences.push((i, clip_region_to_outline(fence, outline)));
+        }"#,
+        replace: r#"        if let Some(fence) = fence_of(i) {
+            let c = clip_region_to_outline(fence, outline);
+            if (c.2 - c.0) > 0 && (c.3 - c.1) > 0 {
+                fences.push((i, c));
+            }
+        }"#,
+        want: r#"every_macro_with_a_fence_gets_an_entry"#,
+    },
+    Mutation {
+        name: r#"array-columns-rounded-not-truncated"#,
+        file: r#"src/placement.rs"#,
+        find: r#"    let columns = if macro_width != 0 { cluster_width / macro_width } else { 0 };"#,
+        replace: r#"    let columns = if macro_width != 0 {
+        (cluster_width as f64 / macro_width as f64).round() as i32
+    } else {
+        0
+    };"#,
+        want: r#"the_column_count_truncates_rather_than_rounding"#,
+    },
+    Mutation {
+        name: r#"array-grid-walked-row-major"#,
+        file: r#"src/placement.rs"#,
+        find: r#"            let macro_id = (rows * i) - j;"#,
+        replace: r#"            let macro_id = (columns * j) - i;"#,
+        want: r#"the_grid_is_encoded_column_by_column_downwards"#,
+    },
+    Mutation {
+        name: r#"array-gap-not-reported"#,
+        file: r#"src/placement.rs"#,
+        find: r#"            } else {
+                out.has_empty_space = true;
+            }"#,
+        replace: r#"            } else {
+            }"#,
+        want: r#"a_gap_in_the_grid_is_reported"#,
+    },
+    Mutation {
+        name: r#"array-undersized-grid-reports-a-gap"#,
+        file: r#"src/placement.rs"#,
+        find: r#"    let mut out = ArraySequencePair { pos: (0..macro_count).collect(), ..Default::default() };"#,
+        replace: r#"    let mut out = ArraySequencePair { pos: (0..macro_count).collect(), ..Default::default() };
+    if macro_width != 0 && macro_height != 0 {
+        let c = (cluster_width / macro_width) as usize;
+        let r = (cluster_height / macro_height) as usize;
+        if c * r < macro_count {
+            out.has_empty_space = true;
+        }
+    }"#,
+        want: r#"an_undersized_grid_reports_no_empty_space_and_a_short_sequence"#,
+    },
     // ---------------------------------------------------------------- macro-placement runs
     Mutation {
         name: r#"exchange-not-scaled-by-master-sharing"#,

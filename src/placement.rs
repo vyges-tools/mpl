@@ -2437,3 +2437,127 @@ pub fn best_macro_run(costs: &[(bool, f32)]) -> Option<usize> {
     }
     best.map(|(id, _)| id)
 }
+
+// ---------------------------------------------------------------- per-macro-cluster inputs
+
+/// Upstream `Rect::intersects`: ⚠️ **inclusive on every edge**, so two rectangles that merely touch
+/// along a line intersect, and the intersection is a degenerate rect rather than nothing.
+fn rects_intersect(a: (i32, i32, i32, i32), b: (i32, i32, i32, i32)) -> bool {
+    b.2 >= a.0 && b.0 <= a.2 && b.3 >= a.1 && b.1 <= a.3
+}
+
+/// Upstream `computeFencesAndGuides`: one macro's fence or guide, clipped to the outline and
+/// rebased onto it.
+///
+/// ⛔ **There is NO area test here, and that is the difference from the cluster path.**
+/// `placeChildren` records a fence only when the clipped rect has positive area; this records it
+/// unconditionally. A fence that misses the outline entirely becomes upstream's zero rect and is
+/// then shifted to `(-xMin, -yMin)` — a degenerate box at a NEGATIVE position.
+///
+/// 🔑 **That degenerate entry still counts.** `calFencePenalty` skips it, because a zero-extent
+/// fence cannot fit the macro — but it skips it AFTER the divisor is taken, so it dilutes the mean
+/// for every other fence. A macro whose fence misses the outline silently weakens the fence term
+/// for the whole cluster.
+///
+/// ⚠️ **Clipping is INCLUSIVE**: a fence touching the outline along a line survives as a zero-width
+/// box at a real position, which is a different thing from the miss case above.
+pub fn clip_region_to_outline(
+    region: (i32, i32, i32, i32),
+    outline: (i32, i32, i32, i32),
+) -> (i32, i32, i32, i32) {
+    let clipped = if rects_intersect(region, outline) {
+        (
+            region.0.max(outline.0),
+            region.1.max(outline.1),
+            region.2.min(outline.2),
+            region.3.min(outline.3),
+        )
+    } else {
+        // ⛔ Upstream's `intersection` writes a ZERO rect on a miss, not the empty set.
+        (0, 0, 0, 0)
+    };
+    (clipped.0 - outline.0, clipped.1 - outline.1, clipped.2 - outline.0, clipped.3 - outline.1)
+}
+
+/// Upstream `computeFencesAndGuides` over a macro cluster's hard macros.
+///
+/// ⚠️ **Keyed by the macro's INDEX in the cluster's hard-macro list**, which is the same as its id
+/// in the annealer because `createTempMacroClusters` builds the SA macros from that list in order.
+///
+/// ⚠️ **Fences are looked up by macro NAME and guides by database instance** — two different keys
+/// for the two maps, which is why they are separate arguments here.
+pub fn macro_fences_and_guides(
+    fence_of: &dyn Fn(usize) -> Option<(i32, i32, i32, i32)>,
+    guide_of: &dyn Fn(usize) -> Option<(i32, i32, i32, i32)>,
+    macro_count: usize,
+    outline: (i32, i32, i32, i32),
+) -> (Vec<(usize, (i32, i32, i32, i32))>, Vec<(usize, (i32, i32, i32, i32))>) {
+    let mut fences = Vec::new();
+    let mut guides = Vec::new();
+    for i in 0..macro_count {
+        if let Some(fence) = fence_of(i) {
+            fences.push((i, clip_region_to_outline(fence, outline)));
+        }
+        if let Some(guide) = guide_of(i) {
+            guides.push((i, clip_region_to_outline(guide, outline)));
+        }
+    }
+    (fences, guides)
+}
+
+/// The starting arrangement for a macro ARRAY, and whether the grid has gaps.
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub struct ArraySequencePair {
+    pub pos: Vec<usize>,
+    pub neg: Vec<usize>,
+    /// ⚠️ Upstream's out-parameter, which is only ever set TRUE — the caller initialises it.
+    pub has_empty_space: bool,
+}
+
+/// Upstream `computeArraySequencePair`: the sequence pair that encodes a regular grid.
+///
+/// 🔑 **The positive sequence is just `0..n`, and the negative one walks the grid COLUMN BY
+/// COLUMN, downwards within each column.** That pairing is what a sequence pair means by "these
+/// macros are laid out as a grid" — it is a starting point the annealer then permutes, not a
+/// constraint.
+///
+/// ⛔ **`std::round` on an INTEGER division, which has already truncated.** Both `getWidth()`s are
+/// `int`, so `cluster_width / macro_width` is integer division and the rounding is decorative: a
+/// cluster 2.9 macros wide gives **2** columns, not 3. Reading it as "the ratio, rounded" gives a
+/// different grid for every cluster whose width is not an exact multiple.
+///
+/// ⚠️ **A grid position past the last macro sets `has_empty_space`** rather than being skipped
+/// quietly, and that flag is what makes the caller disallow invalid states.
+///
+/// ⛔ **The flag reports a SLOT WITH NO MACRO, never a MACRO WITH NO SLOT.** A grid too SMALL for
+/// the macros it holds reports no empty space at all, and leaves a negative sequence shorter than
+/// the positive one — so the two are not permutations of each other, which every consumer of a
+/// sequence pair assumes they are.
+/// ℹ️ Not known to be reachable: a macro array's cluster dimensions come from its own tilings, so
+/// the grid should always be large enough. Written down because the flag's name suggests it covers
+/// both directions and it covers only one.
+pub fn array_sequence_pair(
+    macro_count: usize,
+    cluster_width: i32,
+    cluster_height: i32,
+    macro_width: i32,
+    macro_height: i32,
+) -> ArraySequencePair {
+    let mut out = ArraySequencePair { pos: (0..macro_count).collect(), ..Default::default() };
+
+    // ⛔ Integer division; the `round` upstream applies to an already-integral value.
+    let columns = if macro_width != 0 { cluster_width / macro_width } else { 0 };
+    let rows = if macro_height != 0 { cluster_height / macro_height } else { 0 };
+
+    for i in 1..=columns {
+        for j in 1..=rows {
+            let macro_id = (rows * i) - j;
+            if (macro_id as usize) < macro_count {
+                out.neg.push(macro_id as usize);
+            } else {
+                out.has_empty_space = true;
+            }
+        }
+    }
+    out
+}
