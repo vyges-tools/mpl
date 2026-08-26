@@ -1426,3 +1426,233 @@ pub fn fill_dead_space(macros: &mut [DeadSpaceMacro], outline: (i32, i32)) {
         }
     }
 }
+
+// ---------------------------------------------------------------- the post-anneal enhancements
+
+/// What the two post-anneal enhancements need from the annealer they run on.
+///
+/// ⚠️ **A structural divergence, class E.** Upstream reads these straight off `SACoreSoftMacro`'s
+/// members; here they are a seam so the two enhancements can be transcribed and pinned before the
+/// placement core exists. Nothing about the control flow below differs — but the coupling the
+/// members hid is now spelled out, and [`Enhancements::notch_thresholds`] is the one that matters:
+/// the alignment step reads thresholds that [`notch_penalty`] silently rewrote.
+pub trait Enhancements {
+    fn macros(&self) -> &[crate::anneal::SoftMacro];
+    fn macros_mut(&mut self) -> &mut [crate::anneal::SoftMacro];
+    /// The sequence pair's positive order — ⚠️ **not every macro.** The IO clusters and fixed
+    /// terminals appended after the clusters are outside it, so nothing below ever moves them.
+    fn order(&self) -> &[usize];
+    fn outline(&self) -> (i32, i32);
+    /// The current packing's `(width, height)`.
+    fn packing(&self) -> (i32, i32);
+    fn outline_penalty(&self) -> f32;
+    fn is_valid(&self) -> bool;
+    /// ⛔ **The thresholds `calNotchPenalty` leaves behind**, which is not the same as the ones the
+    /// constructor was given — see [`notch_penalty`]. A run with the notch term switched off
+    /// reaches the alignment step with the constructor's values still in place.
+    fn notch_thresholds(&self) -> (i32, i32);
+    fn cal_penalty(&mut self);
+    fn norm_cost(&self) -> f32;
+}
+
+/// Upstream `getClustersLocations`.
+///
+/// ⚠️ **Indexed by MACRO ID, not by position in the sequence.** The sequence is a permutation of
+/// `0..n`, so the two are the same set of indices — but writing it positionally would scramble
+/// every location the moment the annealer swapped anything.
+pub fn cluster_locations(macros: &[crate::anneal::SoftMacro], order: &[usize]) -> Vec<(i32, i32)> {
+    let mut locations = vec![(0, 0); order.len()];
+    for &id in order {
+        locations[id] = (macros[id].x, macros[id].y);
+    }
+    locations
+}
+
+/// A `setClustersLocations` call whose list does not match the sequence pair — upstream MPL-52.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ClusterCountMismatch;
+
+/// Upstream `setClustersLocations`.
+pub fn set_cluster_locations(
+    macros: &mut [crate::anneal::SoftMacro],
+    order: &[usize],
+    locations: &[(i32, i32)],
+) -> Result<(), ClusterCountMismatch> {
+    if locations.len() != order.len() {
+        return Err(ClusterCountMismatch);
+    }
+    for &id in order {
+        macros[id].x = locations[id].0;
+        macros[id].y = locations[id].1;
+    }
+    Ok(())
+}
+
+/// Upstream `moveFloorplan`: shift every macro in the sequence pair by one offset.
+///
+/// ⛔ **A FIXED macro moves too.** There is no `isFixed` test here, and a blockage's soft macro is
+/// both fixed and inside the sequence pair — so centralizing a floorplan displaces the proxies of
+/// the die's hard blockages along with everything else. The packer would have pinned them; this
+/// runs after the packer and nothing puts them back.
+pub fn move_floorplan(
+    macros: &mut [crate::anneal::SoftMacro],
+    order: &[usize],
+    offset: (i32, i32),
+) {
+    for &id in order {
+        macros[id].x += offset.0;
+        macros[id].y += offset.1;
+    }
+}
+
+/// Upstream `attemptCentralization`'s offset: half the slack on each axis.
+///
+/// ⚠️ **Integer division, truncating** — an odd amount of slack leaves the extra unit at the top
+/// and right.
+pub fn centralization_offset(outline: (i32, i32), packing: (i32, i32)) -> (i32, i32) {
+    ((outline.0 - packing.0) / 2, (outline.1 - packing.1) / 2)
+}
+
+/// Upstream `SACoreSoftMacro::attemptCentralization`. Returns whether it was **reverted**.
+///
+/// 🔑 **The return value is the gate on the next enhancement.** Upstream records it in
+/// `centralization_was_reverted_` and runs [`attempt_macro_cluster_alignment`] only when it is
+/// set — so alignment is what happens *because* centralizing made the cost worse, never as a
+/// second improvement on top of a centralization that stuck.
+///
+/// ⛔ **An early return is NOT a revert.** A floorplan that overflows its outline returns without
+/// setting the flag, so it gets neither enhancement.
+///
+/// ⚠️ **`> pre_cost`, strictly** — an exactly equal cost keeps the centralized floorplan.
+///
+/// ⚠️ **Forcing skips the revert but still runs the second `calPenalty`-free path**: with
+/// `force` set the new penalties stand whatever they cost.
+pub fn attempt_centralization<S: Enhancements + ?Sized>(
+    state: &mut S,
+    pre_cost: f32,
+    force: bool,
+) -> bool {
+    if state.outline_penalty() > 0.0 {
+        return false;
+    }
+
+    // Cached rather than recomputed: reverting by re-packing would re-derive the coordinates
+    // through the dead-space grid's floating point, and upstream says so at the site.
+    let saved = cluster_locations(state.macros(), state.order());
+
+    let offset = centralization_offset(state.outline(), state.packing());
+    let order = state.order().to_vec();
+    move_floorplan(state.macros_mut(), &order, offset);
+    state.cal_penalty();
+
+    if state.norm_cost() > pre_cost && !force {
+        let _ = set_cluster_locations(state.macros_mut(), &order, &saved);
+        state.cal_penalty();
+        return true;
+    }
+    false
+}
+
+/// Upstream `attemptMacroClusterAlignment`'s two thresholds.
+///
+/// ⛔ **Crossed relative to their names, exactly as in [`notch_penalty`].** The `h` threshold is
+/// the one an X coordinate is tested against, and it is floored by a tenth of the outline's
+/// HEIGHT; the `v` threshold governs Y and is floored by a tenth of the WIDTH.
+///
+/// 🔑 **Also floored by the smallest macro cluster on the board** — its width for `h`, its height
+/// for `v`. A design with one thin macro cluster therefore aligns nothing else either.
+///
+/// ⚠️ **The starting values come from the notch thresholds**, which [`notch_penalty`] overwrites
+/// from the outline whenever it runs. With the notch term dark they are still the constructor's,
+/// which is `10` database units — small enough that nothing aligns at all.
+pub fn alignment_thresholds<'a>(
+    macro_clusters: impl Iterator<Item = &'a crate::anneal::SoftMacro>,
+    outline: (i32, i32),
+    notch_thresholds: (i32, i32),
+) -> (i32, i32) {
+    let (mut h, mut v) = notch_thresholds;
+    for m in macro_clusters {
+        h = h.min(m.width);
+        v = v.min(m.height);
+    }
+    const RATIO: i32 = 10;
+    (h.min(outline.1 / RATIO), v.min(outline.0 / RATIO))
+}
+
+/// The snap itself: every macro cluster within a threshold of an edge is pushed onto it.
+///
+/// ⚠️ **`else if`, so the left test wins over the right one.** A macro cluster wider than the
+/// outline satisfies both and is snapped LEFT.
+///
+/// ⚠️ **Strictly less than the threshold**, on both the near coordinate and the far gap.
+pub fn align_macro_clusters(
+    macros: &mut [crate::anneal::SoftMacro],
+    order: &[usize],
+    outline: (i32, i32),
+    thresholds: (i32, i32),
+) {
+    let (h_th, v_th) = thresholds;
+    for &id in order {
+        if !macros[id].is_macro_cluster {
+            continue;
+        }
+        let (lx, ly) = (macros[id].x, macros[id].y);
+        let (ux, uy) = (lx + macros[id].width, ly + macros[id].height);
+        // ⛔ X is governed by the `h` threshold, Y by the `v` one. See `alignment_thresholds`.
+        if lx < h_th {
+            macros[id].x = 0;
+        } else if outline.0 - ux < h_th {
+            macros[id].x = outline.0 - macros[id].width;
+        }
+        if ly < v_th {
+            macros[id].y = 0;
+        } else if outline.1 - uy < v_th {
+            macros[id].y = outline.1 - macros[id].height;
+        }
+    }
+}
+
+/// Upstream `SACoreSoftMacro::attemptMacroClusterAlignment`. Returns whether it was **reverted**.
+///
+/// ⛔ **No force override here**, unlike centralization: an alignment that costs more is always
+/// undone.
+///
+/// ⚠️ **An invalid floorplan is left alone** — this runs only on a solution worth polishing.
+pub fn attempt_macro_cluster_alignment<S: Enhancements + ?Sized>(state: &mut S) -> bool {
+    if !state.is_valid() {
+        return false;
+    }
+
+    let pre_cost = state.norm_cost();
+    let order = state.order().to_vec();
+    let saved = cluster_locations(state.macros(), &order);
+
+    let outline = state.outline();
+    let thresholds = alignment_thresholds(
+        order.iter().map(|&id| &state.macros()[id]).filter(|m| m.is_macro_cluster),
+        outline,
+        state.notch_thresholds(),
+    );
+
+    align_macro_clusters(state.macros_mut(), &order, outline, thresholds);
+    state.cal_penalty();
+
+    if state.norm_cost() > pre_cost {
+        let _ = set_cluster_locations(state.macros_mut(), &order, &saved);
+        state.cal_penalty();
+        return true;
+    }
+    false
+}
+
+/// Upstream `SACoreSoftMacro::run`'s tail, once `fastSA` has finished.
+///
+/// 🔑 **Alignment is the consolation prize.** It runs only when centralization was tried and
+/// reverted — never after a centralization that stuck, and never when centralization declined to
+/// run at all.
+pub fn run_enhancements<S: Enhancements + ?Sized>(state: &mut S, force_centralization: bool) {
+    let pre_cost = state.norm_cost();
+    if attempt_centralization(state, pre_cost, force_centralization) {
+        attempt_macro_cluster_alignment(state);
+    }
+}
