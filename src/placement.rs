@@ -2938,3 +2938,75 @@ pub fn push_macro_cluster(
     }
     (cluster_box, attempts)
 }
+
+/// Upstream `Rect::overlaps`: ⚠️ **STRICT on every edge**, so two boxes that merely touch do NOT
+/// overlap.
+///
+/// ⛔ **The opposite of [`rects_intersect`], on the same class.** `Rect::intersects` is inclusive
+/// and `Rect::overlaps` is not, and `mpl` uses both — clipping a fence goes through the inclusive
+/// one, testing a push for obstruction through the strict one. Using either in the other's place is
+/// a difference only ever visible on an exact touch, which is precisely the arrangement a boundary
+/// push produces.
+pub fn boxes_overlap(a: (i32, i32, i32, i32), b: (i32, i32, i32, i32)) -> bool {
+    b.2 > a.0 && b.0 < a.2 && b.3 > a.1 && b.1 < a.3
+}
+
+/// Upstream `Pusher::moveHardMacro`: one macro, one axis.
+///
+/// ⚠️ **Only X or only Y moves** — the boundary decides which, and the other coordinate is not
+/// touched. The same mapping as [`move_towards_boundary`], applied to a macro instead of a box.
+pub fn move_hard_macro(
+    location: (i32, i32),
+    boundary: crate::halo::Boundary,
+    distance: i32,
+) -> (i32, i32) {
+    use crate::halo::Boundary;
+    match boundary {
+        Boundary::L => (location.0 - distance, location.1),
+        Boundary::R => (location.0 + distance, location.1),
+        Boundary::T => (location.0, location.1 + distance),
+        Boundary::B => (location.0, location.1 - distance),
+    }
+}
+
+/// What stopped a push.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum PushObstacle {
+    /// ⚠️ Carries the macro's index in the pusher's flat list — the reference names it in the trace.
+    HardMacro(usize),
+    IoBlockage(usize),
+}
+
+/// Upstream `Pusher::overlapsWithHardMacro` followed by `overlapsWithIOBlockage`.
+///
+/// ⛔ **Hard macros are tested FIRST and the test short-circuits**, so a box overlapping both a
+/// macro and an IO blockage reports only the macro — and the reference's trace prints only that
+/// line. Scoring against `boundary_push` means matching that precedence.
+///
+/// 🔑 **A macro belonging to the cluster being pushed is skipped**, by cluster id — otherwise every
+/// push would collide with itself.
+///
+/// ⚠️ **The flat macro list carries positions that EARLIER pushes have already moved**, so the
+/// result depends on the order the clusters were pushed in. That is upstream's own sequencing, not
+/// an artefact of gathering them into one list.
+pub fn push_obstacle(
+    cluster_box: (i32, i32, i32, i32),
+    cluster_id: i32,
+    hard_macros: &[(i32, (i32, i32, i32, i32))],
+    io_blockages: &[(i32, i32, i32, i32)],
+) -> Option<PushObstacle> {
+    for (i, &(owner, bbox)) in hard_macros.iter().enumerate() {
+        if owner == cluster_id {
+            continue;
+        }
+        if boxes_overlap(cluster_box, bbox) {
+            return Some(PushObstacle::HardMacro(i));
+        }
+    }
+    for (i, &blockage) in io_blockages.iter().enumerate() {
+        if boxes_overlap(cluster_box, blockage) {
+            return Some(PushObstacle::IoBlockage(i));
+        }
+    }
+    None
+}

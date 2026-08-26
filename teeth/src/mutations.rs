@@ -478,6 +478,57 @@ pub const MUTATIONS: &[Mutation] = &[
         want: r#"the_all_macro_guard_is_checked_first"#,
     },
     Mutation {
+        name: r#"overlap-is-inclusive"#,
+        file: r#"src/placement.rs"#,
+        find: r#"    b.2 > a.0 && b.0 < a.2 && b.3 > a.1 && b.1 < a.3
+}"#,
+        replace: r#"    b.2 >= a.0 && b.0 <= a.2 && b.3 >= a.1 && b.1 <= a.3
+}"#,
+        want: r#"touching_boxes_do_not_overlap"#,
+    },
+    Mutation {
+        name: r#"hard-macro-moves-on-both-axes"#,
+        file: r#"src/placement.rs"#,
+        find: r#"        Boundary::L => (location.0 - distance, location.1),"#,
+        replace: r#"        Boundary::L => (location.0 - distance, location.1 - distance),"#,
+        want: r#"a_hard_macro_moves_on_one_axis_only"#,
+    },
+    Mutation {
+        name: r#"cluster-obstructs-itself"#,
+        file: r#"src/placement.rs"#,
+        find: r#"        if owner == cluster_id {
+            continue;
+        }"#,
+        replace: r#"        if false {
+            continue;
+        }"#,
+        want: r#"a_cluster_does_not_obstruct_itself"#,
+    },
+    Mutation {
+        name: r#"io-blockage-reported-before-a-macro"#,
+        file: r#"src/placement.rs"#,
+        find: r#"    for (i, &(owner, bbox)) in hard_macros.iter().enumerate() {"#,
+        replace: r#"    for (i, &blockage) in io_blockages.iter().enumerate() {
+        if boxes_overlap(cluster_box, blockage) {
+            return Some(PushObstacle::IoBlockage(i));
+        }
+    }
+    for (i, &(owner, bbox)) in hard_macros.iter().enumerate() {"#,
+        want: r#"a_hard_macro_is_reported_before_an_io_blockage"#,
+    },
+    Mutation {
+        name: r#"io-blockages-not-tested"#,
+        file: r#"src/placement.rs"#,
+        find: r#"    for (i, &blockage) in io_blockages.iter().enumerate() {
+        if boxes_overlap(cluster_box, blockage) {
+            return Some(PushObstacle::IoBlockage(i));
+        }
+    }
+    None"#,
+        replace: r#"    None"#,
+        want: r#"an_io_blockage_obstructs_on_its_own"#,
+    },
+    Mutation {
         name: r#"push-tie-goes-left"#,
         file: r#"src/placement.rs"#,
         find: r#"    let (hor_boundary, smaller_hor) = if distance_to_left < distance_to_right {"#,

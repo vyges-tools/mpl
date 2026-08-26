@@ -289,3 +289,94 @@ fn a_reverted_push_is_still_an_attempt() {
     assert_eq!(attempts.len(), 1, "recorded even though it was undone");
     assert!(!attempts[0].committed);
 }
+
+// ---------------------------------------------------------------- obstruction
+
+use vyges_mpl::placement::{boxes_overlap, move_hard_macro, push_obstacle, PushObstacle};
+
+/// ⛔ **`Rect::overlaps` is STRICT where `Rect::intersects` is inclusive** — the same class, the
+/// opposite edge rule, and `mpl` uses both. Two boxes that merely TOUCH do not overlap, which
+/// matters because touching is exactly the arrangement a boundary push produces.
+#[test]
+fn touching_boxes_do_not_overlap() {
+    let a = (0, 0, 100, 100);
+    assert!(!boxes_overlap(a, (100, 0, 200, 100)), "edge to edge");
+    assert!(!boxes_overlap(a, (0, 100, 100, 200)), "top to bottom");
+    assert!(!boxes_overlap(a, (100, 100, 200, 200)), "corner to corner");
+    assert!(boxes_overlap(a, (99, 0, 200, 100)), "one unit of real overlap");
+}
+
+/// ⚠️ **Only one axis moves** — the boundary decides which, and the other coordinate is untouched.
+#[test]
+fn a_hard_macro_moves_on_one_axis_only() {
+    let at = (500, 600);
+    assert_eq!(move_hard_macro(at, Boundary::L, 50), (450, 600));
+    assert_eq!(move_hard_macro(at, Boundary::R, 50), (550, 600));
+    assert_eq!(move_hard_macro(at, Boundary::B, 50), (500, 550));
+    assert_eq!(move_hard_macro(at, Boundary::T, 50), (500, 650));
+}
+
+/// 🔑 **A macro belonging to the cluster being pushed is skipped**, by cluster id — otherwise every
+/// push would collide with itself.
+#[test]
+fn a_cluster_does_not_obstruct_itself() {
+    let macros = [(7i32, (0, 0, 100, 100)), (7, (100, 0, 200, 100))];
+    assert_eq!(push_obstacle((0, 0, 200, 100), 7, &macros, &[]), None);
+
+    // The same geometry owned by a different cluster does obstruct.
+    let other = [(9i32, (0, 0, 100, 100))];
+    assert_eq!(
+        push_obstacle((0, 0, 200, 100), 7, &other, &[]),
+        Some(PushObstacle::HardMacro(0))
+    );
+}
+
+/// ⛔ **Hard macros are tested FIRST and the test short-circuits**, so a box overlapping both
+/// reports only the macro — and the reference's trace prints only that line.
+#[test]
+fn a_hard_macro_is_reported_before_an_io_blockage() {
+    let macros = [(9i32, (0, 0, 100, 100))];
+    let blockages = [(0, 0, 100, 100)];
+    assert_eq!(
+        push_obstacle((0, 0, 50, 50), 7, &macros, &blockages),
+        Some(PushObstacle::HardMacro(0)),
+        "not the blockage, though both overlap"
+    );
+}
+
+/// ⚠️ An IO blockage is reported when no macro obstructs.
+#[test]
+fn an_io_blockage_obstructs_on_its_own() {
+    let blockages = [(500, 500, 600, 600), (0, 0, 100, 100)];
+    assert_eq!(
+        push_obstacle((50, 50, 150, 150), 7, &[], &blockages),
+        Some(PushObstacle::IoBlockage(1)),
+        "the second one, and it names which"
+    );
+}
+
+/// ⚠️ Nothing overlapping is no obstacle, and the push commits.
+#[test]
+fn a_clear_box_has_no_obstacle() {
+    let macros = [(9i32, (500, 500, 600, 600))];
+    let blockages = [(700, 700, 800, 800)];
+    assert_eq!(push_obstacle((0, 0, 100, 100), 7, &macros, &blockages), None);
+}
+
+/// 🔑 **The whole push, end to end**: a cluster near the bottom-left corner, blocked from moving
+/// down by another cluster's macro but free to move left.
+#[test]
+fn a_cluster_is_pushed_around_an_obstacle() {
+    let cluster_box = (50, 30, 250, 230);
+    let boundaries = distance_to_close_boundaries(cluster_box, CORE, 200, 200);
+    assert_eq!(boundaries, vec![(Boundary::B, 30), (Boundary::L, 50)]);
+
+    // Another cluster's macro sits directly below.
+    let macros = [(9i32, (60, 0, 240, 25))];
+    let overlaps = |b: (i32, i32, i32, i32)| push_obstacle(b, 7, &macros, &[]).is_some();
+
+    let (moved, attempts) = push_macro_cluster(cluster_box, &boundaries, &overlaps);
+    assert_eq!(moved, (0, 30, 200, 230), "left only");
+    assert!(!attempts[0].committed, "the downward push hit the obstacle");
+    assert!(attempts[1].committed);
+}
