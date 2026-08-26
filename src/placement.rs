@@ -501,6 +501,338 @@ pub fn boundary_penalty(
     penalty / number_of_movable_macros as f32
 }
 
+// ---------------------------------------------------------------- notches
+
+/// A macro, as the notch term sees it: a box and whether it obstructs.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct NotchMacro {
+    pub x: i32,
+    pub y: i32,
+    pub width: i32,
+    pub height: i32,
+    pub kind: AreaKind,
+}
+
+impl NotchMacro {
+    /// ⛔ **Only a hard-macro cluster or a mixed cluster obstructs.** A standard-cell cluster does
+    /// not, and neither does a blockage or an IO cluster.
+    ///
+    /// ⛔ **Nor does a FIXED macro** — and that one is easy to miss. Upstream tests
+    /// `isMacroCluster() || isMixedCluster()`, both of which return false when the soft macro has
+    /// no cluster behind it, and the constructor that builds a soft macro from a fixed hard macro
+    /// never sets one. So the space beside a fixed macro can be declared a notch, and the fixed
+    /// macro itself sits inside one.
+    fn obstructs(&self) -> bool {
+        matches!(self.kind, AreaKind::HardMacroCluster | AreaKind::MixedCluster)
+    }
+}
+
+/// Upstream `fillCoordsLists`: the grid lines the notch scan works on.
+///
+/// 🔑 **Every obstructing macro's two edges on each axis become grid lines**, plus the outline's
+/// own two — so the grid is exactly fine enough to describe this arrangement and no finer.
+///
+/// ⚠️ **Near-coincident lines are COALESCED**, at a tolerance of a hundredth of the outline's
+/// extent on that axis — the x tolerance from the width, the y from the height. Without it a
+/// design whose macros are a database unit apart would be scanned on a grid of hairline columns.
+///
+/// ⛔ **The survivor of a coalesced group is the LARGEST, not the smallest.** The list is sorted
+/// ascending, walked BACKWARDS from the top keeping anything more than a tolerance below the last
+/// survivor, and reversed at the end. Upstream says why at the site: [`segment_index`] uses
+/// `lower_bound`, which needs the bigger value of a group to put a macro's far edge on the right
+/// side of it. Walking forwards and keeping the smallest is the natural way to write this and is
+/// a different grid.
+///
+/// ⚠️ **Strictly greater than the tolerance**, so a gap of exactly one tolerance is coalesced.
+///
+/// ⚠️ The tolerances are INTEGER divisions, so any outline narrower than 100 units gets a
+/// tolerance of zero and no coalescing at all.
+pub fn notch_grid(macros: &[NotchMacro], outline: (i32, i32)) -> (Vec<i32>, Vec<i32>) {
+    let mut x_point = Vec::new();
+    let mut y_point = Vec::new();
+    for m in macros {
+        if !m.obstructs() {
+            continue;
+        }
+        x_point.push(m.x);
+        x_point.push(m.x + m.width);
+        y_point.push(m.y);
+        y_point.push(m.y + m.height);
+    }
+    x_point.push(0);
+    y_point.push(0);
+    x_point.push(outline.0);
+    y_point.push(outline.1);
+
+    x_point.sort_unstable();
+    y_point.sort_unstable();
+
+    (coalesce_downwards(&x_point, outline.0 / 100), coalesce_downwards(&y_point, outline.1 / 100))
+}
+
+/// The backwards walk that keeps the largest of each near-coincident group. See [`notch_grid`].
+fn coalesce_downwards(sorted: &[i32], epsilon: i32) -> Vec<i32> {
+    let mut coords = vec![*sorted.last().expect("the outline's own corners are always present")];
+    for i in (0..sorted.len() - 1).rev() {
+        if coords[coords.len() - 1] - sorted[i] > epsilon {
+            coords.push(sorted[i]);
+        }
+    }
+    coords.reverse();
+    coords
+}
+
+/// How enclosed a candidate notch is on each of its four sides.
+///
+/// ⚠️ **Every side starts TRUE and is only ever cleared**, and a side facing the edge of the grid
+/// is never tested at all — so the outline's own boundary counts as enclosing. A gap running the
+/// full width of the outline is therefore "enclosed left and right", which is what lets a shallow
+/// full-width strip be recognised as a notch.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct NotchVicinity {
+    pub top: bool,
+    pub bottom: bool,
+    pub left: bool,
+    pub right: bool,
+}
+
+impl Default for NotchVicinity {
+    fn default() -> Self {
+        Self { top: true, bottom: true, left: true, right: true }
+    }
+}
+
+impl NotchVicinity {
+    /// ⚠️ **Upstream sums four `bool`s as integers**, so this is a count from 0 to 4 and two very
+    /// different vicinities can tie.
+    pub fn total(&self) -> i32 {
+        self.top as i32 + self.bottom as i32 + self.left as i32 + self.right as i32
+    }
+}
+
+/// Upstream `checkNotchVicinity`: is every cell adjacent to this region occupied, on each side?
+///
+/// ⚠️ **A side is cleared by the FIRST empty neighbour** — it asks whether the region is walled
+/// in, not how much of the wall exists.
+pub fn check_notch_vicinity(
+    grid: &[Vec<bool>],
+    start_row: usize,
+    start_col: usize,
+    end_row: usize,
+    end_col: usize,
+) -> NotchVicinity {
+    let num_y = grid.len();
+    let num_x = grid[0].len();
+
+    let mut vicinity = NotchVicinity::default();
+    if start_row > 0 {
+        for i in start_col..=end_col {
+            if !grid[start_row - 1][i] {
+                vicinity.bottom = false;
+                break;
+            }
+        }
+    }
+    if end_row < num_y - 1 {
+        for i in start_col..=end_col {
+            if !grid[end_row + 1][i] {
+                vicinity.top = false;
+                break;
+            }
+        }
+    }
+    if start_col > 0 {
+        for i in start_row..=end_row {
+            if !grid[i][start_col - 1] {
+                vicinity.left = false;
+                break;
+            }
+        }
+    }
+    if end_col < num_x - 1 {
+        for i in start_row..=end_row {
+            if !grid[i][end_col + 1] {
+                vicinity.right = false;
+                break;
+            }
+        }
+    }
+    vicinity
+}
+
+fn is_row_empty(grid: &[Vec<bool>], row: usize, start_col: usize, end_col: usize) -> bool {
+    (start_col..=end_col).all(|col| !grid[row][col])
+}
+
+fn is_col_empty(grid: &[Vec<bool>], col: usize, start_row: usize, end_row: usize) -> bool {
+    (start_row..=end_row).all(|row| !grid[row][col])
+}
+
+/// Upstream `calSingleNotchPenalty`: the notch's area as a fraction of the outline's, rooted.
+///
+/// ⚠️ **The root is what makes it a length-like quantity**, so two notches of half the area each
+/// cost more together than one notch of the whole — the term prefers one big gap to two small.
+///
+/// ⚠️ Computed in `f64` and narrowed once on return. An outline of zero area gives a NaN here,
+/// exactly as upstream does; nothing guards it on either side.
+pub fn single_notch_penalty(width: i32, height: i32, outline_area: i64) -> f32 {
+    ((width as f64 * height as f64) / outline_area as f64).sqrt() as f32
+}
+
+/// Upstream `SACoreSoftMacro::calNotchPenalty`.
+///
+/// 🔑 **A notch is an empty region walled in on both sides of an axis and too thin to be useful.**
+/// The scan grids the outline along the obstructing macros' edges, finds every maximal empty
+/// rectangle, and charges the ones that are boxed in top-and-bottom while being shallow, or
+/// boxed in left-and-right while being narrow.
+///
+/// ⛔ **The two thresholds are RECOMPUTED here from the outline and the constructor's values are
+/// discarded.** Whatever was passed in — `10.0` by default, and no command exposes it — is
+/// overwritten by a tenth of the outline's extent before the first comparison.
+///
+/// ⛔ **And they are CROSSED relative to their names.** The `h` threshold comes from the outline's
+/// HEIGHT and is compared against a candidate's HEIGHT; the `v` threshold comes from the WIDTH and
+/// is compared against the WIDTH. Reading the names as "horizontal extent" gets both backwards.
+///
+/// ⚠️ **An invalid floorplan is treated as one huge notch** covering at least the whole outline,
+/// so a packing that does not fit is charged roughly `1.0` here rather than being scanned. That is
+/// how the term stays meaningful during the early, sprawling part of the search.
+///
+/// ⚠️ A zero weight returns without measuring — which is why coarse shaping never sees this.
+pub fn notch_penalty(
+    macros: &[NotchMacro],
+    outline: (i32, i32),
+    packing: (i32, i32),
+    valid: bool,
+    weight: f32,
+) -> f32 {
+    if weight <= 0.0 {
+        return 0.0;
+    }
+
+    let outline_area = outline.0 as i64 * outline.1 as i64;
+
+    // ⛔ Both thresholds, overwritten from the outline; see above for why they read crossed.
+    let notch_h_th = outline.1 / 10;
+    let notch_v_th = outline.0 / 10;
+
+    if !valid {
+        let width = packing.0.max(outline.0);
+        let height = packing.1.max(outline.1);
+        return single_notch_penalty(width, height, outline_area);
+    }
+
+    let (x_coords, y_coords) = notch_grid(macros, outline);
+    let num_x = x_coords.len() - 1;
+    let num_y = y_coords.len() - 1;
+    // ⛔ **A guard the reference does not have** — divergence class B. An outline with a zero
+    // extent coalesces its whole axis to a single grid line, and upstream then builds a grid with
+    // no cells and reads `grid.front()` out of it. Its scan loops never run, so the value it
+    // would return is this one; the difference is only that ours is defined. Nothing reaches it:
+    // a zero-extent outline is refused long before placement.
+    if num_x == 0 || num_y == 0 {
+        return 0.0;
+    }
+
+    let mut grid = vec![vec![false; num_x]; num_y];
+    for m in macros {
+        if !m.obstructs() {
+            continue;
+        }
+        let x_start = segment_index(m.x, &x_coords);
+        let x_end = segment_index(m.x + m.width, &x_coords);
+        let y_start = segment_index(m.y, &y_coords);
+        let y_end = segment_index(m.y + m.height, &y_coords);
+        for row in y_start..y_end {
+            for col in x_start..x_end {
+                grid[row][col] = true;
+            }
+        }
+    }
+
+    let mut visited = vec![vec![false; num_x]; num_y];
+    let mut penalty = 0.0f32;
+
+    for start_row in 0..num_y {
+        for start_col in 0..num_x {
+            if grid[start_row][start_col] || visited[start_row][start_col] {
+                continue;
+            }
+
+            let mut end_row = start_row;
+            let mut end_col = start_col;
+
+            let mut current = check_notch_vicinity(&grid, start_row, start_col, end_row, end_col);
+            let mut expand_rows = true;
+            let mut expand_cols = true;
+
+            // ⚠️ **Rows are tried before columns in every pass**, and the column test then runs
+            // against the row range this same pass just changed. Swapping the two grows a
+            // different rectangle out of the same seed.
+            while expand_rows || expand_cols {
+                if expand_rows {
+                    end_row += 1;
+                    if end_row < num_y && is_row_empty(&grid, end_row, start_col, end_col) {
+                        let expanded =
+                            check_notch_vicinity(&grid, start_row, start_col, end_row, end_col);
+                        // ⚠️ Equal-but-different is REJECTED: only a strictly better total, or
+                        // the very same four flags, is accepted.
+                        if expanded.total() > current.total() || expanded == current {
+                            current = expanded;
+                        } else {
+                            expand_rows = false;
+                            end_row -= 1;
+                        }
+                    } else {
+                        expand_rows = false;
+                        end_row -= 1;
+                    }
+                }
+
+                if expand_cols {
+                    end_col += 1;
+                    if end_col < num_x && is_col_empty(&grid, end_col, start_row, end_row) {
+                        let expanded =
+                            check_notch_vicinity(&grid, start_row, start_col, end_row, end_col);
+                        if expanded.total() > current.total() || expanded == current {
+                            current = expanded;
+                        } else {
+                            expand_cols = false;
+                            end_col -= 1;
+                        }
+                    } else {
+                        expand_cols = false;
+                        end_col -= 1;
+                    }
+                }
+            }
+
+            for row in visited.iter_mut().take(end_row + 1).skip(start_row) {
+                for cell in row.iter_mut().take(end_col + 1).skip(start_col) {
+                    *cell = true;
+                }
+            }
+
+            let width = x_coords[end_col + 1] - x_coords[start_col];
+            let height = y_coords[end_row + 1] - y_coords[start_row];
+
+            let mut is_notch = false;
+            if current.top && current.bottom && height < notch_h_th {
+                is_notch = true;
+            }
+            if current.left && current.right && width < notch_v_th {
+                is_notch = true;
+            }
+
+            if is_notch {
+                penalty += single_notch_penalty(width, height, outline_area);
+            }
+        }
+    }
+
+    penalty
+}
+
 // ---------------------------------------------------------------- blockages into the outline
 
 /// Upstream `findOffsetIntersections`: the parts of each blockage that fall inside the outline,
