@@ -3010,3 +3010,66 @@ pub fn push_obstacle(
     }
     None
 }
+
+// ---------------------------------------------------------------- orientation correction
+
+/// How the orientation pass is allowed to flip macros.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum OrientationStrategy {
+    /// Every unfixed macro on its own.
+    Single,
+    /// Whole columns and whole rows of a macro cluster, never one macro alone.
+    ByCluster,
+}
+
+/// Upstream `correctAllMacrosOrientation`.
+///
+/// ⛔ **The branch reads backwards.** It is `!use_full_halo_` that takes the RESTRICTED,
+/// by-cluster path — pin-aware halos are the case that needs the restriction, because flipping a
+/// single macro inside a cluster could leave a region of it unreachable. A full halo has no such
+/// worry and each macro is flipped alone.
+pub fn orientation_strategy(use_full_halo: bool) -> OrientationStrategy {
+    if use_full_halo {
+        OrientationStrategy::Single
+    } else {
+        OrientationStrategy::ByCluster
+    }
+}
+
+/// Upstream's accept rule after a trial flip.
+///
+/// ⚠️ **`>`, strictly — so a TIE KEEPS THE FLIP.** The flip is performed first and undone only when
+/// it made things strictly worse, which means equal wirelength leaves the macro in its new
+/// orientation rather than its original one.
+pub fn keep_flip(original_wirelength: f32, new_wirelength: f32) -> bool {
+    !(new_wirelength > original_wirelength)
+}
+
+/// The order of flip passes, and what each one covers.
+///
+/// ⛔ **TWO FULL PASSES, not one pass of two flips per macro.** Every macro is tried vertically
+/// first, and only then is every macro tried horizontally — so a macro's horizontal trial is
+/// measured against a board on which every other macro's vertical decision has already been made.
+/// Interleaving them per macro is the obvious reading and a different algorithm.
+///
+/// ⚠️ Vertical before horizontal, in both strategies.
+pub const FLIP_PASSES: [bool; 2] = [true, false];
+
+/// Upstream `correctMacroOrientationByCluster`'s grouping.
+///
+/// 🔑 **A macro belongs to BOTH a column and a row**, so it is flipped as part of one group in the
+/// vertical pass and a different group in the horizontal one.
+///
+/// ⚠️ **Grouped by the macro's REAL coordinate** — the one without the halo — and the groups come
+/// out in ascending coordinate order, because upstream's container is a `std::map`.
+///
+/// ⚠️ A cluster that is not a hard-macro cluster, or is fixed, is skipped entirely.
+pub fn orientation_groups(macros: &[(usize, (i32, i32))]) -> (Vec<Vec<usize>>, Vec<Vec<usize>>) {
+    let mut cols: std::collections::BTreeMap<i32, Vec<usize>> = std::collections::BTreeMap::new();
+    let mut rows: std::collections::BTreeMap<i32, Vec<usize>> = std::collections::BTreeMap::new();
+    for &(id, (x, y)) in macros {
+        cols.entry(x).or_default().push(id);
+        rows.entry(y).or_default().push(id);
+    }
+    (cols.into_values().collect(), rows.into_values().collect())
+}

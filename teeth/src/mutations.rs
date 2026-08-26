@@ -407,6 +407,52 @@ pub const MUTATIONS: &[Mutation] = &[
     let mut deferred_io: Vec<&AssemblyChild> = Vec::new();"#,
         want: r#"a_blockage_has_no_name"#,
     },
+    // ---------------------------------------------------------------- orientation correction
+    Mutation {
+        name: r#"orientation-branch-inverted"#,
+        file: r#"src/placement.rs"#,
+        find: r#"    if use_full_halo {
+        OrientationStrategy::Single
+    } else {
+        OrientationStrategy::ByCluster
+    }"#,
+        replace: r#"    if use_full_halo {
+        OrientationStrategy::ByCluster
+    } else {
+        OrientationStrategy::Single
+    }"#,
+        want: r#"pin_aware_halos_take_the_restricted_path"#,
+    },
+    Mutation {
+        name: r#"flip-tie-is-reverted"#,
+        file: r#"src/placement.rs"#,
+        find: r#"    !(new_wirelength > original_wirelength)"#,
+        replace: r#"    new_wirelength < original_wirelength"#,
+        want: r#"an_equal_wirelength_keeps_the_flip"#,
+    },
+    Mutation {
+        name: r#"flip-passes-horizontal-first"#,
+        file: r#"src/placement.rs"#,
+        find: r#"pub const FLIP_PASSES: [bool; 2] = [true, false];"#,
+        replace: r#"pub const FLIP_PASSES: [bool; 2] = [false, true];"#,
+        want: r#"the_passes_are_vertical_then_horizontal"#,
+    },
+    Mutation {
+        name: r#"orientation-groups-by-the-wrong-axis"#,
+        file: r#"src/placement.rs"#,
+        find: r#"        cols.entry(x).or_default().push(id);
+        rows.entry(y).or_default().push(id);"#,
+        replace: r#"        cols.entry(y).or_default().push(id);
+        rows.entry(x).or_default().push(id);"#,
+        want: r#"a_macro_is_in_both_a_column_and_a_row"#,
+    },
+    Mutation {
+        name: r#"orientation-groups-in-descending-order"#,
+        file: r#"src/placement.rs"#,
+        find: r#"    (cols.into_values().collect(), rows.into_values().collect())"#,
+        replace: r#"    (cols.into_values().rev().collect(), rows.into_values().rev().collect())"#,
+        want: r#"groups_come_out_in_ascending_coordinate_order"#,
+    },
     // ---------------------------------------------------------------- the boundary push
     Mutation {
         name: r#"push-descends-into-std-cell-clusters"#,
