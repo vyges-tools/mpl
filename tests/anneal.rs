@@ -1273,3 +1273,60 @@ fn an_impossible_aspect_ratio_band_keeps_the_tilings_anyway() {
             .chosen;
     assert!(!tilings.is_empty(), "the filter must not empty the list");
 }
+
+/// 🔑 **Both interval corners reconstruct the cluster's AREA — they are not two different areas.**
+///
+/// This is the check that stopped a bug report. `resize_randomly` takes `w.min * h.max` and
+/// `set_width`'s interior branch takes `w.max * h.min`, which reads like a discrepancy between
+/// two functions that both move a macro along the same curve. It is not: `shape_curve_from_intervals`
+/// builds each height bound AS `area / width`, so each corner pairs a width with the height that
+/// was derived from it, and both recover the area.
+///
+/// ⚠️ **The only gap is integer truncation, bounded by the width used.** The awkward case below
+/// is short by 49,398 out of 987,654,321,000 — about five parts in a hundred million. A change to
+/// `shape_curve_from_intervals` that broke the pairing would show up here as a shortfall larger
+/// than the bound.
+#[test]
+fn both_interval_corners_reconstruct_the_cluster_area() {
+    let cases: [(&[Interval], i64); 4] = [
+        (&[Interval { min: 100_000, max: 400_000 }], 40_000_000_000),
+        (&[Interval { min: 100, max: 400 }], 40_000),
+        (
+            &[Interval { min: 100_000, max: 200_000 }, Interval { min: 400_000, max: 500_000 }],
+            40_000_000_000,
+        ),
+        (&[Interval { min: 123_457, max: 654_321 }], 987_654_321_000),
+    ];
+
+    let mut saw_truncation = false;
+    for (intervals, area) in cases {
+        let (curve, ..) = shape_curve_from_intervals(intervals, area).expect("shapeable");
+        for i in 0..curve.width_intervals.len() {
+            let (w, h) = (curve.width_intervals[i], curve.height_intervals[i]);
+
+            // `resize_randomly`'s corner.
+            let random_corner = w.min as i64 * h.max as i64;
+            // `set_width`'s interior corner.
+            let set_width_corner = w.max as i64 * h.min as i64;
+
+            for (name, corner, width) in [
+                ("resize_randomly", random_corner, w.min as i64),
+                ("set_width", set_width_corner, w.max as i64),
+            ] {
+                assert!(corner <= area, "{name}: {corner} exceeded the area {area}");
+                let shortfall = area - corner;
+                assert!(
+                    shortfall < width,
+                    "{name}: short by {shortfall}, which is not just truncation of {width}"
+                );
+                if shortfall > 0 {
+                    saw_truncation = true;
+                }
+            }
+        }
+    }
+    assert!(
+        saw_truncation,
+        "every case divided exactly, so this fixture never exercised the truncation bound"
+    );
+}
