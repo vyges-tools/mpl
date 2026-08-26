@@ -80,6 +80,18 @@ fn a_coalesced_group_keeps_its_largest_member() {
     assert!(!xs.contains(&300), "the smallest of the group is gone, not the largest");
 }
 
+/// ⚠️ **Each axis coalesces at its OWN extent's tolerance** — x from the width, y from the height.
+/// A square outline cannot tell the two apart, which is why this one is lopsided.
+#[test]
+fn each_axis_coalesces_at_its_own_tolerance() {
+    // A 4000 x 200 outline: the x tolerance is 40, the y tolerance is 2.
+    // Edges 20 apart survive on y (20 > 2) and collapse on x (20 is not > 40).
+    let macros = [hard(1000, 50, 500, 20), hard(1020, 70, 500, 20)];
+    let (xs, ys) = notch_grid(&macros, (4000, 200));
+    assert_eq!(xs, vec![0, 1020, 1520, 4000], "x collapsed both pairs");
+    assert_eq!(ys, vec![0, 50, 70, 90, 200], "y kept every edge");
+}
+
 /// ⚠️ An outline narrower than 100 units gets a tolerance of ZERO — integer division — so nothing
 /// coalesces at all.
 #[test]
@@ -226,17 +238,26 @@ fn two_separate_notches_are_both_charged() {
 
 /// ⚠️ **Each empty region is visited once.** The scan marks the whole expanded rectangle, so the
 /// cells inside it are not re-seeded as further notches.
+///
+/// ⛔ The fixture has to be an ENCLOSED gap subdivided on BOTH axes. A gap subdivided on one axis
+/// only cannot show the difference: every re-seeded sub-region has an empty neighbour on the side
+/// it was grown from, which clears that axis of its vicinity, and the other axis then spans the
+/// full outline and is far too large to be a notch. A first version of this test was subdivided on
+/// one axis and a mutation that deleted the marking went straight through it.
 #[test]
 fn an_expanded_region_is_not_counted_twice() {
-    // A gap two grid rows deep: 400..430 and 430..450, both empty, one notch.
+    // A 50 x 50 hole walled in on all four sides, cut into a 2 x 2 of grid cells by a zero-size
+    // macro at its centre. Marked visited, that is ONE notch; unmarked, the scan re-seeds the
+    // right column and the top row and charges three.
     let macros = [
         hard(0, 0, 1000, 400),
         hard(0, 450, 1000, 550),
-        // A macro whose edge at y = 430 cuts the gap into two rows without filling either.
-        hard(0, 430, 0, 0),
+        hard(0, 400, 400, 50),
+        hard(450, 400, 550, 50),
+        hard(425, 425, 0, 0),
     ];
     let got = notch_penalty(&macros, (1000, 1000), (1000, 1000), true, 50.0);
-    assert_eq!(got, single_notch_penalty(1000, 50, 1_000_000), "one notch, not two");
+    assert_eq!(got, single_notch_penalty(50, 50, 1_000_000), "one notch, not three");
 }
 
 /// ℹ️ A zero weight leaves the term dark — which is why coarse shaping never sees it.

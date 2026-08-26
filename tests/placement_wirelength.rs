@@ -317,11 +317,15 @@ fn a_macro_on_the_boundary_costs_nothing_and_the_centre_costs_most() {
 
 /// ⚠️ **Only ONE axis needs to be satisfied per direction.** A macro hugging the left edge but
 /// vertically central still pays the vertical distance.
+///
+/// ⚠️ The macro is deliberately OFF-CENTRE in y. Centred, the near and far distances are equal and
+/// the fixture cannot tell `min` from `max` — a mutation proved exactly that.
 #[test]
 fn hugging_one_edge_only_forgives_one_axis() {
-    let macros = [bm(0, 450, 100, 100, 1)];
+    // ly = 300, uy = 400: 300 to the bottom edge and 600 to the top, so only `min` gives 300.
+    let macros = [bm(0, 300, 100, 100, 1)];
     let got = boundary_penalty(&macros, &[0], (0, 0), &root(), 50.0, 10);
-    assert_eq!(got, 45.0, "x costs nothing, y costs 450 dbu");
+    assert_eq!(got, 30.0, "x costs nothing, y costs the NEARER of 300 and 600");
 }
 
 /// ⛔ **The left and right sides are NOT symmetric.** Past the LEFT edge the raw coordinate goes

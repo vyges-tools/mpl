@@ -22,11 +22,346 @@
 //!   covers it. ⚠️ This one *looked* catchable and had a test, which passed only because it built
 //!   a fixed cluster reporting zero macros — a state that never occurs.
 //!
+//! ⛔ **A FOURTH was removed as EQUIVALENT on 2026-08-26**, from the placement batch:
+//!
+//! * turning `fence_penalty`'s `x_dist <= max_x_dist` into `<`. At equality the `else` branch
+//!   evaluates `x_dist - max_x_dist`, which is zero — the same answer the `then` branch gives. The
+//!   two spellings cannot differ for any input. `a_macro_exactly_at_its_slack_limit_costs_nothing`
+//!   still pins the BEHAVIOUR and is worth keeping; it simply cannot be reached by this operator.
+//!
 //! Do not re-add them: an equivalent mutant reported as a hole trains people to ignore holes.
 
 use crate::Mutation;
 
 pub const MUTATIONS: &[Mutation] = &[
+    // ---------------------------------------------------------------- the boundary term
+    Mutation {
+        name: r#"boundary-left-side-absolute"#,
+        file: r#"src/placement.rs"#,
+        find: r#"            let x_dist_from_root = global_lx.min((root.width - global_ux).abs());"#,
+        replace: r#"            let x_dist_from_root = global_lx.abs().min((root.width - global_ux).abs());"#,
+        want: r#"overhanging_left_and_right_are_scored_differently"#,
+    },
+    Mutation {
+        name: r#"boundary-nearer-edge-is-max"#,
+        file: r#"src/placement.rs"#,
+        find: r#"            let y_dist_from_root = global_ly.min((root.height - global_uy).abs());"#,
+        replace: r#"            let y_dist_from_root = global_ly.max((root.height - global_uy).abs());"#,
+        want: r#"hugging_one_edge_only_forgives_one_axis"#,
+    },
+    Mutation {
+        name: r#"boundary-not-weighted-by-macro-count"#,
+        file: r#"src/placement.rs"#,
+        find: r#"            penalty = (penalty as f64 + microns * m.num_macro as f64) as f32;"#,
+        replace: r#"            penalty = (penalty as f64 + microns) as f32;"#,
+        want: r#"the_penalty_is_averaged_over_hard_macros_not_clusters"#,
+    },
+    Mutation {
+        name: r#"boundary-measured-from-the-outline"#,
+        file: r#"src/placement.rs"#,
+        find: r#"            let global_lx = m.x + outline_origin.0 - root.x;"#,
+        replace: r#"            let global_lx = m.x;"#,
+        want: r#"the_distance_is_measured_from_the_root_not_the_outline"#,
+    },
+    Mutation {
+        name: r#"boundary-counts-fixed-macros"#,
+        file: r#"src/placement.rs"#,
+        find: r#"    let mut number_of_movable_macros = 0i32;
+    for &i in order {
+        let m = &macros[i];
+        if m.fixed {
+            continue;
+        }"#,
+        replace: r#"    let mut number_of_movable_macros = 0i32;
+    for &i in order {
+        let m = &macros[i];
+        if false {
+            continue;
+        }"#,
+        want: r#"a_fixed_macro_is_skipped_entirely"#,
+    },
+    // ---------------------------------------------------------------- the notch term
+    Mutation {
+        name: r#"notch-coalesces-at-the-tolerance"#,
+        file: r#"src/placement.rs"#,
+        find: r#"        if coords[coords.len() - 1] - sorted[i] > epsilon {"#,
+        replace: r#"        if coords[coords.len() - 1] - sorted[i] >= epsilon {"#,
+        want: r#"near_coincident_grid_lines_are_coalesced"#,
+    },
+    Mutation {
+        name: r#"notch-grid-tolerances-crossed"#,
+        file: r#"src/placement.rs"#,
+        find: r#"    (coalesce_downwards(&x_point, outline.0 / 100), coalesce_downwards(&y_point, outline.1 / 100))"#,
+        replace: r#"    (coalesce_downwards(&x_point, outline.1 / 100), coalesce_downwards(&y_point, outline.0 / 100))"#,
+        want: r#"each_axis_coalesces_at_its_own_tolerance"#,
+    },
+    Mutation {
+        name: r#"notch-thresholds-crossed"#,
+        file: r#"src/placement.rs"#,
+        find: r#"    let notch_h_th = outline.1 / 10;
+    let notch_v_th = outline.0 / 10;"#,
+        replace: r#"    let notch_h_th = outline.0 / 10;
+    let notch_v_th = outline.1 / 10;"#,
+        want: r#"each_axis_is_measured_against_its_own_extent"#,
+    },
+    Mutation {
+        name: r#"notch-threshold-inclusive"#,
+        file: r#"src/placement.rs"#,
+        find: r#"            if current.top && current.bottom && height < notch_h_th {"#,
+        replace: r#"            if current.top && current.bottom && height <= notch_h_th {"#,
+        want: r#"a_gap_at_the_threshold_is_not_a_notch"#,
+    },
+    Mutation {
+        name: r#"notch-fixed-macro-obstructs"#,
+        file: r#"src/placement.rs"#,
+        find: r#"        matches!(self.kind, AreaKind::HardMacroCluster | AreaKind::MixedCluster)"#,
+        replace: r#"        matches!(self.kind, AreaKind::HardMacroCluster | AreaKind::MixedCluster | AreaKind::FixedMacro)"#,
+        want: r#"a_fixed_macro_does_not_create_a_notch"#,
+    },
+    Mutation {
+        name: r#"notch-invalid-floorplan-scanned"#,
+        file: r#"src/placement.rs"#,
+        find: r#"    if !valid {
+        let width = packing.0.max(outline.0);"#,
+        replace: r#"    if false {
+        let width = packing.0.max(outline.0);"#,
+        want: r#"an_invalid_floorplan_is_charged_as_one_huge_notch"#,
+    },
+    Mutation {
+        name: r#"notch-vicinity-starts-false"#,
+        file: r#"src/placement.rs"#,
+        find: r#"        Self { top: true, bottom: true, left: true, right: true }"#,
+        replace: r#"        Self { top: false, bottom: false, left: false, right: false }"#,
+        want: r#"the_outline_boundary_counts_as_enclosing"#,
+    },
+    Mutation {
+        name: r#"notch-region-not-marked-visited"#,
+        file: r#"src/placement.rs"#,
+        find: r#"            for row in visited.iter_mut().take(end_row + 1).skip(start_row) {"#,
+        replace: r#"            for row in visited.iter_mut().take(0).skip(start_row) {"#,
+        want: r#"an_expanded_region_is_not_counted_twice"#,
+    },
+    Mutation {
+        name: r#"notch-vicinity-cleared-by-any-wall"#,
+        file: r#"src/placement.rs"#,
+        find: r#"    if end_row < num_y - 1 {
+        for i in start_col..=end_col {
+            if !grid[end_row + 1][i] {
+                vicinity.top = false;
+                break;
+            }
+        }
+    }"#,
+        replace: r#"    if end_row < num_y - 1 {
+        for i in start_col..=end_col {
+            if grid[end_row + 1][i] {
+                vicinity.top = false;
+                break;
+            }
+        }
+    }"#,
+        want: r#"one_gap_in_a_wall_clears_that_side"#,
+    },
+    // ---------------------------------------------------------------- the fence term
+    Mutation {
+        name: r#"fence-unsatisfiable-not-skipped"#,
+        file: r#"src/placement.rs"#,
+        find: r#"        if m.width > fence_dx || m.height > fence_dy {
+            continue;
+        }"#,
+        replace: r#"        if false {
+            continue;
+        }"#,
+        want: r#"a_fence_the_macro_cannot_fit_is_skipped"#,
+    },
+    Mutation {
+        name: r#"fence-not-averaged"#,
+        file: r#"src/placement.rs"#,
+        find: r#"    penalty / fences.len() as f32
+}"#,
+        replace: r#"    penalty
+}"#,
+        want: r#"a_skipped_fence_still_dilutes_the_mean"#,
+    },
+    Mutation {
+        name: r#"fence-squares-the-distance-not-the-ratio"#,
+        file: r#"src/placement.rs"#,
+        find: r#"        let width_ratio = width as f32 / outline.0 as f32;"#,
+        replace: r#"        let width_ratio = width as f32;"#,
+        want: r#"a_macro_outside_its_fence_pays_the_squared_overshoot"#,
+    },
+    // ---------------------------------------------------------------- the enhancements
+    Mutation {
+        name: r#"centralization-runs-when-overflowing"#,
+        file: r#"src/placement.rs"#,
+        find: r#"    if state.outline_penalty() > 0.0 {
+        return false;
+    }"#,
+        replace: r#"    if false {
+        return false;
+    }"#,
+        want: r#"an_overflowing_floorplan_gets_neither_enhancement"#,
+    },
+    Mutation {
+        name: r#"centralization-reverts-on-equal-cost"#,
+        file: r#"src/placement.rs"#,
+        find: r#"    if state.norm_cost() > pre_cost && !force {"#,
+        replace: r#"    if state.norm_cost() >= pre_cost && !force {"#,
+        want: r#"an_equally_costly_centralization_is_kept"#,
+    },
+    Mutation {
+        name: r#"centralization-force-ignored"#,
+        file: r#"src/placement.rs"#,
+        find: r#"    if state.norm_cost() > pre_cost && !force {
+        let _ = set_cluster_locations(state.macros_mut(), &order, &saved);"#,
+        replace: r#"    if state.norm_cost() > pre_cost {
+        let _ = set_cluster_locations(state.macros_mut(), &order, &saved);"#,
+        want: r#"forcing_keeps_a_costlier_centralization"#,
+    },
+    Mutation {
+        name: r#"centralization-offset-not-halved"#,
+        file: r#"src/placement.rs"#,
+        find: r#"    ((outline.0 - packing.0) / 2, (outline.1 - packing.1) / 2)"#,
+        replace: r#"    (outline.0 - packing.0, outline.1 - packing.1)"#,
+        want: r#"the_centralization_offset_truncates"#,
+    },
+    Mutation {
+        name: r#"move-floorplan-skips-fixed"#,
+        file: r#"src/placement.rs"#,
+        find: r#"    for &id in order {
+        macros[id].x += offset.0;
+        macros[id].y += offset.1;
+    }"#,
+        replace: r#"    for &id in order {
+        if macros[id].fixed {
+            continue;
+        }
+        macros[id].x += offset.0;
+        macros[id].y += offset.1;
+    }"#,
+        want: r#"a_fixed_macro_is_shifted_along_with_the_rest"#,
+    },
+    Mutation {
+        name: r#"locations-indexed-positionally"#,
+        file: r#"src/placement.rs"#,
+        find: r#"    let mut locations = vec![(0, 0); order.len()];
+    for &id in order {
+        locations[id] = (macros[id].x, macros[id].y);
+    }"#,
+        replace: r#"    let mut locations = vec![(0, 0); order.len()];
+    for (position, &id) in order.iter().enumerate() {
+        locations[position] = (macros[id].x, macros[id].y);
+    }"#,
+        want: r#"locations_are_indexed_by_macro_id"#,
+    },
+    Mutation {
+        name: r#"alignment-thresholds-crossed"#,
+        file: r#"src/placement.rs"#,
+        find: r#"    (h.min(outline.1 / RATIO), v.min(outline.0 / RATIO))"#,
+        replace: r#"    (h.min(outline.0 / RATIO), v.min(outline.1 / RATIO))"#,
+        want: r#"the_alignment_thresholds_are_crossed"#,
+    },
+    Mutation {
+        name: r#"alignment-ignores-the-smallest-cluster"#,
+        file: r#"src/placement.rs"#,
+        find: r#"    for m in macro_clusters {
+        h = h.min(m.width);
+        v = v.min(m.height);
+    }"#,
+        replace: r#"    for _m in macro_clusters {}"#,
+        want: r#"the_smallest_macro_cluster_floors_both_thresholds"#,
+    },
+    Mutation {
+        name: r#"alignment-right-edge-wins"#,
+        file: r#"src/placement.rs"#,
+        find: r#"        if lx < h_th {
+            macros[id].x = 0;
+        } else if outline.0 - ux < h_th {"#,
+        replace: r#"        if lx < h_th {
+            macros[id].x = 0;
+        }
+        if outline.0 - ux < h_th {"#,
+        want: r#"a_cluster_wider_than_the_outline_snaps_left"#,
+    },
+    Mutation {
+        name: r#"alignment-runs-on-invalid-floorplans"#,
+        file: r#"src/placement.rs"#,
+        find: r#"    if !state.is_valid() {
+        return false;
+    }"#,
+        replace: r#"    if false {
+        return false;
+    }"#,
+        want: r#"an_invalid_floorplan_is_not_aligned"#,
+    },
+    Mutation {
+        name: r#"alignment-runs-after-a-kept-centralization"#,
+        file: r#"src/placement.rs"#,
+        find: r#"    if attempt_centralization(state, pre_cost, force_centralization) {
+        attempt_macro_cluster_alignment(state);
+    }"#,
+        replace: r#"    attempt_centralization(state, pre_cost, force_centralization);
+    attempt_macro_cluster_alignment(state);"#,
+        want: r#"alignment_runs_only_after_a_reverted_centralization"#,
+    },
+    Mutation {
+        name: r#"alignment-snaps-every-cluster"#,
+        file: r#"src/placement.rs"#,
+        find: r#"        if !macros[id].is_macro_cluster {
+            continue;
+        }"#,
+        replace: r#"        if false {
+            continue;
+        }"#,
+        want: r#"only_macro_clusters_are_aligned"#,
+    },
+    // ---------------------------------------------------------------- the nine-term cost
+    Mutation {
+        name: r#"cost-area-term-divided"#,
+        file: r#"src/anneal.rs"#,
+        find: r#"        cost += w.area * p.area;"#,
+        replace: r#"        cost += w.area * p.area / n.area;"#,
+        want: r#"the_area_term_is_not_divided_by_its_normalisation_factor"#,
+    },
+    Mutation {
+        name: r#"cost-notch-divides-by-the-wrong-factor"#,
+        file: r#"src/anneal.rs"#,
+        find: r#"        cost += w.notch * p.notch / n.notch;"#,
+        replace: r#"        cost += w.notch * p.notch / n.boundary;"#,
+        want: r#"each_term_divides_by_its_own_normalisation_factor"#,
+    },
+    Mutation {
+        name: r#"cost-zero-factor-still-divides"#,
+        file: r#"src/anneal.rs"#,
+        find: r#"    if n.outline > 0.0 {
+        cost += w.outline * p.outline / n.outline;
+    }"#,
+        replace: r#"    {
+        cost += w.outline * p.outline / n.outline;
+    }"#,
+        want: r#"a_zero_normalisation_factor_drops_its_term"#,
+    },
+    Mutation {
+        name: r#"cal-penalty-refreshes-fixed-macros-first"#,
+        file: r#"src/anneal.rs"#,
+        find: r#"            let valid = self.is_valid(!self.fixed_bboxes.is_empty());"#,
+        replace: r#"            self.penalties.fixed_macros = fixed_macros_penalty(
+                &self.macros,
+                &self.fixed_bboxes,
+                &self.sp,
+                self.dbu_per_micron,
+            );
+            let valid = self.is_valid(!self.fixed_bboxes.is_empty());"#,
+        want: r#"the_notch_term_sees_a_stale_fixed_macro_penalty"#,
+    },
+    Mutation {
+        name: r#"cal-penalty-drops-the-placement-context"#,
+        file: r#"src/anneal.rs"#,
+        find: r#"            self.placement = Some(inputs);"#,
+        replace: r#"            self.placement = None;
+            drop(inputs);"#,
+        want: r#"the_placement_context_survives_being_scored"#,
+    },
     Mutation {
         name: r#"halo-order-lrbt"#,
         file: r#"src/options.rs"#,
@@ -1737,23 +2072,25 @@ pub const MUTATIONS: &[Mutation] = &[
         file: r#"src/shaping.rs"#,
         find: r#"    if contributors.len() == 1 {"#,
         replace: r#"    if contributors.len() <= 2 {"#,
-        want: r#"two_macro_bearing_children_need_the_annealing_search"#,
+        want: r#"two_macro_bearing_children_are_shaped_by_the_search"#,
     },
     Mutation {
         name: r#"parent-shaped-before-its-children"#,
         file: r#"src/shaping.rs"#,
-        find: r#"            calculate_children_tilings(child, ctx)?;"#,
-        replace: r#"            let _skipped = child;"#,
+        find: r#"                calculate_children_tilings_traced(child, ctx, trace)?;"#,
+        replace: r#"                let _skipped = child;"#,
         want: r#"children_are_shaped_before_the_parent_reads_them"#,
     },
     Mutation {
         name: r#"macro-cluster-type-ignored"#,
         file: r#"src/shaping.rs"#,
         find: r#"    if parent.cluster_type == ClusterType::HardMacro {
-        return macro_cluster_tilings(parent, ctx);
+        trace.is_macro_cluster(&parent.name);
+        return macro_cluster_tilings(parent, ctx, trace);
     }"#,
         replace: r#"    if false {
-        return macro_cluster_tilings(parent, ctx);
+        trace.is_macro_cluster(&parent.name);
+        return macro_cluster_tilings(parent, ctx, trace);
     }"#,
         want: r#"a_hard_macro_cluster_gets_the_tilings_of_its_macro_count"#,
     },
@@ -2108,10 +2445,10 @@ pub const MUTATIONS: &[Mutation] = &[
     Mutation {
         name: r#"builders-run-in-the-wrong-order"#,
         file: r#"src/shaping.rs"#,
-        find: r#"    let mut out = crate::regions::blockages_for_regions(
+        find: r#"    let mut out = crate::regions::blockages_for_regions_traced(
         input.io_bundles,
         input.fixed_ios,"#,
-        replace: r#"    let mut out = crate::regions::blockages_for_regions(
+        replace: r#"    let mut out = crate::regions::blockages_for_regions_traced(
         input.constrained_regions,
         input.fixed_ios,"#,
         want: r#"the_three_builders_append_in_upstreams_order"#,

@@ -230,6 +230,13 @@ fn two_macro_bearing_children_are_shaped_by_the_search() {
     assert!(!root.tilings.is_empty(), "the parent was shaped");
     for tiling in &root.tilings {
         assert!(tiling.width <= 1000 && tiling.height <= 1000, "{tiling:?} does not fit");
+        // ⚠️ **Every tiling must hold BOTH macros.** Without this the test passes just as well
+        // when the single-contributor shortcut is wrongly applied to two — the parent then copies
+        // child A's 10 x 10 verbatim, which is non-empty and fits. A mutation proved exactly that.
+        assert!(
+            tiling.width * tiling.height >= 200,
+            "{tiling:?} is too small to hold two 10 x 10 macros — the shortcut was taken"
+        );
     }
 }
 

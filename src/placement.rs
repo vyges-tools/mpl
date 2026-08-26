@@ -405,6 +405,9 @@ pub fn guidance_penalty(
 ///
 /// ⚠️ **`<=`, so a macro exactly at the limit of its slack scores zero.** And every centre and
 /// half-extent is an integer division, so an odd extent loses its half unit before the comparison.
+/// ℹ️ Writing `<` instead would be EQUIVALENT, not wrong — at equality the other branch evaluates
+/// to zero as well. Kept as `<=` because that is the reference's spelling; do not add a mutation
+/// for it, because none can fail.
 ///
 /// ⚠️ The ratios are formed against the OUTLINE's extents, so the term is dimensionless and
 /// comparable across outlines — and it is the ratio that is squared, not the distance.

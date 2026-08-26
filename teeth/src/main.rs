@@ -57,6 +57,12 @@ enum Outcome {
     NotCaught,
     /// The pattern did not match, so nothing was measured.
     StalePattern,
+    /// The `want` names a test that does not exist, so nothing was measured. ⛔ **Kept apart from
+    /// [`Outcome::StalePattern`] deliberately.** The two were one bucket until 2026-08-26, and the
+    /// conflation sent a reader looking for a broken `find` pattern when the pattern was fine and
+    /// the TEST had been renamed. A rule with no test and a rule with no site are different
+    /// repairs.
+    NoSuchTest,
     /// The mutated source does not build, so nothing was measured. The stale pattern's twin:
     /// red, and proving nothing.
     DoesNotCompile,
@@ -103,7 +109,7 @@ fn main() -> ExitCode {
     // 🔑 **Run in batches, and summarise each one as it lands.** A 210-line wall is not a result
     // anyone reads; three sections with their own verdict are. The batches are derived from the
     // file each mutation targets, so a new mutation joins the right one without being told.
-    let mut total = [0usize; 5];
+    let mut total = [0usize; 6];
     let mut ran = 0usize;
     for (batch, _) in BATCHES {
         let group: Vec<&&Mutation> = selected.iter().filter(|m| batch_of(m) == *batch).collect();
@@ -111,7 +117,7 @@ fn main() -> ExitCode {
             continue;
         }
         println!("\n\x1b[1m{batch}\x1b[0m ({} mutations)", group.len());
-        let mut counts = [0usize; 5];
+        let mut counts = [0usize; 6];
         for m in group {
             let outcome = run_one(&root, m);
             report(m, outcome);
@@ -201,8 +207,7 @@ fn run_one(root: &Path, m: &Mutation) -> Outcome {
         Where::Lib => match lib_test_path(root, m.want) {
             Some(path) => path,
             None => {
-                eprintln!("  {:<34} names no such test: {}", m.name, m.want);
-                return Outcome::StalePattern;
+                return Outcome::NoSuchTest;
             }
         },
         _ => m.want.to_string(),
@@ -231,8 +236,7 @@ fn run_one(root: &Path, m: &Mutation) -> Outcome {
     // ℹ️ This is the one place the log is read, and it decides only whether the test EXISTS. The
     // verdict itself is the exit code.
     if !solo.stdout.contains(&format!("{} ...", m.want)) {
-        eprintln!("  {:<34} names no such test: {}", m.name, m.want);
-        return Outcome::StalePattern;
+        return Outcome::NoSuchTest;
     }
 
     // Step 3: the named test passed. Did anything else notice?
@@ -448,8 +452,10 @@ const BATCHES: &[(&str, &[&str])] = &[
     ),
     (
         "shaping",
-        &["shaping.rs", "feasibility.rs", "regions.rs", "apply.rs", "engine.rs", "report.rs"],
+        &["shaping.rs", "feasibility.rs", "regions.rs", "apply.rs", "engine.rs", "report.rs", "trace.rs"],
     ),
+    ("annealing", &["anneal.rs", "rng.rs"]),
+    ("placement", &["placement.rs"]),
 ];
 
 fn batch_of(m: &Mutation) -> &'static str {
@@ -479,13 +485,14 @@ fn list_batches() {
     println!("{:<12} {:>3} mutations", "(total)", MUTATIONS.len());
 }
 
-fn summary(c: &[usize; 5]) -> String {
+fn summary(c: &[usize; 6]) -> String {
     format!(
-        "{} caught, {} wrong-test, {} holes, {} stale, {} uncompilable",
+        "{} caught, {} wrong-test, {} holes, {} stale, {} no-such-test, {} uncompilable",
         c[Outcome::Caught as usize],
         c[Outcome::WrongTest as usize],
         c[Outcome::NotCaught as usize],
         c[Outcome::StalePattern as usize],
+        c[Outcome::NoSuchTest as usize],
         c[Outcome::DoesNotCompile as usize],
     )
 }
@@ -496,6 +503,9 @@ fn report(m: &Mutation, outcome: Outcome) {
         Outcome::WrongTest => ("33", "WRONG TEST", format!(", but {} passed", m.want)),
         Outcome::NotCaught => ("31", "NOT CAUGHT", " -- the suite stayed green".into()),
         Outcome::StalePattern => ("33", "STALE PATTERN", " (it did not apply)".into()),
+        Outcome::NoSuchTest => {
+            ("33", "NO SUCH TEST", format!(" -- nothing is named {}", m.want))
+        }
         Outcome::DoesNotCompile => ("35", "DOES NOT COMPILE", " -- nothing was measured".into()),
     };
     println!("  {:<34} \x1b[{colour}m{label}\x1b[0m{tail}", m.name);
