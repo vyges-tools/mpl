@@ -30,6 +30,7 @@ pub mod macroclass;
 pub mod merge;
 pub mod netlist;
 pub mod pipeline;
+pub mod placement;
 #[cfg(unix)]
 pub mod read;
 pub mod regions;
