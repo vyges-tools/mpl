@@ -36,6 +36,7 @@ pub mod report;
 pub mod shaping;
 pub mod status;
 pub mod thresholds;
+pub mod trace;
 pub mod tree;
 
 pub use options::{parse_placer_args, Halo, MplError, PlacerOptions, Region};

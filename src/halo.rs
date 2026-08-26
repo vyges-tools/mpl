@@ -34,6 +34,19 @@ impl Boundary {
     pub fn is_vertical(self) -> bool {
         matches!(self, Boundary::L | Boundary::R)
     }
+
+    /// Upstream `toString(Boundary)` — the single letter its trace prints.
+    ///
+    /// ⚠️ These letters are the trace's own vocabulary, not a display convenience: the
+    /// `coarse_shaping` oracle is diffed line for line, so `L` may never become `Left`.
+    pub fn name(self) -> &'static str {
+        match self {
+            Boundary::B => "B",
+            Boundary::L => "L",
+            Boundary::T => "T",
+            Boundary::R => "R",
+        }
+    }
 }
 
 /// Routing direction of the layer a pin sits on.

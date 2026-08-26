@@ -133,6 +133,7 @@ pub fn root_shape(floorplan: &Rect) -> (Interval, i64) {
 // ---------------------------------------------------------------- the recursion
 
 use crate::cluster::{Cluster, ClusterId, ClusterType};
+use crate::trace::CoarseTrace;
 
 /// What the shaping stage needs that lives outside the tree.
 pub struct ShapingCtx<'a> {
@@ -162,23 +163,46 @@ pub fn calculate_children_tilings(
     parent: &mut Cluster,
     ctx: &ShapingCtx,
 ) -> Result<(), ShapingRefusal> {
+    calculate_children_tilings_traced(parent, ctx, &mut CoarseTrace::silent())
+}
+
+/// As [`calculate_children_tilings`], recording upstream's `coarse_shaping` trace as it goes.
+///
+/// 🔑 **The trace sites are part of the algorithm's shape, not decoration.** Each one sits where
+/// upstream's `debugPrint` sits, so the recorded order IS the traversal order — which is the
+/// property the oracle actually scores.
+pub fn calculate_children_tilings_traced(
+    parent: &mut Cluster,
+    ctx: &ShapingCtx,
+    trace: &mut CoarseTrace,
+) -> Result<(), ShapingRefusal> {
     // ⚠️ The base case is `num_macro == 0`, NOT "is a leaf". A cluster with no macros has no
     // shape to choose — its area is soft — so shaping skips it and everything below it.
     if parent.num_macro() == 0 {
         return Ok(());
     }
 
+    trace.determine_shapes(&parent.name);
+
     if parent.cluster_type == ClusterType::HardMacro {
-        return macro_cluster_tilings(parent, ctx);
+        trace.is_macro_cluster(&parent.name);
+        return macro_cluster_tilings(parent, ctx, trace);
     }
 
-    for child in &mut parent.children {
-        // ℹ️ Redundant with the callee's own base case — the same test, one frame apart. Kept
-        // because upstream carries it, and a reader comparing the two should find them the same
-        // shape. ⚠️ Not mutation-testable for exactly that reason.
-        if child.num_macro() > 0 {
-            calculate_children_tilings(child, ctx)?;
+    // ⚠️ Upstream guards BOTH visiting lines and the loop with `!getChildren().empty()`. The loop
+    // alone is the same computation either way, but a childless mixed cluster must print neither
+    // line — an unguarded loop that iterates zero times would still print both.
+    if !parent.children.is_empty() {
+        trace.started_visiting(&parent.name);
+        for child in &mut parent.children {
+            // ℹ️ Redundant with the callee's own base case — the same test, one frame apart.
+            // Kept because upstream carries it, and a reader comparing the two should find them
+            // the same shape. ⚠️ Not mutation-testable for exactly that reason.
+            if child.num_macro() > 0 {
+                calculate_children_tilings_traced(child, ctx, trace)?;
+            }
         }
+        trace.done_visiting(&parent.name);
     }
 
     // ⚠️ A **fixed** macro cluster still counts here even though it has no tilings of its own —
@@ -216,6 +240,7 @@ pub fn calculate_children_tilings(
 fn macro_cluster_tilings(
     cluster: &mut Cluster,
     ctx: &ShapingCtx,
+    trace: &mut CoarseTrace,
 ) -> Result<(), ShapingRefusal> {
     // ⚠️ A fixed macro is not the placer's to shape: it returns with NO tilings, which is not the
     // same as an empty result from a search that found nothing.
@@ -226,9 +251,16 @@ fn macro_cluster_tilings(
         return Ok(());
     };
     let (w, h) = (ctx.macro_dims)(first);
-    match macro_tilings(w, h, cluster.leaf_macros.len() as i64, &ctx.outline) {
+    // ⚠️ The cluster's OWN macro count, kept for the trace. `macro_tilings` may succeed only on
+    // its `n + 1` retry, and upstream still reports `n` — printing the retry's count would
+    // misreport every cluster that needed it.
+    let number_of_macros = cluster.leaf_macros.len();
+    match macro_tilings(w, h, number_of_macros as i64, &ctx.outline) {
         Ok(t) => {
             cluster.tilings = t;
+            // ⚠️ After the assignment, as upstream traces after `setTilings` — an empty tiling
+            // list still prints a header line.
+            trace.hard_cluster_tilings(&cluster.name, number_of_macros, &cluster.tilings);
             Ok(())
         }
         Err(e) => Err(ShapingRefusal::Unshapeable(cluster.id, e)),
@@ -360,6 +392,20 @@ pub fn run_coarse_shaping(
     root: &mut Cluster,
     input: &CoarseInput,
 ) -> Result<CoarseShaping, ShapingRefusal> {
+    run_coarse_shaping_traced(root, input, 0, &mut CoarseTrace::silent())
+}
+
+/// As [`run_coarse_shaping`], recording upstream's `coarse_shaping` trace.
+///
+/// ⚠️ `dbu_per_micron` is a REPORTING input, not a shaping one — half these lines are in microns
+/// and half in database units, and upstream converts at each print site with `dbuToMicrons`. It
+/// is deliberately not on [`CoarseInput`]: nothing the stage computes depends on it.
+pub fn run_coarse_shaping_traced(
+    root: &mut Cluster,
+    input: &CoarseInput,
+    dbu_per_micron: i32,
+    trace: &mut CoarseTrace,
+) -> Result<CoarseShaping, ShapingRefusal> {
     let root_shape = root_shape(&input.floorplan);
 
     // ⚠️ MPL-27, and it returns: a design of nothing but macros gets its root retyped and no
@@ -375,9 +421,9 @@ pub fn run_coarse_shaping(
     }
 
     let ctx = ShapingCtx { outline: input.floorplan, macro_dims: input.macro_dims };
-    calculate_children_tilings(root, &ctx)?;
+    calculate_children_tilings_traced(root, &ctx, trace)?;
 
-    let io_blockages = pin_access_blockages(root, input);
+    let io_blockages = pin_access_blockages(root, input, dbu_per_micron, trace);
     Ok(CoarseShaping {
         root_shape,
         depth_limits: depth_limits_for(root, input).unwrap_or_default(),
@@ -397,10 +443,19 @@ fn depth_limits_for(root: &Cluster, input: &CoarseInput) -> Option<DepthLimits> 
 }
 
 /// Upstream `createPinAccessBlockages`: two guards, then the three builders in order.
-fn pin_access_blockages(root: &Cluster, input: &CoarseInput) -> Vec<Rect> {
+fn pin_access_blockages(
+    root: &Cluster,
+    input: &CoarseInput,
+    dbu_per_micron: i32,
+    trace: &mut CoarseTrace,
+) -> Vec<Rect> {
     let Some(limits) = depth_limits_for(root, input) else {
         return Vec::new();
     };
+    // ⚠️ Emitted HERE, not with the other results: upstream prints the table from inside
+    // `computePinAccessDepthLimits`, which runs after the two guards and BEFORE the three
+    // blockage builders. Printing it later would put it after the blockage lines it bounds.
+    trace.depth_limits(&limits, dbu_per_micron);
     let mut out = crate::regions::blockages_for_regions(
         input.io_bundles,
         input.fixed_ios,
