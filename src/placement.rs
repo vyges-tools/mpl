@@ -3149,3 +3149,67 @@ pub fn final_commit(inst_is_fixed: bool, halo: HaloKind) -> FinalCommit {
         blockage: needs_halo_blockage(halo),
     }
 }
+
+// ---------------------------------------------------------------- temporary macro clusters
+
+/// One temporary cluster, as `placeMacros` needs it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct TempMacroCluster {
+    /// ⚠️ Named after the MACRO, not after the parent cluster.
+    pub name: String,
+    /// From the clustering engine's running counter — see [`temp_macro_clusters`].
+    pub cluster_id: i32,
+    /// The macro's index in the annealer's list. ⚠️ Equal to its position in the input.
+    pub macro_id: usize,
+}
+
+/// What `createTempMacroClusters` produces.
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub struct TempMacroClusters {
+    pub clusters: Vec<TempMacroCluster>,
+    /// ⚠️ The DISTINCT masters among the macros — this count is what scales the exchange
+    /// probability in [`macro_placement_probabilities`], so it is part of the search, not
+    /// bookkeeping.
+    pub distinct_masters: usize,
+    /// The counter's value after the run. ⛔ See below: it does NOT rewind.
+    pub next_cluster_id: i32,
+}
+
+/// Upstream `ClusteringEngine::createTempMacroClusters`.
+///
+/// 🔑 **One temporary cluster per hard macro**, so macro placement can reuse the cluster-shaped
+/// machinery — connections, terminals, nets — on individual macros. They exist only for the
+/// duration of one `placeMacros` call.
+///
+/// ⛔ **The ids come from the ENGINE's shared counter and are never given back.** The clusters are
+/// destroyed when macro placement finishes and `clearTempMacroClusterMapping` removes their raw
+/// pointers from the id map — upstream says why: otherwise they would be deleted twice — but the
+/// counter itself does not rewind. So every macro cluster placed permanently consumes as many ids
+/// as it has macros, and the ids a later cluster's temporaries receive depend on how many macros
+/// every earlier cluster held.
+///
+/// ⚠️ **`macro_id` is taken BEFORE the macro is appended**, so it is the index the macro will
+/// occupy — which makes it equal to the position in the input list.
+///
+/// ⚠️ The masters set is a `PtrSet`, so it counts DISTINCT masters; the order macros are visited in
+/// does not change its size.
+pub fn temp_macro_clusters(macro_names: &[String], masters: &[usize], first_id: i32) -> TempMacroClusters {
+    let mut out = TempMacroClusters { next_cluster_id: first_id, ..Default::default() };
+    let mut distinct: std::collections::BTreeSet<usize> = std::collections::BTreeSet::new();
+
+    for (index, name) in macro_names.iter().enumerate() {
+        out.clusters.push(TempMacroCluster {
+            name: name.clone(),
+            cluster_id: out.next_cluster_id,
+            // ⚠️ `sa_macros.size()` read before the push — the index this macro will take.
+            macro_id: index,
+        });
+        if let Some(master) = masters.get(index) {
+            distinct.insert(*master);
+        }
+        out.next_cluster_id += 1;
+    }
+
+    out.distinct_masters = distinct.len();
+    out
+}

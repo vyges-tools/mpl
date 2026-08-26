@@ -700,6 +700,47 @@ pub const MUTATIONS: &[Mutation] = &[
             continue;"#,
         want: r#"a_reverted_push_is_still_an_attempt"#,
     },
+    // ---------------------------------------------------------------- temporary macro clusters
+    Mutation {
+        name: r#"temp-cluster-ids-rewind"#,
+        file: r#"src/placement.rs"#,
+        find: r#"    out.distinct_masters = distinct.len();
+    out
+}"#,
+        replace: r#"    out.distinct_masters = distinct.len();
+    out.next_cluster_id = first_id;
+    out
+}"#,
+        want: r#"cluster_ids_are_consumed_permanently"#,
+    },
+    Mutation {
+        name: r#"temp-cluster-macro-id-after-push"#,
+        file: r#"src/placement.rs"#,
+        find: r#"            macro_id: index,"#,
+        replace: r#"            macro_id: index + 1,"#,
+        want: r#"the_macro_id_is_the_position_in_the_list"#,
+    },
+    Mutation {
+        name: r#"temp-cluster-masters-counted-total"#,
+        file: r#"src/placement.rs"#,
+        find: r#"    out.distinct_masters = distinct.len();"#,
+        replace: r#"    out.distinct_masters = macro_names.len().min(masters.len());"#,
+        want: r#"the_master_count_is_distinct_not_total"#,
+    },
+    Mutation {
+        name: r#"temp-cluster-named-by-index"#,
+        file: r#"src/placement.rs"#,
+        find: r#"            name: name.clone(),"#,
+        replace: r#"            name: format!("cluster_{index}"),"#,
+        want: r#"one_temporary_cluster_per_macro_named_after_it"#,
+    },
+    Mutation {
+        name: r#"temp-cluster-ids-all-the-same"#,
+        file: r#"src/placement.rs"#,
+        find: r#"        out.next_cluster_id += 1;"#,
+        replace: r#"        out.next_cluster_id += 0;"#,
+        want: r#"cluster_ids_are_consumed_permanently"#,
+    },
     // ---------------------------------------------------------------- the hard-macro netlist
     Mutation {
         name: r#"terminals-in-connection-order"#,

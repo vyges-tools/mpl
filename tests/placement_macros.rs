@@ -509,3 +509,83 @@ fn a_cluster_missing_from_the_macro_map_is_an_error() {
     let got = build_bundled_nets_for_macros(&clusters, &|id| (id != 99).then_some(id as usize));
     assert_eq!(got, Err(UnmappedCluster(99)));
 }
+
+// ---------------------------------------------------------------- temporary macro clusters
+
+use vyges_mpl::placement::{temp_macro_clusters, TempMacroCluster};
+
+fn names(n: usize) -> Vec<String> {
+    (0..n).map(|i| format!("MACRO_{i}")).collect()
+}
+
+/// 🔑 **One temporary cluster per hard macro**, named after the MACRO, so macro placement can reuse
+/// the cluster-shaped machinery on individual macros.
+#[test]
+fn one_temporary_cluster_per_macro_named_after_it() {
+    let got = temp_macro_clusters(&names(3), &[0, 0, 1], 100);
+    assert_eq!(got.clusters.len(), 3);
+    assert_eq!(
+        got.clusters[0],
+        TempMacroCluster { name: "MACRO_0".into(), cluster_id: 100, macro_id: 0 }
+    );
+    assert_eq!(got.clusters[2].name, "MACRO_2");
+}
+
+/// ⚠️ **`macro_id` is the index the macro will occupy**, taken before the macro is appended — so it
+/// matches the position in the input list.
+#[test]
+fn the_macro_id_is_the_position_in_the_list() {
+    let got = temp_macro_clusters(&names(4), &[0, 1, 2, 3], 0);
+    let ids: Vec<usize> = got.clusters.iter().map(|c| c.macro_id).collect();
+    assert_eq!(ids, vec![0, 1, 2, 3]);
+}
+
+/// ⛔ **The ids come from the engine's shared counter and are NEVER given back.** The clusters are
+/// destroyed when macro placement ends, but the counter does not rewind — so the ids a later
+/// cluster's temporaries receive depend on how many macros every earlier cluster held.
+#[test]
+fn cluster_ids_are_consumed_permanently() {
+    let first = temp_macro_clusters(&names(3), &[0, 0, 0], 50);
+    assert_eq!(first.next_cluster_id, 53, "three ids gone");
+
+    // The next macro cluster starts where the last one stopped, though the first three are dead.
+    let second = temp_macro_clusters(&names(2), &[0, 0], first.next_cluster_id);
+    let ids: Vec<i32> = second.clusters.iter().map(|c| c.cluster_id).collect();
+    assert_eq!(ids, vec![53, 54], "not 50 and 51");
+}
+
+/// ⚠️ **The masters set counts DISTINCT masters**, and that count is what scales the exchange
+/// probability — so it is part of the search, not bookkeeping.
+#[test]
+fn the_master_count_is_distinct_not_total() {
+    let all_same = temp_macro_clusters(&names(8), &[7; 8], 0);
+    assert_eq!(all_same.distinct_masters, 1);
+
+    let all_different = temp_macro_clusters(&names(8), &[0, 1, 2, 3, 4, 5, 6, 7], 0);
+    assert_eq!(all_different.distinct_masters, 8);
+
+    // And that difference is exactly what switches exchange on or off.
+    assert!(macro_placement_probabilities(0.2, 0.2, 0.2, 0.2, all_same.distinct_masters, 8).exchange > 0.0);
+    assert_eq!(
+        macro_placement_probabilities(0.2, 0.2, 0.2, 0.2, all_different.distinct_masters, 8).exchange,
+        0.0
+    );
+}
+
+/// ⚠️ The visit order does not change the distinct count.
+#[test]
+fn the_master_count_does_not_depend_on_order() {
+    let a = temp_macro_clusters(&names(4), &[1, 2, 1, 2], 0);
+    let b = temp_macro_clusters(&names(4), &[2, 2, 1, 1], 0);
+    assert_eq!(a.distinct_masters, b.distinct_masters);
+    assert_eq!(a.distinct_masters, 2);
+}
+
+/// ℹ️ A cluster with no macros produces nothing and consumes no ids.
+#[test]
+fn no_macros_consumes_no_ids() {
+    let got = temp_macro_clusters(&[], &[], 42);
+    assert!(got.clusters.is_empty());
+    assert_eq!(got.next_cluster_id, 42);
+    assert_eq!(got.distinct_masters, 0);
+}
