@@ -39,6 +39,43 @@ pub struct Clustering {
     /// Upstream `reportDesignData`, which `init` emits only once it knows there is work to do.
     /// ⚠️ `None` for a refused or vacuous run — upstream returns before reporting in both cases.
     pub report: Option<crate::report::DesignReport>,
+    /// What the next stage needs and this one already computed.
+    /// ⚠️ `None` exactly when `report` is — a run that never clustered has nothing to shape.
+    pub shaping: Option<ShapingHandoff>,
+}
+
+/// Everything `runCoarseShaping` reads that the clustering stage has already worked out.
+///
+/// 🔑 **Upstream does not need this type at all**: both stages are methods on `HierRTLMP` and
+/// share one `tree_`, so shaping simply reads what clustering left behind. Here the values are
+/// handed over explicitly, because the alternative is a mutable tree two stages can both reach
+/// into — and the point of the split is that the second stage cannot change the first's answer.
+#[derive(Debug, Clone, PartialEq)]
+pub struct ShapingHandoff {
+    pub die: Rect,
+    /// `setFloorplanShape`'s result — the core, or the global fence clipped to it.
+    pub floorplan: Rect,
+    /// ⚠️ **Needs BOTH conditions.** Upstream sets it inside the no-standard-cells branch and
+    /// only when the design also has no IO clusters (`clusterEngine.cpp` ~719). A design of pure
+    /// macros WITH pins is not this case, and `boundary_push1` is exactly that design.
+    pub has_only_macros: bool,
+    pub has_io_pads: bool,
+    /// The TOP module's standard-cell area. Zero means every blockage would have zero depth, and
+    /// upstream returns rather than make them.
+    pub top_std_cell_area: i64,
+    /// `(width, height)` WITH halo, by instance index. ⚠️ `(0, 0)` for anything that is not a
+    /// macro; the shaping stage only ever asks about macros.
+    pub macro_dims: Vec<(i64, i64)>,
+    /// Summed over the UNFIXED macros, as `init` computed it for the MPL-16 test.
+    pub macro_with_halo_area: i64,
+    pub io_bundles: Vec<crate::regions::IoRegion>,
+    pub constrained_regions: Vec<crate::regions::IoRegion>,
+    /// Block ports whose first pin is fixed — the bundle builder's denominator.
+    pub fixed_ios: i64,
+    /// Block ports whose first pin is NOT fixed — the constraint builder's denominator.
+    pub unfixed_ios: i64,
+    pub has_unconstrained_ios: bool,
+    pub blocked_regions_for_pins: Vec<Rect>,
 }
 
 /// Everything the stage reads from the database.
@@ -54,6 +91,11 @@ pub struct DesignInputs<'a> {
     pub geometry: &'a [Option<MacroGeometry>],
     /// Placement blockages, as read. ⚠️ Their **union** is what occupies area, not their sum.
     pub blockages: &'a [Rect],
+    /// `dbBlock::getBlockedRegionsForPins` — where pins may NOT sit.
+    ///
+    /// ⚠️ **Not the same thing as `blockages`.** These are die-edge lines consulted only by the
+    /// coarse-shaping stage; placement blockages are areas inside the core.
+    pub blocked_regions_for_pins: &'a [Rect],
     /// Upstream `getMinimumSpacing`, computed once over every macro's geometry.
     pub minimum_spacing: i64,
     /// Reported verbatim; the engine does not use it.
@@ -131,6 +173,17 @@ pub fn run_clustering(input: &DesignInputs, opts: &ClusterOptions) -> Clustering
         let h = halos[i];
         (g.master_width + h.left + h.right) * (g.master_height + h.bottom + h.top)
     };
+    // (width, height) WITH halo, per instance — what the shaping stage measures a macro by.
+    let macro_dims: Vec<(i64, i64)> = (0..design.instances.len())
+        .map(|i| match input.geometry[i].as_ref() {
+            Some(g) => {
+                let h = halos[i];
+                (g.master_width + h.left + h.right, g.master_height + h.bottom + h.top)
+            }
+            None => (0, 0),
+        })
+        .collect();
+
     if !crate::feasibility::movable_cells_fit(
         design,
         &placement_area,
@@ -160,6 +213,7 @@ pub fn run_clustering(input: &DesignInputs, opts: &ClusterOptions) -> Clustering
             status: Status::Vacuous,
             refusal: None,
             report: None,
+            shaping: None,
         };
     }
 
@@ -230,7 +284,24 @@ pub fn run_clustering(input: &DesignInputs, opts: &ClusterOptions) -> Clustering
         for c in builder.one_cluster_per_macro() {
             root.children.push(c);
         }
-        return Clustering { root, status: Status::Applied, refusal: None, report };
+        return Clustering {
+            root,
+            status: Status::Applied,
+            refusal: None,
+            report,
+            shaping: Some(shaping_handoff(
+                design,
+                input.pins,
+                input.blocked_regions_for_pins,
+                &placement_area,
+                design_metrics.std_cell_area,
+                macro_with_halo_area,
+                macro_dims,
+                &io,
+                !pads.is_empty(),
+                design_metrics.num_std_cell,
+            )),
+        };
     }
 
     // ---- the mixed path: descend the levels, then split the mixed leaves
@@ -273,7 +344,24 @@ pub fn run_clustering(input: &DesignInputs, opts: &ClusterOptions) -> Clustering
     let _virtual = crate::tree::split_mixed_leaves(&mut root, &mut ctx, &mut next_id);
 
     let _ = (is_ignorable_marker(), ClusterType::Mixed, IoClusters::default);
-    Clustering { root, status: Status::Applied, refusal: None, report }
+    Clustering {
+        root,
+        status: Status::Applied,
+        refusal: None,
+        report,
+        shaping: Some(shaping_handoff(
+            design,
+            input.pins,
+            input.blocked_regions_for_pins,
+            &placement_area,
+            design_metrics.std_cell_area,
+            macro_with_halo_area,
+            macro_dims,
+            &io,
+            !pads.is_empty(),
+            design_metrics.num_std_cell,
+        )),
+    }
 }
 
 fn is_ignorable_marker() -> fn(&crate::design::Instance) -> bool {
@@ -330,11 +418,69 @@ fn overlaps(a: &Rect, b: &Rect) -> bool {
     a.x_min < b.x_max && b.x_min < a.x_max && a.y_min < b.y_max && b.y_min < a.y_max
 }
 
+/// Gather what the shaping stage needs, at the point every value is already in hand.
+///
+/// ⚠️ Called at BOTH success returns. The no-standard-cells branch returns early and still goes
+/// on to be shaped — `macro_only` and `boundary_push1` both take it.
+#[allow(clippy::too_many_arguments)]
+fn shaping_handoff(
+    design: &Design,
+    pins: &[Pin],
+    blocked_regions_for_pins: &[Rect],
+    floorplan: &Rect,
+    top_std_cell_area: i64,
+    macro_with_halo_area: i64,
+    macro_dims: Vec<(i64, i64)>,
+    io: &IoClusters,
+    has_io_pads: bool,
+    num_std_cell: i32,
+) -> ShapingHandoff {
+    let die = design.die_area;
+    // ⚠️ Upstream measures an IO cluster by its BBOX, which for every kind that reaches here is a
+    // LINE on a die edge. A cluster without one contributes nothing rather than a stray point.
+    let as_region = |c: &Cluster| -> Option<crate::regions::IoRegion> {
+        let line = c.io_region?;
+        Some(crate::regions::IoRegion {
+            region: crate::regions::BoundaryRegion {
+                boundary: crate::regions::boundary_of(&die, &line),
+                line,
+            },
+            ios: c.num_io_pins as i64,
+        })
+    };
+    ShapingHandoff {
+        die,
+        floorplan: *floorplan,
+        has_only_macros: num_std_cell == 0 && !io.has_io_clusters,
+        has_io_pads,
+        top_std_cell_area,
+        macro_dims,
+        macro_with_halo_area,
+        io_bundles: io.bundles.iter().filter_map(as_region).collect(),
+        // ⚠️ The CONSTRAINED ones only. An unconstrained cluster is served by the available-region
+        // builder instead, and counting it here would give it a blockage from both.
+        constrained_regions: io
+            .pin_clusters
+            .iter()
+            .filter(|c| !c.is_cluster_of_unconstrained_io_pins)
+            .filter_map(as_region)
+            .collect(),
+        fixed_ios: pins.iter().filter(|p| p.is_fixed).count() as i64,
+        unfixed_ios: pins.iter().filter(|p| !p.is_fixed).count() as i64,
+        has_unconstrained_ios: io
+            .pin_clusters
+            .iter()
+            .any(|c| c.is_cluster_of_unconstrained_io_pins),
+        blocked_regions_for_pins: blocked_regions_for_pins.to_vec(),
+    }
+}
+
 fn refuse(r: Refusal) -> Clustering {
     Clustering {
         root: Cluster::new(0, "root"),
         status: Status::Refused,
         refusal: Some(r),
         report: None,
+        shaping: None,
     }
 }

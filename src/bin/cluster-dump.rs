@@ -17,6 +17,7 @@ fn main() {
     let args: Vec<String> = std::env::args().skip(1).collect();
     let mut path = None;
     let mut want_report = false;
+    let mut want_shaping = false;
     let mut use_full_halo = false;
     let mut base_halo: Option<[f64; 4]> = None;
     let mut macro_halos: Vec<(String, [f64; 4])> = Vec::new();
@@ -24,6 +25,7 @@ fn main() {
     while let Some(a) = it.next() {
         match a.as_str() {
             "--report" => want_report = true,
+            "--shaping" => want_shaping = true,
             "--use-full-halo" => use_full_halo = true,
             "--base-halo" => {
                 let Some(spec) = it.next() else { usage("--base-halo needs l,b,r,t in microns") };
@@ -42,8 +44,8 @@ fn main() {
     }
     let Some(path) = path else {
         usage(
-            "usage: cluster-dump [--report] [--use-full-halo] [--base-halo l,b,r,t] \
-             [--macro-halo NAME=l,b,r,t] <design.odb>   (halos in microns)",
+            "usage: cluster-dump [--report|--shaping] [--use-full-halo] \
+             [--base-halo l,b,r,t] [--macro-halo NAME=l,b,r,t] <design.odb>   (halos in microns)",
         )
     };
 
@@ -62,6 +64,7 @@ fn main() {
     let nets = vyges_mpl::read::read_nets(&db, &design, &pins);
     let geometry = vyges_mpl::read::read_macro_geometry(&db, &design);
     let blockages = vyges_mpl::read::read_blockages(&db);
+    let blocked_for_pins = vyges_mpl::read::read_blocked_regions_for_pins(&db);
 
     // ⚠️ Halos arrive by instance NAME on the command line and by index in the engine. A name
     // that matches nothing is an error, not a silent no-op — it would look like the halo applied.
@@ -86,6 +89,7 @@ fn main() {
         nets: &nets,
         geometry: &geometry,
         blockages: &blockages,
+        blocked_regions_for_pins: &blocked_for_pins,
         minimum_spacing: vyges_mpl::read::minimum_spacing(&db, &design),
         manufacturing_grid: db.manufacturing_grid().unwrap_or(None).unwrap_or(0),
     };
@@ -109,7 +113,83 @@ fn main() {
         }
         return;
     }
+    if want_shaping {
+        print_coarse_shaping_trace(r, &blockages, dbu);
+        return;
+    }
     print!("{}", vyges_mpl::dump::physical_hierarchy(&r.root));
+}
+
+/// Run the coarse-shaping stage on a clustered design and print upstream's `coarse_shaping`
+/// trace, so `openroad -no_init` output and ours can be diffed line for line.
+///
+/// ⛔ **A refusal gets its own exit code (4).** Eight of the regression designs anneal at the
+/// root, and this engine refuses those by name rather than approximating them. Printing a partial
+/// trace for one would put a SHORTER but otherwise matching block in front of the harness, which
+/// reads as a pass on everything it did emit.
+fn print_coarse_shaping_trace(
+    r: vyges_mpl::engine::Clustering,
+    blockages: &[vyges_mpl::design::Rect],
+    dbu: i32,
+) {
+    use vyges_mpl::cluster::ClusterType;
+    let Some(h) = r.shaping else {
+        eprintln!("no shaping inputs: the run produced none");
+        std::process::exit(3);
+    };
+
+    // Upstream `computePinAccessBaseDepth`'s two passes over the ROOT's children: the standard-
+    // cell clusters, and only if those come to nothing, the mixed ones.
+    let area_of = |t: ClusterType| -> i64 {
+        r.root
+            .children
+            .iter()
+            .filter(|c| c.cluster_type == t)
+            .map(|c| c.std_cell_area() + c.macro_area())
+            .sum()
+    };
+    let std_cell_children = area_of(ClusterType::StdCell);
+    let mixed_children = area_of(ClusterType::Mixed);
+    let root_area = h.floorplan.area();
+    let base_depth = |io_span: i64| -> i64 {
+        // ⚠️ Upstream errors (MPL-67) on a zero-area root. It cannot arise here: a design that
+        // got this far has a floorplan, and `setFloorplanShape` refuses an empty one (MPL-68).
+        vyges_mpl::shaping::pin_access_base_depth(
+            std_cell_children,
+            mixed_children,
+            h.macro_with_halo_area,
+            root_area,
+            io_span,
+        )
+        .unwrap_or(0)
+    };
+
+    let input = vyges_mpl::shaping::CoarseInput {
+        die: h.die,
+        floorplan: h.floorplan,
+        has_only_macros: h.has_only_macros,
+        has_io_pads: h.has_io_pads,
+        top_std_cell_area: h.top_std_cell_area,
+        blockages,
+        macro_dims: &|i| h.macro_dims[i],
+        io_bundles: &h.io_bundles,
+        fixed_ios: h.fixed_ios,
+        constrained_regions: &h.constrained_regions,
+        unfixed_ios: h.unfixed_ios,
+        blocked_regions_for_pins: &h.blocked_regions_for_pins,
+        has_unconstrained_ios: h.has_unconstrained_ios,
+        base_depth: &base_depth,
+    };
+
+    let mut root = r.root;
+    let mut trace = vyges_mpl::trace::CoarseTrace::recording();
+    match vyges_mpl::shaping::run_coarse_shaping_traced(&mut root, &input, dbu, &mut trace) {
+        Ok(_) => print!("{}", trace.finish()),
+        Err(e) => {
+            eprintln!("shaping refused: {e:?}");
+            std::process::exit(4);
+        }
+    }
 }
 
 /// `micronsToDbu`: multiply by the tech's units per micron and **round**, not truncate.

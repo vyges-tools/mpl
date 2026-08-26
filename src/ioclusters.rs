@@ -194,6 +194,9 @@ pub fn create_io_clusters(pins: &[Pin], die: &Rect, first_id: ClusterId) -> IoCl
             for i in 0..IO_BUNDLES_PER_EDGE {
                 let mut c = Cluster::new(out.next_id, bundle_name(edge, i));
                 c.is_io_bundle = true;
+                // Upstream's `getBBox()` for a bundle: its slice of the edge, which the
+                // pin-access builders measure and turn into a blockage.
+                c.io_region = Some(bundle_rect(edge, i, die, spans));
                 out.next_id += 1;
                 out.bundles.push(c);
             }
@@ -239,7 +242,11 @@ pub fn create_io_clusters(pins: &[Pin], die: &Rect, first_id: ClusterId) -> IoCl
         let mut c = Cluster::new(out.next_id, format!("ios_{}", out.next_id));
         c.is_cluster_of_unplaced_io_pins = true;
         match &pin.constraint {
-            Some(region) => c.constraint_region = Some(*region),
+            Some(region) => {
+                c.constraint_region = Some(*region);
+                // ⚠️ The same rectangle, kept under both names on purpose — see `io_region`.
+                c.io_region = Some(*region);
+            }
             None => {
                 c.is_cluster_of_unconstrained_io_pins = true;
                 unconstrained = Some(c.id);

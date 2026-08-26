@@ -56,6 +56,13 @@ pub struct Cluster {
     /// The region an unplaced-IO cluster is restricted to. ⚠️ Two pins share a cluster only when
     /// their regions are IDENTICAL — this is matched by equality, not by overlap.
     pub constraint_region: Option<crate::design::Rect>,
+    /// Upstream `Cluster::getBBox()` for an IO cluster — always a **LINE** on a die edge.
+    ///
+    /// 🔑 Set for both kinds that carry one: a bundle's slice of its edge, and a constrained pin
+    /// cluster's region. ⚠️ Distinct from `constraint_region`, which stays the pin-matching KEY;
+    /// the two hold the same rectangle for a constrained cluster and are not interchangeable,
+    /// because a bundle has a bbox and no constraint.
+    pub io_region: Option<crate::design::Rect>,
     /// The outlines this cluster may take, filled by the shaping stage.
     /// ⚠️ Empty means *not shaped*, which is a different thing from *no legal shape* — the latter
     /// is an MPL-4 error and never reaches here.
@@ -81,6 +88,7 @@ impl Cluster {
             is_fixed_macro: false,
             num_io_pins: 0,
             constraint_region: None,
+            io_region: None,
             tilings: Vec::new(),
         }
     }

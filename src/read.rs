@@ -293,6 +293,24 @@ pub fn read_macro_geometry(db: &Db, design: &Design) -> Vec<Option<MacroGeometry
 /// ⚠️ Upstream takes **every** blockage the block holds — soft and hard alike — and unions them.
 /// Filtering by softness here would understate the occupied area and pass a design that upstream
 /// refuses.
+/// `dbBlock::getBlockedRegionsForPins` — the die-edge stretches where pins may not sit.
+///
+/// ⚠️ **Not placement blockages.** These are lines on the boundary, read only by coarse shaping;
+/// `read_blockages` returns areas inside the core. Reading one where the other is meant produces
+/// blockages of a plausible size in entirely the wrong places.
+pub fn read_blocked_regions_for_pins(db: &Db) -> Vec<Rect> {
+    db.blocked_regions_for_pins()
+        .unwrap_or_default()
+        .into_iter()
+        .map(|(x0, y0, x1, y1)| Rect {
+            x_min: x0 as i64,
+            y_min: y0 as i64,
+            x_max: x1 as i64,
+            y_max: y1 as i64,
+        })
+        .collect()
+}
+
 pub fn read_blockages(db: &Db) -> Vec<Rect> {
     db.blockage_boxes()
         .unwrap_or_default()
