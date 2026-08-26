@@ -306,3 +306,167 @@ fn a_single_element_sequence_is_left_alone_and_draws_nothing() {
     let mut fresh = Mt19937::new(5);
     assert_eq!(g.next(), fresh.next(), "no words consumed by either");
 }
+
+// ---------------------------------------------------------------- the cost
+
+use vyges_mpl::anneal::{
+    area_penalty, average, fixed_macros_penalty, norm_cost, outline_penalty, Normalization,
+    Penalties, ShapingWeights,
+};
+
+/// 🔑 **A packing that fits costs nothing in outline.** Both maxima pin to the outline, the
+/// product equals its area, and the difference is zero.
+#[test]
+fn a_packing_inside_the_outline_has_no_outline_penalty() {
+    assert_eq!(outline_penalty(100, 100, 300, 250), 0.0);
+    assert_eq!(outline_penalty(300, 250, 300, 250), 0.0, "exactly filling it is still zero");
+}
+
+/// ⚠️ Overhang on ONE axis still uses the outline's extent on the other, so the penalty is not
+/// the overhanging strip alone.
+#[test]
+fn overhang_is_measured_against_the_full_outline() {
+    // 400 wide against a 300 x 250 outline: 400 * 250 - 300 * 250 = 25000.
+    let got = outline_penalty(400, 100, 300, 250);
+    assert_eq!(got, 25000.0 / 75000.0);
+}
+
+/// ⛔ **Narrowing to `f32` happens BEFORE the division.** This searches for a case where the two
+/// orders disagree and then pins ours to the reference's order — if no such case existed the
+/// distinction would be vacuous and this test would say so.
+#[test]
+fn the_overhang_is_narrowed_before_it_is_divided() {
+    let (ow, oh) = (300_000i32, 250_000i32);
+    let outline_area = ow as i64 * oh as i64;
+
+    let mut found = None;
+    for extra in 1..4000i32 {
+        let w = ow + extra;
+        let h = oh + extra;
+        let overhang = (w as i64 * h as i64) - outline_area;
+        let narrow_then_divide = (overhang as f32) / outline_area as f32;
+        let divide_then_narrow = (overhang as f64 / outline_area as f64) as f32;
+        if narrow_then_divide != divide_then_narrow {
+            found = Some((w, h, narrow_then_divide, divide_then_narrow));
+            break;
+        }
+    }
+
+    let (w, h, reference_order, other_order) =
+        found.expect("no case distinguishes the two orders — this test would prove nothing");
+    assert_ne!(reference_order, other_order);
+    assert_eq!(
+        outline_penalty(w, h, ow, oh),
+        reference_order,
+        "we must follow the reference's order, not the more accurate one"
+    );
+}
+
+/// The area penalty is the ratio of the two areas; the micron conversion cancels.
+#[test]
+fn the_area_penalty_is_the_ratio_of_the_areas() {
+    let outline_area = 300i64 * 250;
+    assert_eq!(area_penalty(300, 250, outline_area, 2000), 1.0);
+    assert_eq!(area_penalty(150, 250, outline_area, 2000), 0.5);
+}
+
+/// ⚠️ **The area term enters the cost undivided.** Every other term is divided by its
+/// normalisation factor; this one is only gated by it. A factor of 4 must leave the area
+/// contribution unchanged.
+#[test]
+fn the_area_term_is_not_divided_by_its_normalisation_factor() {
+    let p = Penalties { area: 0.5, outline: 0.0, fixed_macros: 0.0 };
+    let w = ShapingWeights { area: 1.0, outline: 1000.0, fixed_macros: 100.0 };
+    let one = norm_cost(&p, &w, &Normalization { area: 1.0, ..Default::default() });
+    let four = norm_cost(&p, &w, &Normalization { area: 4.0, ..Default::default() });
+    assert_eq!(one, four, "the factor only gates the term");
+    assert_eq!(one, 0.5);
+}
+
+/// ⚠️ The outline term IS divided, which is what makes it different from the area term.
+#[test]
+fn the_outline_term_is_divided_by_its_normalisation_factor() {
+    let p = Penalties { area: 0.0, outline: 0.5, fixed_macros: 0.0 };
+    let w = ShapingWeights::default();
+    let one = norm_cost(&p, &w, &Normalization { outline: 1.0, ..Default::default() });
+    let two = norm_cost(&p, &w, &Normalization { outline: 2.0, ..Default::default() });
+    assert_eq!(one, 500.0);
+    assert_eq!(two, 250.0);
+}
+
+/// ⛔ **A zero factor drops its term rather than dividing by zero.**
+#[test]
+fn a_zero_normalisation_factor_drops_its_term() {
+    let p = Penalties { area: 1.0, outline: 1.0, fixed_macros: 1.0 };
+    let w = ShapingWeights::default();
+    let cost = norm_cost(&p, &w, &Normalization { area: 0.0, outline: 0.0, fixed_macros: 0.0 });
+    assert_eq!(cost, 0.0);
+    assert!(cost.is_finite(), "and it is finite, not an infinity from dividing by zero");
+}
+
+fn movable(x: i32, y: i32, width: i32, height: i32) -> SoftMacro {
+    SoftMacro { x, y, width, height, fixed: false }
+}
+
+/// The penalty is the overlapping AREA, in microns squared.
+#[test]
+fn the_fixed_macro_penalty_is_the_overlap_area() {
+    let macros = [movable(0, 0, 100, 100)];
+    let sp = SequencePair { pos: vec![0], neg: vec![0] };
+    // A fixed macro covering the top-right quarter: 50 x 50 of overlap.
+    let fixed = [(50, 50, 150, 150)];
+    let got = fixed_macros_penalty(&macros, &fixed, &sp, 10);
+    assert_eq!(got, (50.0 * 50.0) / 100.0, "2500 dbu² at 10 dbu per micron is 25 µm²");
+}
+
+/// ⛔ **A disjoint pair whose intersection has BOTH dimensions negative has a POSITIVE area.**
+/// The `< 0` guard is what stops that being added; without it a macro far away on the diagonal
+/// would score as though it overlapped.
+#[test]
+fn a_diagonally_disjoint_macro_is_not_counted() {
+    let macros = [movable(0, 0, 10, 10)];
+    let sp = SequencePair { pos: vec![0], neg: vec![0] };
+    let fixed = [(100, 100, 110, 110)];
+    // The naive intersection is (100,100)-(10,10): dx = dy = -90, and (-90) * (-90) = 8100.
+    assert_eq!(fixed_macros_penalty(&macros, &fixed, &sp, 10), 0.0);
+}
+
+/// ⚠️ A macro that is itself fixed is skipped, so a fixed macro never penalises itself.
+#[test]
+fn a_fixed_macro_does_not_penalise_itself() {
+    let macros = [SoftMacro { x: 0, y: 0, width: 100, height: 100, fixed: true }];
+    let sp = SequencePair { pos: vec![0], neg: vec![0] };
+    let fixed = [(0, 0, 100, 100)];
+    assert_eq!(fixed_macros_penalty(&macros, &fixed, &sp, 10), 0.0);
+}
+
+/// ℹ️ No fixed macros at all means no penalty and no work.
+#[test]
+fn no_fixed_macros_means_no_penalty() {
+    let macros = [movable(0, 0, 100, 100)];
+    let sp = SequencePair { pos: vec![0], neg: vec![0] };
+    assert_eq!(fixed_macros_penalty(&macros, &[], &sp, 10), 0.0);
+}
+
+/// ⚠️ **The mean is accumulated in `f32`.** Summing in `f64` and narrowing at the end gives a
+/// different answer once the list is long enough for the running sum to lose the small terms;
+/// this searches for such a list rather than asserting the distinction exists.
+#[test]
+fn the_average_accumulates_in_single_precision() {
+    // ⚠️ At 1e8 the `f32` spacing is 8, so each `1.0` added to the running sum rounds away
+    // entirely. At 1e7 the spacing is 1 and they all survive — the first attempt at this fixture
+    // used 1e7 and proved nothing, which is why the assertion below exists.
+    let values: Vec<f32> =
+        std::iter::once(1.0e8f32).chain(std::iter::repeat_n(1.0f32, 4096)).collect();
+    let in_f32 = average(&values);
+    let in_f64 = (values.iter().map(|&v| v as f64).sum::<f64>() / values.len() as f64) as f32;
+    assert_ne!(in_f32, in_f64, "the fixture must actually distinguish the two");
+    let expected = values.iter().fold(0.0f32, |a, b| a + b) / values.len() as f32;
+    assert_eq!(in_f32, expected);
+}
+
+/// ℹ️ An empty list averages to zero rather than a NaN.
+#[test]
+fn an_empty_average_is_zero() {
+    assert_eq!(average(&[]), 0.0);
+}

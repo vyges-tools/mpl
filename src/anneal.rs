@@ -293,3 +293,169 @@ pub fn choose_action(
     }
     Some(probabilities.action_for(canonical_f32(rng)))
 }
+
+// ---------------------------------------------------------------- the cost
+
+impl SoftMacro {
+    /// `(x_min, y_min, x_max, y_max)`, as upstream's `getBBox`.
+    pub fn bbox(&self) -> (i32, i32, i32, i32) {
+        (self.x, self.y, self.x + self.width, self.y + self.height)
+    }
+}
+
+/// `dbuAreaToMicrons`: an area divided by the square of the units per micron, in `f64`.
+fn area_to_microns(dbu_area: i64, dbu_per_micron: i32) -> f64 {
+    let d = dbu_per_micron as f64;
+    dbu_area as f64 / (d * d)
+}
+
+/// Upstream `getAreaPenalty`: the packing's area over the outline's, as a ratio.
+///
+/// ⚠️ **Both sides are converted to microns first**, and the conversion then cancels. Reproduced
+/// as written rather than simplified to `area / outline_area`: the two divisions round, and the
+/// point of this file is to be the same arithmetic, not equivalent arithmetic.
+///
+/// ⚠️ **`calNormCost` does NOT divide this by its normalisation factor** — unlike every other
+/// term, the area penalty enters the cost raw. The factor is computed and then used only as a
+/// `> 0` guard.
+pub fn area_penalty(width: i32, height: i32, outline_area: i64, dbu_per_micron: i32) -> f32 {
+    // `getArea` widens only the second operand, which is enough: both are `int`.
+    let area = width as i64 * height as i64;
+    (area_to_microns(area, dbu_per_micron) / area_to_microns(outline_area, dbu_per_micron)) as f32
+}
+
+/// Upstream `calOutlinePenalty`: how much the packing's bounding box overhangs the outline.
+///
+/// 🔑 **Zero when the packing fits.** `max` on each axis pins the box to the outline whenever the
+/// packing is smaller, so the product equals the outline's area and the difference vanishes. The
+/// penalty only measures overhang.
+///
+/// ⛔ **The int64 difference is NARROWED TO `f32` BEFORE the division, not after.** Upstream
+/// assigns it to a `float` member and divides on the next statement. With a die area in the
+/// billions of database units that narrowing loses bits, and computing the whole expression in
+/// `f64` before narrowing gives a different answer.
+pub fn outline_penalty(width: i32, height: i32, outline_width: i32, outline_height: i32) -> f32 {
+    let max_width = outline_width.max(width);
+    let max_height = outline_height.max(height);
+    let outline_area = outline_width as i64 * outline_height as i64;
+    let overhang = (max_width as i64 * max_height as i64) - outline_area;
+    let narrowed = overhang as f32;
+    narrowed / outline_area as f32
+}
+
+/// Upstream `calFixedMacrosPenalty`: the total area a movable macro steals from a fixed one.
+///
+/// ⛔ **This term is live even for shaping.** Its weight is a hardcoded `100.0` on the class, not
+/// one of the soft weights the shaping caller zeroes — so the three `fixed_*` designs are scored
+/// on it while every other soft penalty drops out.
+///
+/// ⚠️ **The accumulation order is fixed macros OUTER, sequence INNER.** Floating-point addition is
+/// not associative, so swapping the loops changes the sum's last bits.
+///
+/// ⚠️ **`< 0`, not `<= 0`.** A zero-area touching overlap is not skipped; it adds nothing, so the
+/// distinction is invisible in the result — but an empty intersection whose two dimensions are
+/// BOTH negative has a positive `area()`, and it is this guard that stops it being counted.
+pub fn fixed_macros_penalty(
+    macros: &[SoftMacro],
+    fixed: &[(i32, i32, i32, i32)],
+    sp: &SequencePair,
+    dbu_per_micron: i32,
+) -> f32 {
+    if fixed.is_empty() {
+        return 0.0;
+    }
+    let mut penalty = 0.0f32;
+    for &(fx0, fy0, fx1, fy1) in fixed {
+        for &id in &sp.pos {
+            let macro_ = &macros[id];
+            if macro_.fixed {
+                continue;
+            }
+            let (mx0, my0, mx1, my1) = macro_.bbox();
+            let (x0, y0) = (fx0.max(mx0), fy0.max(my0));
+            let (x1, y1) = (fx1.min(mx1), fy1.min(my1));
+            let (dx, dy) = (x1 - x0, y1 - y0);
+            if dx < 0 || dy < 0 {
+                continue;
+            }
+            penalty += area_to_microns(dx as i64 * dy as i64, dbu_per_micron) as f32;
+        }
+    }
+    penalty
+}
+
+/// The weights the tiling search is built with.
+///
+/// 🔑 **Only two of the nine terms are alive.** The shaping caller passes area `1.0` and outline
+/// `1000.0`, zeroes wirelength, guidance and fence, and passes a default `SASoftWeights` — so
+/// boundary, notch and soft blockage vanish too. What remains is area, outline, and the fixed
+/// macros term whose weight is a class constant.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct ShapingWeights {
+    pub area: f32,
+    pub outline: f32,
+    pub fixed_macros: f32,
+}
+
+impl Default for ShapingWeights {
+    fn default() -> Self {
+        Self { area: 1.0, outline: 1000.0, fixed_macros: 100.0 }
+    }
+}
+
+/// The normalisation factors `initialize` measures, after its `<= 1e-4` floor.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct Normalization {
+    pub area: f32,
+    pub outline: f32,
+    pub fixed_macros: f32,
+}
+
+impl Default for Normalization {
+    fn default() -> Self {
+        Self { area: 1.0, outline: 1.0, fixed_macros: 1.0 }
+    }
+}
+
+/// One packing's penalties, as `calPenalty` leaves them.
+#[derive(Debug, Clone, Copy, PartialEq, Default)]
+pub struct Penalties {
+    pub area: f32,
+    pub outline: f32,
+    pub fixed_macros: f32,
+}
+
+/// Upstream `SACoreSoftMacro::calNormCost`, reduced to the terms shaping leaves alive.
+///
+/// ⚠️ **Each term is gated on its normalisation factor being `> 0`**, and `initialize` floors any
+/// factor at or below `1e-4` to `1.0` — so in practice every gate is open. The gate is reproduced
+/// because a factor of exactly zero would otherwise divide by zero rather than drop the term.
+///
+/// ⚠️ **The addition order is area, outline, then fixed macros**, matching the source. Reordering
+/// changes the last bits, and the accept/reject test compares these values directly.
+pub fn norm_cost(p: &Penalties, w: &ShapingWeights, n: &Normalization) -> f32 {
+    let mut cost = 0.0f32;
+    if n.area > 0.0 {
+        // ⚠️ No division here — see `area_penalty`.
+        cost += w.area * p.area;
+    }
+    if n.outline > 0.0 {
+        cost += w.outline * p.outline / n.outline;
+    }
+    if n.fixed_macros > 0.0 {
+        cost += w.fixed_macros * p.fixed_macros / n.fixed_macros;
+    }
+    cost
+}
+
+/// Upstream `calAverage`: the mean, or zero for an empty list.
+///
+/// ⚠️ **`std::accumulate` from `0.0f`, so the sum is in `f32`** — it accumulates in the initial
+/// value's type, and summing in `f64` before narrowing gives a different mean.
+pub fn average(values: &[f32]) -> f32 {
+    if values.is_empty() {
+        return 0.0;
+    }
+    let sum = values.iter().fold(0.0f32, |a, b| a + b);
+    sum / values.len() as f32
+}
