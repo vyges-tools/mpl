@@ -639,3 +639,19 @@ fn a_tiny_threshold_does_not_collapse_a_mixed_cluster() {
     let got = apply_utilization(&macros, 10_000, true, 0.5, 0.33);
     assert!(got[0].area > 1, "still its inflated area, not one unit");
 }
+
+/// ⚠️ **Growing a cluster RECOMPUTES its area.** Upstream assigns the new shape with `setShapeF`,
+/// which sets `area_ = width * static_cast<int64_t>(height)` — the widening happens before the
+/// multiply, so a cluster larger than 2^31 database units square does not wrap here.
+///
+/// 🔑 Invisible inside the filler itself: `area` is read only by the zero-area skip, and a grown
+/// cluster is non-zero before and after. It is the consumers downstream that see a stale value —
+/// the summary's Area row first.
+#[test]
+fn growing_a_cluster_recomputes_its_area() {
+    let mut macros = [ds(100, 100, 200, 200, false, true)];
+    assert_eq!(macros[0].area, 200 * 200, "the fixture starts at its own size");
+    fill_dead_space(&mut macros, (1000, 1000));
+    assert_eq!((macros[0].width, macros[0].height), (1000, 1000), "it took the whole outline");
+    assert_eq!(macros[0].area, 1_000_000, "and its area followed the shape");
+}

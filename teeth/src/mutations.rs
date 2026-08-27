@@ -2369,6 +2369,13 @@ pub const MUTATIONS: &[Mutation] = &[
         want: r#"virtual_connections_are_stored_on_the_broken_leafs_parent_not_on_the_leaf_or_the_root"#,
     },
     Mutation {
+        name: r#"dead-space-keeps-the-stale-area"#,
+        file: r#"src/placement.rs"#,
+        find: r#"            macros[id].area = macros[id].width as i64 * macros[id].height as i64;"#,
+        replace: r#"            macros[id].area = macros[id].area;"#,
+        want: r#"growing_a_cluster_recomputes_its_area"#,
+    },
+    Mutation {
         name: r#"norm-sweep-skips-the-placement-terms"#,
         file: r#"src/anneal.rs"#,
         find: r#"            wirelength: mean(&|s| s.penalties.wirelength),"#,

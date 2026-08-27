@@ -1503,10 +1503,17 @@ pub fn fill_dead_space(macros: &mut [DeadSpaceMacro], outline: (i32, i32)) {
                 }
             }
 
+            // ⚠️ `setLocationF` then `setShapeF` — and **`setShapeF` RECOMPUTES THE AREA**
+            // (`width * static_cast<int64_t>(height)`, widened before the multiply, so unlike the
+            // fence term's zero test this one cannot wrap). Leaving `area` at its pre-fill value
+            // is invisible inside this function — it is read only by the zero-area skip, which a
+            // grown cluster passes either way — and wrong for every consumer downstream, starting
+            // with the Area row of the placement summary.
             macros[id].x = x_grid[x_start];
             macros[id].y = y_grid[y_start];
             macros[id].width = x_grid[x_end] - x_grid[x_start];
             macros[id].height = y_grid[y_end] - y_grid[y_start];
+            macros[id].area = macros[id].width as i64 * macros[id].height as i64;
         }
     }
 }
