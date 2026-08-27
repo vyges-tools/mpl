@@ -4508,3 +4508,73 @@ fn parent_nets(
     }
     nets
 }
+
+/// Upstream `runHierarchicalMacroPlacement`, composed over a real tree.
+///
+/// 🔑 **Connections are REBUILT before every parent, not once.** Upstream calls
+/// `rebuildConnections` inside `placeChildren`, so each level is annealed against a connection map
+/// derived from the instance-to-cluster association as it stands at that level — and that
+/// association is itself updated per parent. Building the map once, up front, is a different
+/// netlist for every level below the first.
+///
+/// ⚠️ **The caller supplies the per-parent context**, because everything in it — connections,
+/// blockages clipped to this outline, the fixed-terminal walk — depends on where in the tree we
+/// are. Threading it as a callback keeps that dependency visible instead of smuggling a mutable
+/// world through.
+///
+/// ℹ️ Returns the visits in order, which is the record the per-term oracle is scored against.
+pub fn run_hierarchical_macro_placement(
+    root: &crate::cluster::Cluster,
+    utilizations: &[f32],
+    num_threads: usize,
+    params: &crate::anneal::SaParameters,
+    probabilities: crate::anneal::ActionProbabilities,
+    weights: crate::anneal::SoftWeights,
+    random_seed: u32,
+    context_for: &mut dyn FnMut(&crate::cluster::Cluster) -> Option<(ParentProblem, i32)>,
+) -> Vec<PlacementVisit> {
+    let by_id = |id: i32| -> Option<&crate::cluster::Cluster> { find_cluster(root, id) };
+
+    let tree = PlacementTree {
+        kind: &|id| by_id(id).map_or(AreaKind::StdCellCluster, area_kind_of),
+        is_fixed_macro: &|id| by_id(id).is_some_and(|c| c.is_fixed_macro),
+        is_leaf: &|id| by_id(id).is_none_or(|c| c.children.is_empty()),
+        children: &|id| by_id(id).map_or(Vec::new(), |c| c.children.iter().map(|k| k.id).collect()),
+        utilizations,
+        num_threads,
+    };
+
+    let mut cached: Option<(i32, ParentProblem)> = None;
+    place_children(&tree, root.id, &mut |cluster_id, index, utilization| {
+        // ⚠️ Assembled ONCE per parent and reused across its ten runs — only the utilization and
+        // the seed change between them.
+        if cached.as_ref().is_none_or(|(id, _)| *id != cluster_id) {
+            let parent = by_id(cluster_id)?;
+            let (problem, _) = context_for(parent)?;
+            cached = Some((cluster_id, problem));
+        }
+        let (_, problem) = cached.as_ref()?;
+        anneal_one_run(
+            problem,
+            utilization,
+            // ⚠️ Cluster placement shares ONE seed across its runs — unlike macro placement,
+            // which varies it. The runs differ by their utilization alone.
+            random_seed,
+            params,
+            probabilities,
+            weights,
+        )
+        .map(|macros| {
+            let _ = index;
+            macros
+        })
+    })
+}
+
+/// Depth-first lookup by id. ⚠️ Ids are unique across the tree, so the first match is the only one.
+fn find_cluster(root: &crate::cluster::Cluster, id: i32) -> Option<&crate::cluster::Cluster> {
+    if root.id == id {
+        return Some(root);
+    }
+    root.children.iter().find_map(|c| find_cluster(c, id))
+}

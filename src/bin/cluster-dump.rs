@@ -26,6 +26,7 @@ fn main() {
         match a.as_str() {
             "--report" => want_report = true,
             "--shaping" => want_shaping = true,
+            "--place" => {}
             "--use-full-halo" => use_full_halo = true,
             "--base-halo" => {
                 let Some(spec) = it.next() else { usage("--base-halo needs l,b,r,t in microns") };
@@ -49,6 +50,7 @@ fn main() {
         )
     };
 
+    let place = std::env::args().any(|a| a == "--place");
     let db = match vyges_opendb::Db::open(&path) {
         Ok(d) => d,
         Err(e) => { eprintln!("cannot read {path}: {e}"); std::process::exit(2); }
@@ -114,7 +116,7 @@ fn main() {
         return;
     }
     if want_shaping {
-        print_coarse_shaping_trace(r, &blockages, dbu);
+        print_coarse_shaping_trace(r, &blockages, dbu, place);
         return;
     }
     print!("{}", vyges_mpl::dump::physical_hierarchy(&r.root));
@@ -131,6 +133,7 @@ fn print_coarse_shaping_trace(
     r: vyges_mpl::engine::Clustering,
     blockages: &[vyges_mpl::design::Rect],
     dbu: i32,
+    place: bool,
 ) {
     use vyges_mpl::cluster::ClusterType;
     let Some(h) = r.shaping else {
@@ -186,12 +189,102 @@ fn print_coarse_shaping_trace(
 
     let mut root = r.root;
     let mut trace = vyges_mpl::trace::CoarseTrace::recording();
-    match vyges_mpl::shaping::run_coarse_shaping_traced(&mut root, &input, dbu, &mut trace) {
-        Ok(_) => print!("{}", trace.finish()),
+    let shaping = match vyges_mpl::shaping::run_coarse_shaping_traced(&mut root, &input, dbu, &mut trace) {
+        Ok(s) => s,
         Err(e) => {
             eprintln!("shaping refused: {e:?}");
             std::process::exit(4);
         }
+    };
+    if !place {
+        print!("{}", trace.finish());
+        return;
+    }
+    report_placement(&root, &h, &shaping, dbu);
+}
+
+/// ⚠️ **A smoke path, not an oracle.** It runs the composed placement stage on a real design and
+/// reports what each parent did, so the wiring is exercised rather than assumed. Scoring against
+/// the reference's per-term penalty tables is a separate harness and is NOT this.
+fn report_placement(
+    root: &vyges_mpl::cluster::Cluster,
+    h: &vyges_mpl::engine::ShapingHandoff,
+    shaping: &vyges_mpl::shaping::CoarseShaping,
+    dbu: i32,
+) {
+    use vyges_mpl::placement as p;
+
+    let floorplan = h.floorplan;
+    let outline = (
+        floorplan.x_min as i32,
+        floorplan.y_min as i32,
+        floorplan.x_max as i32,
+        floorplan.y_max as i32,
+    );
+    let die = h.die;
+    let margin = 2 * ((die.x_max - die.x_min) + (die.y_max - die.y_min));
+
+    let (weights, tiny) =
+        p::placement_setup(1, vyges_mpl::anneal::SoftWeights::placement_defaults(), 0);
+    let utilizations = p::utilization_list(0.25, 10);
+
+    let blockages: Vec<(i32, i32, i32, i32)> = shaping
+        .placement_blockages
+        .iter()
+        .map(|b| (b.x_min as i32, b.y_min as i32, b.x_max as i32, b.y_max as i32))
+        .collect();
+    let soft: Vec<(i32, i32, i32, i32)> = shaping
+        .io_blockages
+        .iter()
+        .map(|b| (b.x_min as i32, b.y_min as i32, b.x_max as i32, b.y_max as i32))
+        .collect();
+
+    let visits = p::run_hierarchical_macro_placement(
+        root,
+        &utilizations,
+        10,
+        &vyges_mpl::anneal::SaParameters::default(),
+        vyges_mpl::anneal::ActionProbabilities::normalized(0.2, 0.2, 0.2, 0.2, 0.2),
+        weights,
+        0,
+        &mut |parent| {
+            let ctx = p::ParentContext {
+                connections_of: &|_| Vec::new(),
+                virtual_connections: &[],
+                blockages: &blockages,
+                soft_blockages: &soft,
+                fence_of: &|_| None,
+                guide_of: &|_| None,
+                terminals: &[],
+                root: p::Root {
+                    x: outline.0,
+                    y: outline.1,
+                    width: outline.2 - outline.0,
+                    height: outline.3 - outline.1,
+                },
+                die_margin: margin,
+                available_regions: &[],
+                constraint_region_of: &|_| None,
+                weights,
+                dbu_per_micron: dbu,
+                tiny_threshold: tiny,
+                min_ar: 0.33,
+            };
+            Some((p::build_parent_problem(parent, outline, &ctx), parent.id))
+        },
+    );
+
+    for v in &visits {
+        let what = match &v.outcome {
+            p::ParentOutcome::Placed { run, macros } => {
+                format!("placed, run {} of {}, {} macros", run.index, utilizations.len(), macros.len())
+            }
+            p::ParentOutcome::MacroCluster => "macro cluster".to_string(),
+            p::ParentOutcome::FixedMacroCluster => "fixed macro cluster".to_string(),
+            p::ParentOutcome::Leaf => "leaf".to_string(),
+            p::ParentOutcome::NoValidSolution(e) => format!("NO VALID SOLUTION (MPL-{})", e.code),
+        };
+        println!("cluster {:>3}  {what}", v.cluster);
     }
 }
 
