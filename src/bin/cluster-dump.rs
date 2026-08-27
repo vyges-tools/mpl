@@ -21,6 +21,9 @@ fn main() {
     let mut use_full_halo = false;
     let mut base_halo: Option<[f64; 4]> = None;
     let mut macro_halos: Vec<(String, [f64; 4])> = Vec::new();
+    // ⛔ `set_macro_guidance_region` is ENGINE state, like the halo commands — a prepared `.odb`
+    // cannot carry it, so the case's `.tcl` has to be translated onto this command line.
+    let mut macro_guides: Vec<(String, [f64; 4])> = Vec::new();
     let mut it = args.iter();
     while let Some(a) = it.next() {
         match a.as_str() {
@@ -40,6 +43,13 @@ fn main() {
                 };
                 macro_halos.push((name.to_string(), four(vals)));
             }
+            "--macro-guide" => {
+                let Some(spec) = it.next() else { usage("--macro-guide needs NAME=lx,ly,ux,uy") };
+                let Some((name, vals)) = spec.split_once('=') else {
+                    usage("--macro-guide needs NAME=lx,ly,ux,uy")
+                };
+                macro_guides.push((name.to_string(), four(vals)));
+            }
             other if !other.starts_with("--") => path = Some(other.to_string()),
             other => usage(&format!("unknown option {other}")),
         }
@@ -47,7 +57,8 @@ fn main() {
     let Some(path) = path else {
         usage(
             "usage: cluster-dump [--report|--shaping] [--use-full-halo] \
-             [--base-halo l,b,r,t] [--macro-halo NAME=l,b,r,t] <design.odb>   (halos in microns)",
+             [--base-halo l,b,r,t] [--macro-halo NAME=l,b,r,t] \
+             [--macro-guide NAME=lx,ly,ux,uy] <design.odb>   (all values in microns)",
         )
     };
 
@@ -86,6 +97,13 @@ fn main() {
             None => { eprintln!("no instance named {name}"); std::process::exit(2); }
         }
     }
+    let mut guide_regions: Vec<(usize, (i32, i32, i32, i32))> = Vec::new();
+    for (name, region) in &macro_guides {
+        match by_name.get(name.as_str()) {
+            Some(&i) => guide_regions.push((i, region_to_dbu(*region, dbu))),
+            None => { eprintln!("no instance named {name}"); std::process::exit(2); }
+        }
+    }
 
     let input = vyges_mpl::engine::DesignInputs {
         design: &design,
@@ -118,7 +136,9 @@ fn main() {
         return;
     }
     if want_shaping {
-        print_coarse_shaping_trace(r, &blockages, dbu, place, summaries, &design, &nets);
+        print_coarse_shaping_trace(
+            r, &blockages, dbu, place, summaries, &design, &nets, &guide_regions,
+        );
         return;
     }
     print!("{}", vyges_mpl::dump::physical_hierarchy(&r.root));
@@ -140,6 +160,7 @@ fn print_coarse_shaping_trace(
     summaries: bool,
     design: &vyges_mpl::design::Design,
     nets: &[vyges_mpl::netlist::DbNet],
+    guide_regions: &[(usize, (i32, i32, i32, i32))],
 ) {
     use vyges_mpl::cluster::ClusterType;
     let Some(h) = r.shaping else {
@@ -216,6 +237,7 @@ fn print_coarse_shaping_trace(
             nets,
             &|_| None,
             h.has_io_pads,
+            guide_regions,
         );
     } else {
         report_placement(&root, &h, &shaping, dbu);
@@ -273,6 +295,8 @@ fn report_placement(
                 blockages: &blockages,
                 soft_blockages: &soft,
                 fence_of: &|_| None,
+                // ℹ️ The `--place` smoke path never receives guides; `--placement-trace` is the
+                // mode the penalty tables are read from and the one that wires them.
                 guide_of: &|_| None,
                 terminals: &[],
                 root: p::Root {
@@ -322,12 +346,30 @@ fn print_placement_summaries(
     nets: &[vyges_mpl::netlist::DbNet],
     pin_cluster_of: &dyn Fn(usize) -> Option<i32>,
     has_io_pads: bool,
+    guide_regions: &[(usize, (i32, i32, i32, i32))],
 ) {
     use vyges_mpl::placement as p;
 
     // 🔑 **Rebuilt from the association as it stands**, which is what `rebuildConnections` does
     // inside `placeChildren` — not a map built once for the whole design.
     let assoc = vyges_mpl::tree::associate_instances(root, design);
+
+    // 🔑 **A cluster inherits the UNION of its macros' guides.** Upstream merges over
+    // `cluster->getHardMacros()`; the association is the same set, read the other way round.
+    // ⚠️ The merge happens BEFORE the outline clip and the `area() > 0` test, both of which
+    // `merged_region` applies downstream — merging after clipping would drop a guide that reaches
+    // the outline only through another macro's half of the union.
+    let mut guide_of_cluster: std::collections::BTreeMap<i32, (i32, i32, i32, i32)> =
+        std::collections::BTreeMap::new();
+    for &(inst, r) in guide_regions {
+        let Some(cluster) = assoc.get(inst).copied().flatten() else { continue };
+        guide_of_cluster
+            .entry(cluster)
+            .and_modify(|m| {
+                *m = (m.0.min(r.0), m.1.min(r.1), m.2.max(r.2), m.3.max(r.3));
+            })
+            .or_insert(r);
+    }
     let connections = vyges_mpl::netlist::build_connections(
         nets,
         design,
@@ -367,7 +409,7 @@ fn print_placement_summaries(
             blockages: &blockages,
             soft_blockages: &soft,
             fence_of: &|_| None,
-            guide_of: &|_| None,
+            guide_of: &|id| guide_of_cluster.get(&id).copied(),
             terminals: &[],
             root: p::Root {
                 x: outline.0,
@@ -438,6 +480,16 @@ fn print_placement_summaries(
 }
 
 /// `micronsToDbu`: multiply by the tech's units per micron and **round**, not truncate.
+/// A guidance region in microns, as `add_guidance_region` converts it.
+///
+/// ⚠️ **The SWIG entry point takes `float`, not `double`** — the Tcl value is narrowed to single
+/// precision before `micronsToDbu` ever sees it. Converting from `f64` would be more accurate than
+/// the reference and is therefore a different function; the narrowing is spelled out here.
+fn region_to_dbu(r: [f64; 4], dbu: i32) -> (i32, i32, i32, i32) {
+    let d = |v: f64| ((v as f32) as f64 * dbu as f64).round() as i32;
+    (d(r[0]), d(r[1]), d(r[2]), d(r[3]))
+}
+
 fn to_dbu(h: [f64; 4], dbu: i32) -> vyges_mpl::options::Halo {
     let d = |v: f64| (v * dbu as f64).round() as i64;
     vyges_mpl::options::Halo { left: d(h[0]), bottom: d(h[1]), right: d(h[2]), top: d(h[3]) }
