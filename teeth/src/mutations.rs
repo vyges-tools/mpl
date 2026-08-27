@@ -407,6 +407,87 @@ pub const MUTATIONS: &[Mutation] = &[
     let mut deferred_io: Vec<&AssemblyChild> = Vec::new();"#,
         want: r#"a_blockage_has_no_name"#,
     },
+    // ---------------------------------------------------------------- annealing one parent
+    Mutation {
+        name: r#"anneal-skips-initialize"#,
+        file: r#"src/placement.rs"#,
+        find: r#"    let init_temperature = search.initialize(&mut rng, params);"#,
+        replace: r#"    let init_temperature = 1.0;"#,
+        want: r#"a_different_seed_explores_differently"#,
+    },
+    Mutation {
+        name: r#"anneal-skips-the-enhancements"#,
+        file: r#"src/placement.rs"#,
+        find: r#"    run_enhancements(&mut search, single_array);"#,
+        replace: r#"    let _ = single_array;"#,
+        want: r#"the_enhancements_move_the_floorplan_off_the_corner"#,
+    },
+    Mutation {
+        name: r#"anneal-reports-every-run-valid"#,
+        file: r#"src/placement.rs"#,
+        find: r#"    if !search.is_valid(fixed_present) {
+        return None;
+    }"#,
+        replace: r#"    if false {
+        return None;
+    }"#,
+        want: r#"a_parent_that_cannot_fit_reports_invalid"#,
+    },
+    Mutation {
+        name: r#"anneal-ignores-the-utilization"#,
+        file: r#"src/placement.rs"#,
+        find: r#"        utilization,
+        problem.min_ar,
+    );"#,
+        replace: r#"        1.0,
+        problem.min_ar,
+    );"#,
+        want: r#"the_utilization_changes_what_fits"#,
+    },
+    Mutation {
+        name: r#"anneal-ignores-the-seed"#,
+        file: r#"src/placement.rs"#,
+        find: r#"    let mut rng = crate::rng::Mt19937::new(seed);"#,
+        replace: r#"    let mut rng = crate::rng::Mt19937::new(0);"#,
+        want: r#"a_different_seed_explores_differently"#,
+    },
+    Mutation {
+        name: r#"anneal-drops-the-reshaped-curves"#,
+        file: r#"src/placement.rs"#,
+        find: r#"            curves[r.id] = curve;"#,
+        replace: r#"            let _ = curve;"#,
+        want: r#"a_resize_moves_along_the_reshaped_curve"#,
+    },
+    Mutation {
+        name: r#"notch-thresholds-not-from-the-notch-pass"#,
+        file: r#"src/placement.rs"#,
+        find: r#"        if self.weights.notch > 0.0 {
+            // ⛔ Crossed: `h` from the HEIGHT, `v` from the WIDTH. See `notch_penalty`.
+            (self.outline_height / 10, self.outline_width / 10)
+        } else {"#,
+        replace: r#"        if false {
+            (self.outline_height / 10, self.outline_width / 10)
+        } else {"#,
+        want: r#"the_alignment_thresholds_come_from_the_notch_pass"#,
+    },
+    Mutation {
+        name: r#"seam-thresholds-uncrossed"#,
+        file: r#"src/placement.rs"#,
+        find: r#"            (self.outline_height / 10, self.outline_width / 10)"#,
+        replace: r#"            (self.outline_width / 10, self.outline_height / 10)"#,
+        want: r#"the_alignment_thresholds_come_from_the_notch_pass"#,
+    },
+    Mutation {
+        name: r#"seam-order-is-every-macro"#,
+        file: r#"src/placement.rs"#,
+        find: r#"    fn order(&self) -> &[usize] {
+        &self.sp.pos
+    }"#,
+        replace: r#"    fn order(&self) -> &[usize] {
+        &self.sp.neg
+    }"#,
+        want: r#"the_seam_reports_only_the_sequence_pair"#,
+    },
     // ---------------------------------------------------------------- applying one utilization
     Mutation {
         name: r#"utilization-reshapes-macro-clusters-too"#,

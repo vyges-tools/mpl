@@ -4052,3 +4052,157 @@ pub fn apply_utilization(
     }
     out
 }
+
+// ---------------------------------------------------------------- annealing one parent
+
+/// The seam's real implementation, for the placement annealer.
+///
+/// ⛔ **`notch_thresholds` reports what `calNotchPenalty` LEFT BEHIND, not what a constructor was
+/// given.** With the notch term live it overwrote both from the outline — crossed, so the `h`
+/// threshold is a tenth of the HEIGHT. With the term dark it never ran, and the constructor's `10`
+/// database units stand. Deriving it from the weight is what keeps that coupling honest instead of
+/// hiding it behind a stored field.
+impl Enhancements for crate::anneal::Search {
+    fn macros(&self) -> &[crate::anneal::SoftMacro] {
+        &self.macros
+    }
+    fn macros_mut(&mut self) -> &mut [crate::anneal::SoftMacro] {
+        &mut self.macros
+    }
+    fn order(&self) -> &[usize] {
+        &self.sp.pos
+    }
+    fn outline(&self) -> (i32, i32) {
+        (self.outline_width, self.outline_height)
+    }
+    fn packing(&self) -> (i32, i32) {
+        (self.width, self.height)
+    }
+    fn outline_penalty(&self) -> f32 {
+        self.penalties.outline
+    }
+    fn is_valid(&self) -> bool {
+        // ⚠️ Upstream's own test: nothing may overlap a fixed macro, AND the packing must fit.
+        crate::anneal::Search::is_valid(self, !self.fixed_bboxes.is_empty())
+    }
+    fn notch_thresholds(&self) -> (i32, i32) {
+        if self.weights.notch > 0.0 {
+            // ⛔ Crossed: `h` from the HEIGHT, `v` from the WIDTH. See `notch_penalty`.
+            (self.outline_height / 10, self.outline_width / 10)
+        } else {
+            // ⚠️ The constructor's values, which `mpl.tcl` never overrides.
+            (10, 10)
+        }
+    }
+    fn cal_penalty(&mut self) {
+        crate::anneal::Search::cal_penalty(self);
+    }
+    fn norm_cost(&self) -> f32 {
+        crate::anneal::Search::norm_cost(self)
+    }
+}
+
+/// Everything one annealing run of one parent needs.
+///
+/// ⚠️ **Assembled ONCE per parent and reused across its ten runs** — only the utilization and the
+/// seed change between them. Rebuilding it per run would be the same answer at ten times the cost,
+/// and would make the shared `random_seed_` meaningless.
+pub struct ParentProblem {
+    /// The macro list in id order, from [`assemble`].
+    pub macros: Vec<crate::anneal::SoftMacro>,
+    /// One entry per macro, describing what the utilization does to it.
+    pub reshape: Vec<ReshapeInput>,
+    /// `0..number_of_sequence_pair_macros` is what the annealer permutes.
+    pub number_of_sequence_pair_macros: usize,
+    pub inputs: PlacementInputs,
+    pub outline: (i32, i32),
+    pub dbu_per_micron: i32,
+    /// The bounding boxes of the fixed macros, for the fixed-macro penalty.
+    pub fixed_bboxes: Vec<(i32, i32, i32, i32)>,
+    pub tiny_threshold: i32,
+    pub min_ar: f32,
+    /// ⛔ Set when `singleArraySingleStdCellCluster` holds — it forces centralization to stick.
+    pub force_centralization: bool,
+}
+
+/// Upstream's per-run construction and `runSA`, for one soft-macro annealer.
+///
+/// 🔑 **The order is `initialize` then `run`, and `initialize` MOVES THE STATE.** Its sweep never
+/// restores, so the annealer starts `fastSA` from wherever the last sampling perturbation left it
+/// — not from the packing it was constructed with. Treating `initialize` as measurement-only is the
+/// single easiest way to get a different search.
+///
+/// 🔑 **`run` is `fastSA` FOLLOWED BY the enhancements** — centralization, and alignment only if
+/// centralization was reverted. They are part of the run, not a post-process, and the result the
+/// caller reads has been through them.
+///
+/// ⚠️ **Validity is judged AFTER all of that**, on the final state — so a run that annealed to a
+/// valid packing and was then pushed out of the outline by centralization reports invalid.
+///
+/// ⚠️ The reshaping is applied to a COPY, so the parent's own macro list survives for the next
+/// utilization — see [`ParentProblem`].
+pub fn anneal_one_run(
+    problem: &ParentProblem,
+    utilization: f32,
+    seed: u32,
+    params: &crate::anneal::SaParameters,
+    probabilities: crate::anneal::ActionProbabilities,
+    weights: crate::anneal::SoftWeights,
+) -> Option<Vec<crate::anneal::SoftMacro>> {
+    let single_array = problem.force_centralization;
+    let reshaped = apply_utilization(
+        &problem.reshape,
+        problem.tiny_threshold,
+        single_array,
+        utilization,
+        problem.min_ar,
+    );
+
+    // ⚠️ A macro with no reshaping keeps whatever curve its own shapes gave it — a hard-macro
+    // cluster's tilings, or nothing at all for a blockage or a terminal.
+    let mut macros = problem.macros.clone();
+    let mut curves = vec![crate::anneal::ShapeCurve::default(); macros.len()];
+    for r in &reshaped {
+        if let Some((curve, width, height, area)) =
+            crate::anneal::shape_curve_from_intervals(&r.intervals, r.area)
+        {
+            curves[r.id] = curve;
+            macros[r.id].width = width;
+            macros[r.id].height = height;
+            macros[r.id].area = area;
+        }
+    }
+
+    let mut search = crate::anneal::Search {
+        sp: crate::anneal::init_sequence_pair(problem.number_of_sequence_pair_macros),
+        macros,
+        curves,
+        width: 0,
+        height: 0,
+        penalties: crate::anneal::Penalties::default(),
+        placement: Some(Box::new(problem.inputs.clone())),
+        outline_width: problem.outline.0,
+        outline_height: problem.outline.1,
+        dbu_per_micron: problem.dbu_per_micron,
+        fixed_bboxes: problem.fixed_bboxes.clone(),
+        weights,
+        normalization: crate::anneal::Normalization::default(),
+        probabilities,
+        action: None,
+    };
+
+    let mut rng = crate::rng::Mt19937::new(seed);
+    let fixed_present = !search.fixed_bboxes.is_empty();
+
+    // ⛔ `initialize` leaves the state where its last perturbation put it; `fast_sa` starts there.
+    let init_temperature = search.initialize(&mut rng, params);
+    search.fast_sa(&mut rng, params, init_temperature, fixed_present);
+
+    // 🔑 Part of `run`, not a post-process.
+    run_enhancements(&mut search, single_array);
+
+    if !search.is_valid(fixed_present) {
+        return None;
+    }
+    Some(search.macros)
+}
