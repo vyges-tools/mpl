@@ -2398,6 +2398,22 @@ pub const MUTATIONS: &[Mutation] = &[
         want: r#"growing_a_cluster_recomputes_its_area"#,
     },
     Mutation {
+        name: r#"fixed-macro-soft-macro-uses-the-unhaloed-bbox"#,
+        file: r#"src/tree.rs"#,
+        find: r#"                let b = ctx.macro_bboxes.get(i).copied().unwrap_or(inst.bbox);"#,
+        replace: r#"                let b = inst.bbox;"#,
+        want: r#"a_fixed_macro_cluster_carries_its_haloed_soft_macro"#,
+    },
+    Mutation {
+        name: r#"every-macro-cluster-gets-a-fixed-soft-macro"#,
+        file: r#"src/tree.rs"#,
+        find: r#"            if inst.is_fixed {
+                let b = ctx.macro_bboxes.get(i).copied().unwrap_or(inst.bbox);"#,
+        replace: r#"            if true {
+                let b = ctx.macro_bboxes.get(i).copied().unwrap_or(inst.bbox);"#,
+        want: r#"a_fixed_macro_cluster_carries_its_haloed_soft_macro"#,
+    },
+    Mutation {
         name: r#"constraint-region-keyed-by-macro-index"#,
         file: r#"src/placement.rs"#,
         find: r#"                .filter_map(|c| {

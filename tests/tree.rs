@@ -744,6 +744,10 @@ fn split_with(
 ) -> vyges_mpl::cluster::ClusterId {
     let mut ctx = vyges_mpl::tree::SplitCtx {
         design: d,
+        // ⚠️ Empty, so the fixed-macro path falls back to the instance's own (unhaloed) bbox —
+        // which is what these fixtures want. `a_fixed_macro_cluster_carries_its_haloed_soft_macro`
+        // supplies a real one.
+        macro_bboxes: &[],
         nets,
         bterm_to_cluster: Vec::new(),
         design_has_io_pads: false,
@@ -910,4 +914,49 @@ fn a_design_with_no_db_nets_still_has_bundled_nets_from_the_virtual_connections(
     let (d, mut root) = mixed_leaf_design(&[]);
     split(&d, &mut root);
     assert!(!root.virtual_connections.is_empty(), "no db nets, but connections exist anyway");
+}
+
+/// ⛔ **A FIXED macro cluster gets its soft macro at CLUSTERING time**, from
+/// `createOneClusterForEachMacro` — `placeChildren` then skips the assignment because the cluster
+/// already has one. Without it the placer sees a `0x0` macro: the packed area collapses and the
+/// Area penalty is scored against a floorplan missing the fixed macro entirely.
+///
+/// ⚠️ **The bbox is the HALOED one**, not `instance.bbox`. The cluster's own metrics use the
+/// unhaloed area, so the two coexist and reading the wrong one is invisible in the hierarchy dump.
+///
+/// ℹ️ Absolute and UNCLIPPED here — the outline-relative, clipped copy is a separate soft macro
+/// the placer builds per parent.
+#[test]
+fn a_fixed_macro_cluster_carries_its_haloed_soft_macro() {
+    let (d, mut root) = mixed_leaf_design(&[1]);
+    // The haloed box is deliberately BIGGER than the instance's own, and offset from it.
+    let haloed = vyges_mpl::design::Rect { x_min: 90, y_min: 80, x_max: 320, y_max: 310 };
+    let mut ctx = vyges_mpl::tree::SplitCtx {
+        design: &d,
+        macro_bboxes: &[haloed, haloed, haloed],
+        nets: &[],
+        bterm_to_cluster: Vec::new(),
+        design_has_io_pads: false,
+        large_net_threshold: 50,
+        seed_assoc: Vec::new(),
+        assoc: Vec::new(),
+    };
+    let mut next_id = 2;
+    vyges_mpl::tree::split_mixed_leaves(&mut root, &mut ctx, &mut next_id);
+
+    let fixed = root
+        .children
+        .iter()
+        .find(|c| c.is_fixed_macro)
+        .expect("the fixed macro was lifted to the root");
+    let sm = fixed.soft_macro.expect("a fixed macro cluster carries one");
+    assert_eq!((sm.x, sm.y), (90, 80), "absolute, and from the HALOED box");
+    assert_eq!((sm.width, sm.height), (230, 230));
+    assert_eq!(sm.area, 230 * 230);
+    assert!(sm.fixed);
+
+    // ⚠️ The control: the MOVABLE macro cluster beside it gets none — the assignment is guarded
+    // by `isFixed`, and a soft macro on every macro cluster would pass the assertions above.
+    let movable = root.children.iter().find(|c| c.name == "MACRO_0").unwrap();
+    assert!(movable.soft_macro.is_none(), "only a FIXED macro gets one here");
 }

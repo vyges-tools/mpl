@@ -524,6 +524,13 @@ pub fn split_mixed_leaves(
 /// previous leaf created. Building them once would classify against a stale netlist.
 pub struct SplitCtx<'a> {
     pub design: &'a crate::design::Design,
+    /// Each macro's bbox **with its halo**, as `HardMacro` carries it.
+    ///
+    /// ⛔ Needed only for FIXED macros, and not interchangeable with `design.instances[i].bbox`:
+    /// the cluster's own metrics use the UNHALOED area, while the soft macro `setAsFixedMacro`
+    /// builds uses the haloed one. Feeding the unhaloed box here shrinks the fixed macro in the
+    /// annealer's list and with it the whole packed area.
+    pub macro_bboxes: &'a [crate::design::Rect],
     pub nets: &'a [crate::netlist::DbNet],
     pub bterm_to_cluster: Vec<Option<ClusterId>>,
     pub design_has_io_pads: bool,
@@ -590,6 +597,19 @@ fn split_recursive(
                 std_cell_area: 0,
                 macro_area: inst.bbox.area(),
             };
+            // Upstream `createOneClusterForEachMacro`: a FIXED macro gets its soft macro here,
+            // at clustering time and WITHOUT an outline — absolute and unclipped. `placeChildren`
+            // then skips the assignment because the cluster already has one, and clips a separate
+            // copy into the annealer's list. See the handoff's "two soft macros".
+            if inst.is_fixed {
+                let b = ctx.macro_bboxes.get(i).copied().unwrap_or(inst.bbox);
+                c.set_as_fixed_macro((
+                    b.x_min as i32,
+                    b.y_min as i32,
+                    b.x_max as i32,
+                    b.y_max as i32,
+                ));
+            }
             c.is_fixed_macro = inst.is_fixed;
             descriptors.push(crate::macroclass::MacroCluster {
                 id: *next_id,

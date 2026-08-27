@@ -379,6 +379,7 @@ pub fn run_clustering(input: &DesignInputs, opts: &ClusterOptions) -> Clustering
 
     let mut ctx = crate::tree::SplitCtx {
         design,
+        macro_bboxes: &macro_bboxes,
         nets: input.nets,
         bterm_to_cluster,
         // ⚠️ With pads present the pads carry the connectivity and block ports are ignored.
