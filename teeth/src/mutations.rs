@@ -2398,6 +2398,29 @@ pub const MUTATIONS: &[Mutation] = &[
         want: r#"growing_a_cluster_recomputes_its_area"#,
     },
     Mutation {
+        name: r#"io-pin-cluster-has-no-soft-macro"#,
+        file: r#"src/ioclusters.rs"#,
+        find: r#"        c.set_as_cluster_of_unplaced_io_pins(
+            (shape.x_min as i32, shape.y_min as i32),
+            (shape.x_max - shape.x_min) as i32,
+            (shape.y_max - shape.y_min) as i32,
+            pin.constraint.is_none(),
+        );"#,
+        replace: r#"        c.is_cluster_of_unplaced_io_pins = true;
+        c.is_cluster_of_unconstrained_io_pins = pin.constraint.is_none();
+        let _ = &shape;"#,
+        want: r#"an_io_pin_cluster_takes_its_constraint_region_or_the_whole_die"#,
+    },
+    Mutation {
+        name: r#"unconstrained-io-cluster-takes-an-edge"#,
+        file: r#"src/ioclusters.rs"#,
+        find: r#"            None => *die,
+        };"#,
+        replace: r#"            None => crate::design::Rect { x_max: die.x_min, ..*die },
+        };"#,
+        want: r#"an_io_pin_cluster_takes_its_constraint_region_or_the_whole_die"#,
+    },
+    Mutation {
         name: r#"fixed-macro-does-not-obstruct"#,
         file: r#"src/placement.rs"#,
         find: r#"                // it does so through `fixed`, not through this flag.

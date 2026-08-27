@@ -331,3 +331,38 @@ fn a_mixed_design_bundles_the_fixed_and_groups_the_rest() {
     assert_eq!(r.pin_clusters.len(), 1, "both floating pins share one cluster");
     assert_eq!(r.assignment.len(), 4, "every pin was assigned");
 }
+
+/// ⛔ **An IO cluster carries a SOFT MACRO, not just a flag.** `setAsIOBundle`,
+/// `setAsIOPadCluster` and `setAsClusterOfUnplacedIOPins` each set their flag AND build the soft
+/// macro; setting the flag alone leaves the placer a `0x0` box at the origin, so every wirelength
+/// measured to that cluster is measured to the wrong place.
+///
+/// 🔑 **The shape is the CONSTRAINT REGION, or the whole DIE when there is none.** Upstream passes
+/// `constraint_shape`, which it sets to the die area for an unconstrained cluster — so an
+/// unconstrained IO cluster is a full-die RECTANGLE while a constrained one is a LINE on an edge.
+/// ⚠️ The raw rect, not the line form: `rectToLine` feeds a separate constraint map, not this.
+#[test]
+fn an_io_pin_cluster_takes_its_constraint_region_or_the_whole_die() {
+    let die = Rect { x_min: -18000, y_min: -19600, x_max: 222000, y_max: 220400 };
+    let edge = Rect { x_min: 222000, y_min: 400, x_max: 222000, y_max: 40400 };
+    let _ = &edge;
+
+    // Constrained: a LINE on the right edge.
+    let constrained = create_io_clusters(&[floating("a", Some(edge))], &die, 10);
+    let c = &constrained.pin_clusters[0];
+    let sm = c.soft_macro.expect("a pin cluster carries one");
+    assert_eq!((sm.x, sm.y), (222000, 400));
+    assert_eq!((sm.width, sm.height), (0, 40000), "a line: one dimension is zero");
+    assert!(!c.is_cluster_of_unconstrained_io_pins);
+
+    // Unconstrained: the whole DIE, which is a rectangle and not a line.
+    let free = create_io_clusters(&[floating("a", None)], &die, 10);
+    let f = &free.pin_clusters[0];
+    let fsm = f.soft_macro.expect("carries one too");
+    assert_eq!((fsm.x, fsm.y), (-18000, -19600), "the die's own corner");
+    assert_eq!((fsm.width, fsm.height), (240000, 240000), "the whole die, not an edge");
+    assert!(f.is_cluster_of_unconstrained_io_pins);
+
+    // ⚠️ The control: the two must DIFFER, or the assertions above would hold for either shape.
+    assert_ne!((sm.width, sm.height), (fsm.width, fsm.height));
+}

@@ -193,10 +193,19 @@ pub fn create_io_clusters(pins: &[Pin], die: &Rect, first_id: ClusterId) -> IoCl
         for edge in BUNDLE_EDGE_ORDER {
             for i in 0..IO_BUNDLES_PER_EDGE {
                 let mut c = Cluster::new(out.next_id, bundle_name(edge, i));
-                c.is_io_bundle = true;
-                // Upstream's `getBBox()` for a bundle: its slice of the edge, which the
-                // pin-access builders measure and turn into a blockage.
-                c.io_region = Some(bundle_rect(edge, i, die, spans));
+                let rect = bundle_rect(edge, i, die, spans);
+                // ⛔ `setAsIOBundle` sets the flag AND builds the soft macro. Setting the flag
+                // alone leaves the placer a `0x0` box at the origin: an IO cluster then sits on
+                // top of everything, and every wirelength measured to it is measured to the wrong
+                // place.
+                c.set_as_io_bundle(
+                    (rect.x_min as i32, rect.y_min as i32),
+                    (rect.x_max - rect.x_min) as i32,
+                    (rect.y_max - rect.y_min) as i32,
+                );
+                // ⚠️ Kept alongside: `io_region` is the pin-access builders' input and is not the
+                // same field as the soft macro, though they hold the same rectangle here.
+                c.io_region = Some(rect);
                 out.next_id += 1;
                 out.bundles.push(c);
             }
@@ -240,7 +249,21 @@ pub fn create_io_clusters(pins: &[Pin], die: &Rect, first_id: ClusterId) -> IoCl
 
         // 🔑 Named `ios_{id}` — the id, not a running count, so the name and the id agree.
         let mut c = Cluster::new(out.next_id, format!("ios_{}", out.next_id));
-        c.is_cluster_of_unplaced_io_pins = true;
+        // ⛔ **The soft macro is the CONSTRAINT REGION, or the whole DIE when there is none.**
+        // Upstream passes `constraint_shape`, which it sets to the die area for an unconstrained
+        // cluster — so an unconstrained IO cluster is a full-die RECTANGLE while a constrained one
+        // is a LINE on an edge. ⚠️ The raw rect, not the line form: `rectToLine` is used for the
+        // separate constraint map, not for this.
+        let shape = match &pin.constraint {
+            Some(region) => *region,
+            None => *die,
+        };
+        c.set_as_cluster_of_unplaced_io_pins(
+            (shape.x_min as i32, shape.y_min as i32),
+            (shape.x_max - shape.x_min) as i32,
+            (shape.y_max - shape.y_min) as i32,
+            pin.constraint.is_none(),
+        );
         match &pin.constraint {
             Some(region) => {
                 c.constraint_region = Some(*region);
@@ -248,7 +271,6 @@ pub fn create_io_clusters(pins: &[Pin], die: &Rect, first_id: ClusterId) -> IoCl
                 c.io_region = Some(*region);
             }
             None => {
-                c.is_cluster_of_unconstrained_io_pins = true;
                 unconstrained = Some(c.id);
             }
         }
