@@ -3688,3 +3688,139 @@ fn create_group(
 
     out[slot].1 = members;
 }
+
+// ---------------------------------------------------------------- temporary standard-cell places
+
+/// Upstream `setTemporaryStdCellLocation`.
+///
+/// ⛔ **EVERY standard cell of a cluster goes to the SAME point** — the cluster's centre, offset by
+/// each cell's own half-size so its centre lands there. They all overlap, deliberately: upstream's
+/// comment says this exists so the orientation step has somewhere to measure wirelength from, not
+/// to be a placement.
+///
+/// ⚠️ **The cluster's centre is the SOFT MACRO's pin centre**, which is `x + 0.5 * width` truncated
+/// — see [`pin_center`]. The cell's own half-extent is a separate integer division, so an odd cell
+/// width loses its half unit again.
+///
+/// ⚠️ A cluster with no soft macro places nothing.
+pub fn temporary_std_cell_location(
+    cluster_soft_macro: Option<((i32, i32), (i32, i32))>,
+    cell_extent: (i32, i32),
+) -> Option<(i32, i32)> {
+    let ((x, y), (width, height)) = cluster_soft_macro?;
+    let center = (pin_center(x, width), pin_center(y, height));
+    Some((center.0 - cell_extent.0 / 2, center.1 - cell_extent.1 / 2))
+}
+
+/// A cluster, as the temporary standard-cell placement walks it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct StdCellPlacementCluster {
+    pub is_leaf: bool,
+    pub num_std_cell: i32,
+    /// Every CORE instance reachable through this cluster's modules, including nested ones.
+    /// ⚠️ **Non-core instances are skipped** — a pad or a block found in a module is not placed.
+    pub module_core_insts: Vec<usize>,
+    pub leaf_std_cells: Vec<usize>,
+    pub children: Vec<usize>,
+}
+
+/// Upstream `generateTemporaryStdCellsPlacement`.
+///
+/// ⛔ **Only a LEAF with standard cells places anything.** A leaf with none places nothing, and a
+/// non-leaf never places its own cells — it only recurses. So a mixed cluster's own standard cells
+/// are placed by whichever leaf descendant owns them, never by the cluster itself.
+///
+/// ⚠️ **Both loops run for a placing leaf**: its modules' core instances first, then its own leaf
+/// standard-cell list. A cell reachable both ways is placed twice, to the same point.
+///
+/// 🔑 Returns the instances placed, in visit order — which is the order the database sees the
+/// writes, and the order a DEF comparison will read them back in.
+pub fn temporary_std_cell_placement(
+    clusters: &[StdCellPlacementCluster],
+    root: usize,
+) -> Vec<(usize, usize)> {
+    let mut out = Vec::new();
+    place_std_cells(clusters, root, &mut out);
+    out
+}
+
+fn place_std_cells(
+    clusters: &[StdCellPlacementCluster],
+    id: usize,
+    out: &mut Vec<(usize, usize)>,
+) {
+    let cluster = &clusters[id];
+    if cluster.is_leaf && cluster.num_std_cell != 0 {
+        // ⚠️ Modules first, then the explicit list.
+        for &inst in &cluster.module_core_insts {
+            out.push((inst, id));
+        }
+        for &inst in &cluster.leaf_std_cells {
+            out.push((inst, id));
+        }
+        return;
+    }
+    for &child in &cluster.children {
+        place_std_cells(clusters, child, out);
+    }
+}
+
+// ---------------------------------------------------------------- the no-standard-cells reset
+
+/// What `resetSAParameters` leaves behind.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct ResetSaParameters {
+    pub pos_swap: f32,
+    pub neg_swap: f32,
+    pub double_swap: f32,
+    pub exchange_swap: f32,
+    /// ⛔ **Zeroed** — a design with no standard cells never resizes a cluster.
+    pub resize: f32,
+    pub weights: crate::anneal::SoftWeights,
+}
+
+/// Upstream `HierRTLMP::resetSAParameters`.
+///
+/// ⛔ **Called ONLY when the design has no standard cells**, before coarse shaping — so it is what
+/// makes a macros-only design behave differently from every other, not a general default.
+///
+/// 🔑 **It zeroes RESIZE**, which is the action that changes a cluster's shape. With no standard
+/// cells there is no soft area to trade, so the annealer is left with the four ordering moves.
+///
+/// ⛔ **And it zeroes FENCE as well as boundary, notch and soft blockage.** The fence weight is
+/// otherwise `10.0` from the command — this is the only path that turns it off.
+///
+/// ⚠️ The four swap probabilities are RE-SET to `0.2`, not left alone; if a caller had changed
+/// them, this puts them back.
+pub fn reset_sa_parameters(base: crate::anneal::SoftWeights) -> ResetSaParameters {
+    let mut weights = base;
+    weights.fence = 0.0;
+    weights.boundary = 0.0;
+    weights.notch = 0.0;
+    weights.soft_blockage = 0.0;
+    ResetSaParameters {
+        pos_swap: 0.2,
+        neg_swap: 0.2,
+        double_swap: 0.2,
+        exchange_swap: 0.2,
+        resize: 0.0,
+        weights,
+    }
+}
+
+// ---------------------------------------------------------------- the reported wirelength
+
+/// Upstream `HierRTLMP::computeWireLength`.
+///
+/// ℹ️ **Reporting only** — it emits one metric and changes nothing. The half-perimeter comes from
+/// odb's own `WireLengthEvaluator`, which is not `mpl`'s to reproduce; what IS `mpl`'s is the name
+/// and the unit.
+///
+/// ⚠️ **Reported in MICRONS**, through `dbuToMicrons`, so the metric is a `double` division and not
+/// the database's own integer.
+pub const WIRELENGTH_METRIC: &str = "macro_place__wirelength";
+
+/// The value that metric carries.
+pub fn reported_wirelength(hpwl_dbu: i64, dbu_per_micron: i32) -> f64 {
+    hpwl_dbu as f64 / dbu_per_micron as f64
+}

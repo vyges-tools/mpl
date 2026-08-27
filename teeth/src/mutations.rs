@@ -407,6 +407,75 @@ pub const MUTATIONS: &[Mutation] = &[
     let mut deferred_io: Vec<&AssemblyChild> = Vec::new();"#,
         want: r#"a_blockage_has_no_name"#,
     },
+    // ---------------------------------------------------------------- temporary std cell places
+    Mutation {
+        name: r#"std-cell-placed-at-the-cluster-origin"#,
+        file: r#"src/placement.rs"#,
+        find: r#"    Some((center.0 - cell_extent.0 / 2, center.1 - cell_extent.1 / 2))"#,
+        replace: r#"    Some((center.0, center.1))"#,
+        want: r#"every_cell_lands_on_the_clusters_centre"#,
+    },
+    Mutation {
+        name: r#"std-cell-half-extent-not-halved"#,
+        file: r#"src/placement.rs"#,
+        find: r#"    Some((center.0 - cell_extent.0 / 2, center.1 - cell_extent.1 / 2))"#,
+        replace: r#"    Some((center.0 - cell_extent.0, center.1 - cell_extent.1))"#,
+        want: r#"both_halvings_truncate"#,
+    },
+    Mutation {
+        name: r#"non-leaf-places-its-own-cells"#,
+        file: r#"src/placement.rs"#,
+        find: r#"    if cluster.is_leaf && cluster.num_std_cell != 0 {"#,
+        replace: r#"    if cluster.num_std_cell != 0 {"#,
+        want: r#"only_a_leaf_with_cells_places_anything"#,
+    },
+    Mutation {
+        name: r#"leaf-without-cells-still-places"#,
+        file: r#"src/placement.rs"#,
+        find: r#"    if cluster.is_leaf && cluster.num_std_cell != 0 {
+        // ⚠️ Modules first, then the explicit list."#,
+        replace: r#"    if cluster.is_leaf {
+        // ⚠️ Modules first, then the explicit list."#,
+        want: r#"a_leaf_without_cells_places_nothing"#,
+    },
+    Mutation {
+        name: r#"explicit-list-walked-before-modules"#,
+        file: r#"src/placement.rs"#,
+        find: r#"        for &inst in &cluster.module_core_insts {
+            out.push((inst, id));
+        }
+        for &inst in &cluster.leaf_std_cells {
+            out.push((inst, id));
+        }"#,
+        replace: r#"        for &inst in &cluster.leaf_std_cells {
+            out.push((inst, id));
+        }
+        for &inst in &cluster.module_core_insts {
+            out.push((inst, id));
+        }"#,
+        want: r#"modules_are_walked_before_the_explicit_list"#,
+    },
+    Mutation {
+        name: r#"reset-leaves-resize-alone"#,
+        file: r#"src/placement.rs"#,
+        find: r#"        resize: 0.0,"#,
+        replace: r#"        resize: 0.2,"#,
+        want: r#"a_design_without_cells_never_resizes"#,
+    },
+    Mutation {
+        name: r#"reset-leaves-the-fence-alone"#,
+        file: r#"src/placement.rs"#,
+        find: r#"    weights.fence = 0.0;"#,
+        replace: r#"    weights.wirelength = 0.0;"#,
+        want: r#"the_reset_is_the_only_path_that_zeroes_the_fence"#,
+    },
+    Mutation {
+        name: r#"wirelength-metric-in-database-units"#,
+        file: r#"src/placement.rs"#,
+        find: r#"    hpwl_dbu as f64 / dbu_per_micron as f64"#,
+        replace: r#"    hpwl_dbu as f64"#,
+        want: r#"the_wirelength_metric_is_in_microns"#,
+    },
     // ---------------------------------------------------------------- clustering data to the db
     Mutation {
         name: r#"modules-swept-before-the-children-recurse"#,
