@@ -713,6 +713,31 @@ pub fn init_sequence_pair(macro_count: usize) -> SequencePair {
     SequencePair { pos: (0..macro_count).collect(), neg: (0..macro_count).collect() }
 }
 
+/// Upstream `initSequencePair` in full, including the branch macro placement uses.
+///
+/// ⛔ **An INITIAL sequence pair suppresses the default entirely.** `setInitialSequencePair` sets a
+/// flag, and `initSequencePair` then returns before building anything — so a macro array keeps the
+/// grid arrangement `computeArraySequencePair` produced, rather than the identity ordering.
+///
+/// ⚠️ **The count is `number_of_sequence_pair_macros` when it is non-zero, and the macro count
+/// otherwise** — the two differ wherever fixed terminals or IO clusters were appended after the
+/// placeable macros.
+pub fn init_sequence_pair_with(
+    macro_count: usize,
+    number_of_sequence_pair_macros: usize,
+    initial: Option<SequencePair>,
+) -> SequencePair {
+    if let Some(sp) = initial {
+        return sp;
+    }
+    let size = if number_of_sequence_pair_macros != 0 {
+        number_of_sequence_pair_macros
+    } else {
+        macro_count
+    };
+    init_sequence_pair(size)
+}
+
 // ---------------------------------------------------------------- snapping to the curve
 
 /// Upstream `findIntervalIndex`: the interval holding `value`, **snapping `value` into it**.
@@ -1213,11 +1238,20 @@ pub struct SaParameters {
     pub init_prob: f32,
     pub max_num_step: i32,
     pub num_perturb_per_step: i32,
+    /// ⛔ **`false` ONLY for a macro array with empty space** — `disallowInvalidStates` is called
+    /// from exactly one place in the whole engine. Coarse shaping and cluster placement both leave
+    /// it `true`, which is why the restore branch it guards was unmodelled until macro placement.
+    pub invalid_states_allowed: bool,
 }
 
 impl Default for SaParameters {
     fn default() -> Self {
-        Self { init_prob: 0.9, max_num_step: 2000, num_perturb_per_step: 500 }
+        Self {
+            init_prob: 0.9,
+            max_num_step: 2000,
+            num_perturb_per_step: 500,
+            invalid_states_allowed: true,
+        }
     }
 }
 
@@ -1264,10 +1298,17 @@ impl Search {
         let mut fixed_list = Vec::with_capacity(perturbations);
 
         for _ in 0..perturbations {
-            // ℹ️ Saved and then never used: the restore is guarded by a flag the shaping caller
-            // leaves at its default. Kept so the shape of the loop matches the reference.
-            let _saved = self.save_state();
+            let saved = self.save_state();
             self.perturb(rng);
+            // ⛔ Same branch as `fast_sa`'s: an invalid state is restored and SKIPPED, so it is
+            // never recorded — which makes the sample lists SHORTER than the perturbation count,
+            // and the normalisation factors an average over fewer samples.
+            if !params.invalid_states_allowed && !self.is_valid(!self.fixed_bboxes.is_empty()) {
+                if let Some(saved) = &saved {
+                    self.restore_state(saved);
+                }
+                continue;
+            }
             widths.push(self.width);
             heights.push(self.height);
             area_list.push(self.area_penalty());
@@ -1342,8 +1383,20 @@ impl Search {
                 cost = self.norm_cost();
 
                 let is_valid = self.is_valid(fixed_present);
-                // ℹ️ The reference tests `!invalid_states_allowed_` here and restores. The
-                // shaping caller never disallows them, so the branch is not modelled.
+
+                // ⛔ **Restored AND SKIPPED.** An invalid state is not scored, does not update the
+                // best result, and — the part that matters most — never reaches the acceptance
+                // test, so it consumes NO random word. Disallowing invalid states therefore changes
+                // the generator's trajectory, not just which states survive.
+                //
+                // ⚠️ `pre_cost` is left alone, so the next comparison is still against the last
+                // ACCEPTED cost rather than this rejected one.
+                if !params.invalid_states_allowed && !is_valid {
+                    if let Some(saved) = &saved {
+                        self.restore_state(saved);
+                    }
+                    continue;
+                }
 
                 let found_new_best = cost < best.cost;
                 if (!is_best_valid || is_valid) && found_new_best {

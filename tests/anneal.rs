@@ -1467,3 +1467,39 @@ fn both_interval_corners_reconstruct_the_cluster_area() {
         "every case divided exactly, so this fixture never exercised the truncation bound"
     );
 }
+
+// ---------------------------------------------------------------- disallowing invalid states
+
+use vyges_mpl::anneal::init_sequence_pair_with;
+
+/// ⛔ **An INITIAL sequence pair suppresses the default entirely** — `setInitialSequencePair` sets a
+/// flag and `initSequencePair` then returns before building anything, so a macro array keeps the
+/// grid arrangement rather than the identity ordering.
+#[test]
+fn an_initial_sequence_pair_suppresses_the_default() {
+    let grid = SequencePair { pos: vec![0, 1, 2, 3], neg: vec![1, 0, 3, 2] };
+    let got = init_sequence_pair_with(4, 4, Some(grid.clone()));
+    assert_eq!(got, grid, "the grid, not 0..n twice");
+}
+
+/// ⚠️ **The count is `number_of_sequence_pair_macros` when non-zero, the macro count otherwise** —
+/// the two differ wherever fixed terminals or IO clusters were appended after the placeable macros.
+#[test]
+fn the_sequence_pair_covers_only_the_placeable_macros() {
+    // Ten macros in the list, but only four of them placeable.
+    let got = init_sequence_pair_with(10, 4, None);
+    assert_eq!(got.pos, vec![0, 1, 2, 3]);
+    assert_eq!(got.neg, vec![0, 1, 2, 3]);
+
+    // Zero means "no separate count was set", and the whole list is used.
+    let got = init_sequence_pair_with(3, 0, None);
+    assert_eq!(got.pos, vec![0, 1, 2]);
+}
+
+/// ⛔ **`disallowInvalidStates` is called from exactly ONE place in the engine** — a macro array
+/// with empty space. Everything else leaves invalid states allowed, which is why this branch was
+/// unmodelled until macro placement needed it.
+#[test]
+fn invalid_states_are_allowed_by_default() {
+    assert!(SaParameters::default().invalid_states_allowed);
+}

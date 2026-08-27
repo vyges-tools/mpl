@@ -1478,6 +1478,35 @@ pub const MUTATIONS: &[Mutation] = &[
         replace: r#"        *x = *x + offset.0;"#,
         want: r#"a_large_coordinate_loses_precision_in_the_round_trip"#,
     },
+    Mutation {
+        name: r#"initial-sequence-pair-ignored"#,
+        file: r#"src/anneal.rs"#,
+        find: r#"    if let Some(sp) = initial {
+        return sp;
+    }"#,
+        replace: r#"    if false {
+        return initial.unwrap();
+    }"#,
+        want: r#"an_initial_sequence_pair_suppresses_the_default"#,
+    },
+    Mutation {
+        name: r#"sequence-pair-covers-every-macro"#,
+        file: r#"src/anneal.rs"#,
+        find: r#"    let size = if number_of_sequence_pair_macros != 0 {
+        number_of_sequence_pair_macros
+    } else {
+        macro_count
+    };"#,
+        replace: r#"    let size = macro_count;"#,
+        want: r#"the_sequence_pair_covers_only_the_placeable_macros"#,
+    },
+    Mutation {
+        name: r#"invalid-states-disallowed-by-default"#,
+        file: r#"src/anneal.rs"#,
+        find: r#"            invalid_states_allowed: true,"#,
+        replace: r#"            invalid_states_allowed: false,"#,
+        want: r#"invalid_states_are_allowed_by_default"#,
+    },
     // ---------------------------------------------------------------- the nine-term cost
     Mutation {
         name: r#"cost-area-term-divided"#,
