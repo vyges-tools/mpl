@@ -242,3 +242,110 @@ fn nothing_needs_partitioning_when_every_child_fits() {
     let r = update_sub_tree(&mut parent, 5000, 5);
     assert!(r.needs_partitioning.is_empty());
 }
+
+// ---------------------------------------------------------------- the cluster's own soft macro
+
+/// 🔑 **Four kinds of cluster get their soft macro at CLUSTERING time**, not during placement — the
+/// three IO kinds and a fixed macro. Everything else has none until placement gives it one.
+#[test]
+fn only_four_kinds_get_a_soft_macro_at_clustering_time() {
+    let mut plain = Cluster::new(1, "plain");
+    assert!(plain.soft_macro.is_none());
+    plain.cluster_type = ClusterType::Mixed;
+    assert!(plain.soft_macro.is_none(), "a mixed cluster waits for placement");
+
+    let mut bundle = Cluster::new(2, "L_0");
+    bundle.set_as_io_bundle((0, 1000), 0, 500);
+    assert!(bundle.soft_macro.is_some());
+    assert!(bundle.is_io_cluster());
+}
+
+/// ⛔ **Every geometry accessor returns ZERO without a soft macro** — not an error and not an
+/// absence. A cluster that has not been given one reads as a point at the origin.
+#[test]
+fn a_cluster_without_a_soft_macro_reads_as_the_origin() {
+    let c = Cluster::new(1, "c");
+    assert_eq!(c.location(), (0, 0));
+    assert_eq!(c.size(), (0, 0));
+    assert_eq!(c.center(), (0, 0));
+}
+
+/// ⛔ **`set_location` is a silent NO-OP without one.** Upstream guards the write and reports
+/// nothing, so moving such a cluster simply does not happen.
+#[test]
+fn moving_a_cluster_without_a_soft_macro_does_nothing() {
+    let mut c = Cluster::new(1, "c");
+    c.set_location((500, 600));
+    assert_eq!(c.location(), (0, 0), "silently unmoved");
+
+    c.set_as_io_bundle((10, 20), 0, 100);
+    c.set_location((500, 600));
+    assert_eq!(c.location(), (500, 600), "and now it moves");
+}
+
+/// ⚠️ **An IO cluster's area is ZERO whatever its extent** — upstream's point-and-name constructor
+/// leaves it at its default, so it occupies a region and contributes nothing to any area sum.
+///
+/// ⛔ **A BUNDLE cannot show this**, and a mutation proved it: a bundle is a LINE on a die edge, so
+/// one of its dimensions is zero and the product is zero however the area is computed. Only a PAD
+/// cluster, which has real extent on both axes, separates "area is defaulted" from "area is
+/// width times height".
+#[test]
+fn an_io_clusters_area_is_zero_however_large_its_region() {
+    let mut pads = Cluster::new(1, "io_pads");
+    pads.set_as_io_pad_cluster((0, 0), 4_000, 25_000);
+    assert_eq!(pads.soft_macro.unwrap().area, 0, "not 100_000_000");
+    assert_eq!(pads.size(), (4_000, 25_000), "the region is still there");
+
+    let mut bundle = Cluster::new(2, "L_0");
+    bundle.set_as_io_bundle((0, 0), 0, 100_000);
+    assert_eq!(bundle.soft_macro.unwrap().area, 0);
+
+    let mut ios = Cluster::new(3, "ios");
+    ios.set_as_cluster_of_unplaced_io_pins((0, 0), 3_000, 3_000, false);
+    assert_eq!(ios.soft_macro.unwrap().area, 0, "all three kinds, not just the line-shaped one");
+}
+
+/// ⛔ **A FIXED macro reports its SOFT MACRO's area**, not its metrics' — and its soft macro is
+/// built WITHOUT an outline, so it is absolute and unclipped.
+#[test]
+fn a_fixed_macro_reports_its_soft_macro_area() {
+    let mut fixed = Cluster::new(1, "MACRO_1");
+    fixed.set_as_fixed_macro((100, 200, 300, 500));
+    assert_eq!(fixed.location(), (100, 200), "absolute, not rebased");
+    assert_eq!(fixed.size(), (200, 300));
+    assert_eq!(fixed.area(), 200 * 300);
+}
+
+/// ⚠️ Anything else reports its metrics.
+#[test]
+fn an_ordinary_cluster_reports_its_metrics_area() {
+    let mut c = Cluster::new(1, "c");
+    c.cluster_type = ClusterType::Mixed;
+    c.metrics.std_cell_area = 700;
+    c.metrics.macro_area = 300;
+    assert_eq!(c.area(), 1000);
+}
+
+/// ⚠️ **The centre halves in INTEGERS**, and is not `SoftMacro::getPinX` — that one computes
+/// `x + 0.5 * width` in floating point. They agree for non-negative coordinates and are different
+/// expressions; upstream uses this one for a fixed terminal and the other for a pin.
+#[test]
+fn the_centre_halves_in_integers() {
+    let mut c = Cluster::new(1, "c");
+    c.set_as_io_bundle((0, 0), 101, 101);
+    assert_eq!(c.center(), (50, 50), "not 50.5");
+}
+
+/// ⚠️ An unplaced-IO cluster sets BOTH flags, the second only when the pins carry no constraint.
+#[test]
+fn an_unplaced_io_cluster_records_whether_it_is_constrained() {
+    let mut constrained = Cluster::new(1, "ios");
+    constrained.set_as_cluster_of_unplaced_io_pins((0, 0), 0, 100, false);
+    assert!(constrained.is_cluster_of_unplaced_io_pins);
+    assert!(!constrained.is_cluster_of_unconstrained_io_pins);
+
+    let mut free = Cluster::new(2, "ios");
+    free.set_as_cluster_of_unplaced_io_pins((0, 0), 0, 100, true);
+    assert!(free.is_cluster_of_unconstrained_io_pins);
+}

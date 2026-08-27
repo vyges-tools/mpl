@@ -1820,6 +1820,70 @@ pub const MUTATIONS: &[Mutation] = &[
             drop(inputs);"#,
         want: r#"the_placement_context_survives_being_scored"#,
     },
+    // ---------------------------------------------------------------- the cluster's soft macro
+    Mutation {
+        name: r#"missing-soft-macro-is-not-the-origin"#,
+        file: r#"src/cluster.rs"#,
+        find: r#"        self.soft_macro.map_or((0, 0), |m| (m.x, m.y))"#,
+        replace: r#"        self.soft_macro.map_or((1, 1), |m| (m.x, m.y))"#,
+        want: r#"a_cluster_without_a_soft_macro_reads_as_the_origin"#,
+    },
+    Mutation {
+        name: r#"set-location-works-without-a-soft-macro"#,
+        file: r#"src/cluster.rs"#,
+        find: r#"        if let Some(m) = self.soft_macro.as_mut() {
+            m.x = location.0;
+            m.y = location.1;
+        }"#,
+        replace: r#"        let m = self.soft_macro.get_or_insert(crate::anneal::SoftMacro::default());
+        m.x = location.0;
+        m.y = location.1;"#,
+        want: r#"moving_a_cluster_without_a_soft_macro_does_nothing"#,
+    },
+    Mutation {
+        name: r#"io-soft-macro-has-an-area"#,
+        file: r#"src/cluster.rs"#,
+        find: r#"        fixed: true,
+        area: 0,
+        is_macro_cluster: false,
+    }
+}"#,
+        replace: r#"        fixed: true,
+        area: width as i64 * height as i64,
+        is_macro_cluster: false,
+    }
+}"#,
+        want: r#"an_io_clusters_area_is_zero_however_large_its_region"#,
+    },
+    Mutation {
+        name: r#"fixed-macro-area-from-its-metrics"#,
+        file: r#"src/cluster.rs"#,
+        find: r#"        if self.is_fixed_macro {
+            return self.soft_macro.map_or(0, |m| m.area);
+        }"#,
+        replace: r#"        if false {
+            return self.soft_macro.map_or(0, |m| m.area);
+        }"#,
+        want: r#"a_fixed_macro_reports_its_soft_macro_area"#,
+    },
+    Mutation {
+        name: r#"cluster-centre-uses-floating-point"#,
+        file: r#"src/cluster.rs"#,
+        find: r#"        (x + w / 2, y + h / 2)"#,
+        replace: r#"        ((x as f64 + 0.5 * w as f64).round() as i32, (y as f64 + 0.5 * h as f64).round() as i32)"#,
+        want: r#"the_centre_halves_in_integers"#,
+    },
+    Mutation {
+        name: r#"fixed-macro-soft-macro-rebased"#,
+        file: r#"src/cluster.rs"#,
+        find: r#"            x: bbox.0,
+            y: bbox.1,
+            width: bbox.2 - bbox.0,"#,
+        replace: r#"            x: 0,
+            y: 0,
+            width: bbox.2 - bbox.0,"#,
+        want: r#"a_fixed_macro_reports_its_soft_macro_area"#,
+    },
     Mutation {
         name: r#"halo-order-lrbt"#,
         file: r#"src/options.rs"#,

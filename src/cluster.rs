@@ -67,6 +67,16 @@ pub struct Cluster {
     /// ⚠️ Empty means *not shaped*, which is a different thing from *no legal shape* — the latter
     /// is an MPL-4 error and never reaches here.
     pub tilings: Vec<crate::shaping::Tiling>,
+    /// The cluster's own placement abstraction.
+    ///
+    /// 🔑 **FOUR kinds of cluster get theirs at CLUSTERING time**, from the setters below — the
+    /// three IO kinds and a fixed macro. Everything else gets one during placement, and until then
+    /// this is `None`.
+    ///
+    /// ⛔ **Every geometry accessor returns ZERO without it**, and `set_x` / `set_y` are silent
+    /// no-ops. That is upstream's own shape, and it is why an IO cluster having one at all is the
+    /// fact behind the coordinate double-count we reported upstream.
+    pub soft_macro: Option<crate::anneal::SoftMacro>,
 }
 
 impl Cluster {
@@ -90,6 +100,7 @@ impl Cluster {
             constraint_region: None,
             io_region: None,
             tilings: Vec::new(),
+            soft_macro: None,
         }
     }
 
@@ -171,6 +182,100 @@ impl Cluster {
         self.children.is_empty()
     }
 
+    /// Upstream `setAsIOBundle`: an IO bundle's slice of a die edge.
+    ///
+    /// ⚠️ **Built from the DIE's own coordinates**, so the position stored here is ABSOLUTE.
+    pub fn set_as_io_bundle(&mut self, location: (i32, i32), width: i32, height: i32) {
+        self.is_io_bundle = true;
+        self.soft_macro = Some(io_soft_macro(location, width, height));
+    }
+
+    /// Upstream `setAsIOPadCluster`.
+    pub fn set_as_io_pad_cluster(&mut self, location: (i32, i32), width: i32, height: i32) {
+        self.is_io_pad_cluster = true;
+        self.soft_macro = Some(io_soft_macro(location, width, height));
+    }
+
+    /// Upstream `setAsClusterOfUnplacedIOPins`.
+    ///
+    /// ⚠️ It sets BOTH flags — the second only when the pins carry no constraint region.
+    pub fn set_as_cluster_of_unplaced_io_pins(
+        &mut self,
+        location: (i32, i32),
+        width: i32,
+        height: i32,
+        unconstrained: bool,
+    ) {
+        self.is_cluster_of_unplaced_io_pins = true;
+        self.is_cluster_of_unconstrained_io_pins = unconstrained;
+        self.soft_macro = Some(io_soft_macro(location, width, height));
+    }
+
+    /// Upstream `setAsFixedMacro`.
+    ///
+    /// ⛔ **Built WITHOUT an outline**, so it is absolute and UNCLIPPED — unlike the copy
+    /// `placeChildren` puts in the annealer's list, which is clipped to the parent's outline and
+    /// rebased onto it. The two coexist, and the write-back replaces this one with that one.
+    pub fn set_as_fixed_macro(&mut self, bbox: (i32, i32, i32, i32)) {
+        self.is_fixed_macro = true;
+        self.soft_macro = Some(crate::anneal::SoftMacro {
+            x: bbox.0,
+            y: bbox.1,
+            width: bbox.2 - bbox.0,
+            height: bbox.3 - bbox.1,
+            fixed: true,
+            area: (bbox.2 - bbox.0) as i64 * (bbox.3 - bbox.1) as i64,
+            is_macro_cluster: false,
+        });
+    }
+
+    /// Upstream `Cluster::getX` / `getY` / `getWidth` / `getHeight`.
+    ///
+    /// ⛔ **ZERO without a soft macro**, not an error and not an absence. A cluster that has not
+    /// been given one reads as a point at the origin, which is exactly why the IO clusters looked
+    /// like they piled up there until the setters above were found.
+    pub fn location(&self) -> (i32, i32) {
+        self.soft_macro.map_or((0, 0), |m| (m.x, m.y))
+    }
+
+    /// See [`Cluster::location`].
+    pub fn size(&self) -> (i32, i32) {
+        self.soft_macro.map_or((0, 0), |m| (m.width, m.height))
+    }
+
+    /// Upstream `Cluster::getCenter`.
+    ///
+    /// ⚠️ **Integer halving, and NOT `SoftMacro::getPinX`** — that one computes `x + 0.5 * width`
+    /// in floating point. The two agree for non-negative coordinates and are different expressions;
+    /// upstream uses this one for a fixed terminal's position and the other for a pin.
+    pub fn center(&self) -> (i32, i32) {
+        let (x, y) = self.location();
+        let (w, h) = self.size();
+        (x + w / 2, y + h / 2)
+    }
+
+    /// Upstream `Cluster::setX` / `setY`.
+    ///
+    /// ⛔ **A silent NO-OP without a soft macro.** Upstream guards the write and reports nothing, so
+    /// moving a cluster that has none simply does not happen.
+    pub fn set_location(&mut self, location: (i32, i32)) {
+        if let Some(m) = self.soft_macro.as_mut() {
+            m.x = location.0;
+            m.y = location.1;
+        }
+    }
+
+    /// Upstream `Cluster::getArea`.
+    ///
+    /// ⛔ **A FIXED macro reports its SOFT MACRO's area**, not its metrics' — and unguarded
+    /// upstream, which is safe only because `setAsFixedMacro` always provides one.
+    pub fn area(&self) -> i64 {
+        if self.is_fixed_macro {
+            return self.soft_macro.map_or(0, |m| m.area);
+        }
+        self.std_cell_area() + self.macro_area()
+    }
+
     pub fn is_io_cluster(&self) -> bool {
         self.is_cluster_of_unplaced_io_pins || self.is_io_pad_cluster || self.is_io_bundle
     }
@@ -189,6 +294,23 @@ impl Cluster {
 /// ⚠️ **`||`, not `&&`** — either count exceeding its maximum is enough. Compare
 /// [`is_merge_candidate`], which needs BOTH to be small. Getting the two the same way round is a
 /// single-character mistake that changes the whole tree shape.
+/// The three IO kinds all build their soft macro the same way.
+///
+/// ⚠️ **`area` is ZERO**, whatever the width and height — upstream's `SoftMacro(Point, name, w, h,
+/// cluster)` constructor leaves it at its default, so an IO cluster contributes nothing to any
+/// area sum while still occupying a region.
+fn io_soft_macro(location: (i32, i32), width: i32, height: i32) -> crate::anneal::SoftMacro {
+    crate::anneal::SoftMacro {
+        x: location.0,
+        y: location.1,
+        width,
+        height,
+        fixed: true,
+        area: 0,
+        is_macro_cluster: false,
+    }
+}
+
 pub fn should_break(cluster: &Cluster, max_std_cell: i32, max_macro: i32) -> bool {
     cluster.num_std_cell() > max_std_cell || cluster.num_macro() > max_macro
 }
