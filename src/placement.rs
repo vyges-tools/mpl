@@ -3602,3 +3602,89 @@ pub fn real_macro_wirelength(nets_of_macro_pins: &[Vec<NetTerminal>]) -> f32 {
     }
     wirelength as f32
 }
+
+// ---------------------------------------------------------------- clustering data to the database
+
+/// One cluster, as the group builder needs to see it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct GroupCluster {
+    pub name: String,
+    pub kind: AreaKind,
+    pub leaf_std_cells: Vec<usize>,
+    pub leaf_macros: Vec<usize>,
+    /// Every leaf instance of this cluster's database modules, and whether each is a block.
+    pub module_insts: Vec<(usize, bool)>,
+    pub children: Vec<usize>,
+}
+
+/// Upstream `createGroupForCluster`.
+///
+/// 🔑 **The recursion sits BETWEEN the two claiming phases, and that is the whole design.** A
+/// cluster adds its own leaf cells and macros, then lets its CHILDREN claim theirs, and only then
+/// sweeps its modules' leaf instances — skipping anything already claimed. Upstream says so at the
+/// site: *"Skip if it is part of a child cluster."* Sweeping the modules before recursing would put
+/// every descendant's instances in the ancestor's group instead.
+///
+/// ⛔ **An IO cluster gets NO group at all**, and its subtree is not visited either — the early
+/// return happens before the group is created.
+///
+/// ⛔ **A macro is skipped by a STANDARD-CELL cluster's module sweep**, but not by its explicit
+/// `leaf_macros` list. So a standard-cell cluster can still own a macro it names directly; what it
+/// will not do is pick one up incidentally from a module.
+///
+/// ⚠️ **An instance is claimed at most once**, by whoever reaches it first — parent before child
+/// for the explicit lists, child before parent for the module sweep.
+///
+/// ℹ️ Groups are created nested, mirroring the cluster tree, and typed `VISUAL_DEBUG`.
+pub fn create_groups(clusters: &[GroupCluster], root: usize) -> Vec<(String, Vec<usize>)> {
+    let mut claimed: std::collections::BTreeSet<usize> = std::collections::BTreeSet::new();
+    let mut out = Vec::new();
+    create_group(clusters, root, &mut claimed, &mut out);
+    out
+}
+
+fn create_group(
+    clusters: &[GroupCluster],
+    id: usize,
+    claimed: &mut std::collections::BTreeSet<usize>,
+    out: &mut Vec<(String, Vec<usize>)>,
+) {
+    let cluster = &clusters[id];
+    // ⛔ Before the group exists — an IO cluster contributes nothing and is not descended into.
+    if cluster.kind == AreaKind::IoCluster {
+        return;
+    }
+
+    let mut members = Vec::new();
+    for &inst in &cluster.leaf_std_cells {
+        if claimed.insert(inst) {
+            members.push(inst);
+        }
+    }
+    for &inst in &cluster.leaf_macros {
+        if claimed.insert(inst) {
+            members.push(inst);
+        }
+    }
+
+    // 🔑 The children claim theirs HERE, before this cluster sweeps its modules.
+    let slot = out.len();
+    out.push((cluster.name.clone(), Vec::new()));
+    for &child in &cluster.children {
+        create_group(clusters, child, claimed, out);
+    }
+
+    for &(inst, is_block) in &cluster.module_insts {
+        if claimed.contains(&inst) {
+            continue;
+        }
+        // ⛔ A standard-cell cluster does not pick up a macro from a module.
+        if is_block && cluster.kind == AreaKind::StdCellCluster {
+            continue;
+        }
+        claimed.insert(inst);
+        members.push(inst);
+    }
+
+    out[slot].1 = members;
+}

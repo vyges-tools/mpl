@@ -407,6 +407,88 @@ pub const MUTATIONS: &[Mutation] = &[
     let mut deferred_io: Vec<&AssemblyChild> = Vec::new();"#,
         want: r#"a_blockage_has_no_name"#,
     },
+    // ---------------------------------------------------------------- clustering data to the db
+    Mutation {
+        name: r#"modules-swept-before-the-children-recurse"#,
+        file: r#"src/placement.rs"#,
+        find: r#"    let slot = out.len();
+    out.push((cluster.name.clone(), Vec::new()));
+    for &child in &cluster.children {
+        create_group(clusters, child, claimed, out);
+    }
+
+    for &(inst, is_block) in &cluster.module_insts {"#,
+        replace: r#"    let slot = out.len();
+    out.push((cluster.name.clone(), Vec::new()));
+
+    for &(inst, is_block) in &cluster.module_insts {"#,
+        want: r#"a_child_claims_its_instances_before_the_parent_sweeps"#,
+    },
+    Mutation {
+        name: r#"io-cluster-gets-a-group"#,
+        file: r#"src/placement.rs"#,
+        find: r#"    if cluster.kind == AreaKind::IoCluster {
+        return;
+    }"#,
+        replace: r#"    if false {
+        return;
+    }"#,
+        want: r#"an_io_cluster_gets_no_group_and_is_not_descended_into"#,
+    },
+    Mutation {
+        name: r#"std-cell-cluster-keeps-module-macros"#,
+        file: r#"src/placement.rs"#,
+        find: r#"        if is_block && cluster.kind == AreaKind::StdCellCluster {
+            continue;
+        }"#,
+        replace: r#"        if false && is_block && cluster.kind == AreaKind::StdCellCluster {
+            continue;
+        }"#,
+        want: r#"a_std_cell_cluster_skips_macros_from_modules_only"#,
+    },
+    Mutation {
+        name: r#"std-cell-cluster-skips-its-own-macros-too"#,
+        file: r#"src/placement.rs"#,
+        find: r#"    for &inst in &cluster.leaf_macros {
+        if claimed.insert(inst) {
+            members.push(inst);
+        }
+    }"#,
+        replace: r#"    for &inst in &cluster.leaf_macros {
+        if cluster.kind != AreaKind::StdCellCluster && claimed.insert(inst) {
+            members.push(inst);
+        }
+    }"#,
+        want: r#"a_std_cell_cluster_skips_macros_from_modules_only"#,
+    },
+    Mutation {
+        name: r#"instances-claimed-more-than-once"#,
+        file: r#"src/placement.rs"#,
+        find: r#"    for &inst in &cluster.leaf_std_cells {
+        if claimed.insert(inst) {
+            members.push(inst);
+        }
+    }"#,
+        replace: r#"    for &inst in &cluster.leaf_std_cells {
+        claimed.insert(inst);
+        members.push(inst);
+    }"#,
+        want: r#"an_instance_is_claimed_only_once"#,
+    },
+    Mutation {
+        name: r#"macros-claimed-before-cells"#,
+        file: r#"src/placement.rs"#,
+        find: r#"    let mut members = Vec::new();
+    for &inst in &cluster.leaf_std_cells {"#,
+        replace: r#"    let mut members = Vec::new();
+    for &inst in &cluster.leaf_macros {
+        if claimed.insert(inst) {
+            members.push(inst);
+        }
+    }
+    for &inst in &cluster.leaf_std_cells {"#,
+        want: r#"cells_are_claimed_before_macros"#,
+    },
     // ---------------------------------------------------------------- snapping to the grid
     Mutation {
         name: r#"snap-passes-horizontal-first"#,
