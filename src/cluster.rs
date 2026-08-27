@@ -63,6 +63,17 @@ pub struct Cluster {
     /// the two hold the same rectangle for a constrained cluster and are not interchangeable,
     /// because a bundle has a bbox and no constraint.
     pub io_region: Option<crate::design::Rect>,
+    /// Virtual connections, stored on the mixed leaf's **PARENT** — not on the leaf.
+    ///
+    /// 🔑 Upstream `breakMixedLeaf` opens with `parent = mixed_leaf->getParent()` and calls
+    /// `parent->addVirtualConnection(...)`; every endpoint is a child of that parent — the
+    /// std-cell cluster the leaf became, then the macro arrays, then the fixed clusters.
+    /// `buildBundledNets(parent, ...)` reads them back and maps each id through the parent's
+    /// own soft-macro map, so storing them anywhere else would leave them unreachable.
+    ///
+    /// ⚠️ Some designs have **no db nets at all** (`fixed_macros1` declares `NETS 0 ;`), and
+    /// there these are the ONLY source of bundled nets — the wirelength term is entirely theirs.
+    pub virtual_connections: Vec<(ClusterId, ClusterId)>,
     /// The outlines this cluster may take, filled by the shaping stage.
     /// ⚠️ Empty means *not shaped*, which is a different thing from *no legal shape* — the latter
     /// is an MPL-4 error and never reaches here.
@@ -99,6 +110,7 @@ impl Cluster {
             num_io_pins: 0,
             constraint_region: None,
             io_region: None,
+            virtual_connections: Vec::new(),
             tilings: Vec::new(),
             soft_macro: None,
         }

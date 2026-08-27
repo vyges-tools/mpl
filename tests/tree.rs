@@ -867,3 +867,47 @@ fn a_pure_std_cell_leaf_is_left_alone() {
     assert_eq!(next, 2, "no id was consumed");
     assert_eq!(root.children.len(), 1);
 }
+
+#[test]
+fn virtual_connections_are_stored_on_the_broken_leafs_parent_not_on_the_leaf_or_the_root() {
+    // 🔑 Upstream rule: `breakMixedLeaf` opens with `parent = mixed_leaf->getParent()` and calls
+    // `parent->addVirtualConnection(...)`. `buildBundledNets(parent, ...)` then reads them back
+    // through THAT parent's soft-macro map, so any other owner leaves them unreachable.
+    //
+    // ⚠️ The leaf is nested under `branch` deliberately: with a flat tree the parent IS the root,
+    // and storing them on the root would pass. Three distinct clusters are needed to tell the
+    // three candidate owners apart.
+    let (d, mut root) = mixed_leaf_design(&[]);
+    let mut deep = vyges_mpl::cluster::Cluster::new(9, "branch");
+    deep.cluster_type = ClusterType::Mixed;
+    deep.children.push(root.children.remove(0));
+    root.children.push(deep);
+
+    split(&d, &mut root);
+
+    assert!(root.virtual_connections.is_empty(), "the root broke no leaf of its own");
+    let branch = root.children.iter().find(|c| c.name == "branch").unwrap();
+    let leaf = branch.children.iter().find(|c| c.name == "(root)_glue_logic").unwrap();
+    assert!(leaf.virtual_connections.is_empty(), "not on the leaf that was broken");
+
+    // Upstream's order: the std-cell cluster the leaf became, then the macro arrays. With one
+    // std-cell cluster and two macros that is every pair of the three, in that sequence.
+    let m0 = branch.children.iter().find(|c| c.name == "MACRO_0").unwrap().id;
+    let m1 = branch.children.iter().find(|c| c.name == "MACRO_1").unwrap().id;
+    assert_eq!(
+        branch.virtual_connections,
+        vec![(leaf.id, m0), (leaf.id, m1), (m0, m1)],
+        "every pair, std-cell cluster first"
+    );
+}
+
+#[test]
+fn a_design_with_no_db_nets_still_has_bundled_nets_from_the_virtual_connections() {
+    // ⚠️ Measured on the reference suite: `fixed_macros1.def` declares no NETS section at all
+    // (`fixed_macros1.defok` writes `NETS 0 ;`), yet its placement summary reports a non-zero
+    // Wire Length. The virtual connections are the ONLY source of bundled nets there, so a
+    // reimplementation that drops them scores wirelength 0 on that whole class of design.
+    let (d, mut root) = mixed_leaf_design(&[]);
+    split(&d, &mut root);
+    assert!(!root.virtual_connections.is_empty(), "no db nets, but connections exist anyway");
+}

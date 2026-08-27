@@ -565,6 +565,7 @@ fn split_recursive(
     }
 
     let mut new_siblings: Vec<Cluster> = Vec::new();
+    let mut new_virtual: Vec<(ClusterId, ClusterId)> = Vec::new();
     for child in &mut parent.children {
         if !child.children.is_empty() || child.cluster_type == ClusterType::StdCell {
             continue;
@@ -613,6 +614,10 @@ fn split_recursive(
         let conns = ctx.connections();
         let plan = crate::macroclass::break_mixed_leaf(child.id, &descriptors, &conns);
         virtual_connections.extend(plan.virtual_connections.iter().copied());
+        // ⚠️ `parent` HERE is upstream's `mixed_leaf->getParent()` — the leaf being broken is
+        // `child`. Storing them on `child` would put them under the std-cell cluster, where
+        // `buildBundledNets` never looks.
+        new_virtual.extend(plan.virtual_connections.iter().copied());
 
         // `replaceByStdCellCluster`: the leaf keeps its standard cells and becomes one.
         child.leaf_macros.clear();
@@ -676,6 +681,7 @@ fn split_recursive(
         parent.children.append(to_root);
     }
     parent.children.extend(new_siblings);
+    parent.virtual_connections.extend(new_virtual);
 }
 
 /// Upstream `updateInstancesAssociation`, applied to a whole tree.

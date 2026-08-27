@@ -2339,6 +2339,27 @@ pub const MUTATIONS: &[Mutation] = &[
         want: r#"keep_clustering_data2_matches_upstreams_reported_thresholds"#,
     },
     Mutation {
+        name: r#"virtual-connections-stored-on-the-leaf"#,
+        file: r#"src/tree.rs"#,
+        find: r#"        new_virtual.extend(plan.virtual_connections.iter().copied());"#,
+        replace: r#"        child.virtual_connections.extend(plan.virtual_connections.iter().copied());"#,
+        want: r#"virtual_connections_are_stored_on_the_broken_leafs_parent_not_on_the_leaf_or_the_root"#,
+    },
+    Mutation {
+        name: r#"virtual-connections-dropped"#,
+        file: r#"src/tree.rs"#,
+        find: r#"    parent.virtual_connections.extend(new_virtual);"#,
+        replace: r#"    let _ = new_virtual;"#,
+        want: r#"a_design_with_no_db_nets_still_has_bundled_nets_from_the_virtual_connections"#,
+    },
+    Mutation {
+        name: r#"virtual-connection-pairs-reversed"#,
+        file: r#"src/macroclass.rs"#,
+        find: r#"            virtual_connections.push((virtual_members[i], virtual_members[j]));"#,
+        replace: r#"            virtual_connections.push((virtual_members[j], virtual_members[i]));"#,
+        want: r#"virtual_connections_are_stored_on_the_broken_leafs_parent_not_on_the_leaf_or_the_root"#,
+    },
+    Mutation {
         name: r#"threshold-guard-is-per-field"#,
         file: r#"src/thresholds.rs"#,
         find: r#"    if t.max_macro <= 0 || t.min_macro <= 0 || t.max_std_cell <= 0 || t.min_std_cell <= 0 {"#,

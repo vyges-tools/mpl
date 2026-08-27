@@ -269,7 +269,7 @@ fn report_placement(
         &mut |parent| {
             let ctx = p::ParentContext {
                 connections_of: &|_| Vec::new(),
-                virtual_connections: &[],
+                virtual_connections: &parent.virtual_connections,
                 blockages: &blockages,
                 soft_blockages: &soft,
                 fence_of: &|_| None,
@@ -363,7 +363,7 @@ fn print_placement_summaries(
     let mut emit = |parent: &vyges_mpl::cluster::Cluster| {
         let ctx = p::ParentContext {
             connections_of: &|id| connections.of(id),
-            virtual_connections: &[],
+            virtual_connections: &parent.virtual_connections,
             blockages: &blockages,
             soft_blockages: &soft,
             fence_of: &|_| None,
