@@ -70,7 +70,7 @@ fn a_parent_that_fits_anneals_to_a_valid_solution() {
         SoftWeights::placement_defaults(),
     );
     assert!(got.is_some(), "a 2000 x 2000 outline holds these");
-    assert_eq!(got.unwrap().len(), 2);
+    assert_eq!(got.unwrap().macros.len(), 2);
 }
 
 /// 🔑 **The enhancements are part of the RUN, not a post-process.** Centralization shifts the whole
@@ -103,8 +103,8 @@ fn the_enhancements_move_the_floorplan_off_the_corner() {
     )
     .expect("it fits");
     assert!(
-        got.iter().all(|m| m.x != 0 && m.y != 0),
-        "the packer leaves something at the origin; centralization moves it: {got:?}"
+        got.macros.iter().all(|m| m.x != 0 && m.y != 0),
+        "the packer leaves something at the origin; centralization moves it: {:?}", got.macros
     );
 }
 
@@ -115,7 +115,7 @@ fn the_same_seed_gives_the_same_placement() {
     let probs = ActionProbabilities::normalized(0.2, 0.2, 0.2, 0.2, 0.2);
     let a = anneal_one_run(&problem(), 0.25, 99, &p, probs, SoftWeights::placement_defaults());
     let b = anneal_one_run(&problem(), 0.25, 99, &p, probs, SoftWeights::placement_defaults());
-    assert_eq!(a, b);
+    assert_eq!(a.map(|s| s.macros), b.map(|s| s.macros));
 }
 
 /// ⛔ **Each macro-placement run uses a DIFFERENT seed**, so two runs of the same problem explore
@@ -127,7 +127,7 @@ fn a_different_seed_explores_differently() {
     let a = anneal_one_run(&problem(), 0.25, 1, &p, probs, SoftWeights::placement_defaults());
     let b = anneal_one_run(&problem(), 0.25, 2, &p, probs, SoftWeights::placement_defaults());
     assert!(a.is_some() && b.is_some());
-    assert_ne!(a, b, "two seeds, two trajectories");
+    assert_ne!(a.map(|s| s.macros), b.map(|s| s.macros), "two seeds, two trajectories");
 }
 
 /// ⛔ **A parent whose macros cannot fit reports INVALID** rather than returning a bad placement —
@@ -181,11 +181,11 @@ fn a_resize_moves_along_the_reshaped_curve() {
     let got = anneal_one_run(&p, 0.25, 11, &long, resize_only, SoftWeights::placement_defaults())
         .expect("it fits");
 
-    assert_ne!(got[1].width, start_width, "the cluster was never reshaped");
+    assert_ne!(got.macros[1].width, start_width, "the cluster was never reshaped");
     assert!(
-        got[1].width >= cell.intervals[0].min && got[1].width <= cell.intervals[0].max,
+        got.macros[1].width >= cell.intervals[0].min && got.macros[1].width <= cell.intervals[0].max,
         "and it stayed on the curve: {} not in {:?}",
-        got[1].width,
+        got.macros[1].width,
         cell.intervals[0]
     );
 }

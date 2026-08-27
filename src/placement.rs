@@ -4148,7 +4148,7 @@ pub fn anneal_one_run(
     params: &crate::anneal::SaParameters,
     probabilities: crate::anneal::ActionProbabilities,
     weights: crate::anneal::SoftWeights,
-) -> Option<Vec<crate::anneal::SoftMacro>> {
+) -> Option<crate::anneal::Search> {
     let single_array = problem.force_centralization;
     let reshaped = apply_utilization(
         &problem.reshape,
@@ -4204,7 +4204,75 @@ pub fn anneal_one_run(
     if !search.is_valid(fixed_present) {
         return None;
     }
-    Some(search.macros)
+    Some(search)
+}
+
+/// Upstream's `Cluster Placement Summary` table, byte for byte.
+///
+/// ⛔ **The Area row's normalisation factor is a HARDCODED `1.0`**, not the measured one. Upstream
+/// passes the literal at the call site, and it is consistent with `calNormCost`, which does not
+/// divide the area term — but the printed column is a constant, not a measurement. Confirmed
+/// against all 34 reference captures: every Area row reads `1.0000` while every other term spans
+/// `0.03` to `0.99`.
+///
+/// ⛔ **The Cost column is RECOMPUTED as `weight * value / factor`**, not taken from the cost
+/// function. A term whose factor were zero would print an infinity here while `calNormCost` drops
+/// it. ℹ️ Not reachable in the suite — no capture contains an `inf` or a `nan` — so this is read
+/// from the source and cannot be measured.
+///
+/// ⛔ **The FIXED MACROS term is in the cost and NOT in the table.** Eight rows are printed; nine
+/// terms are summed. A reader adding the Cost column up will not reach the total on any design
+/// with a fixed macro.
+///
+/// ⚠️ **Every row ends in a trailing SPACE**, and the header is preceded by a blank line. Both are
+/// in the format string.
+pub fn cluster_placement_summary(
+    cluster_id: i32,
+    outline: (i32, i32, i32, i32),
+    penalties: &crate::anneal::Penalties,
+    weights: &crate::anneal::SoftWeights,
+    norms: &crate::anneal::Normalization,
+    area_penalty: f32,
+    total_cost: f32,
+    dbu_per_micron: i32,
+) -> String {
+    let um = |v: i32| v as f64 / dbu_per_micron as f64;
+    let mut out = String::new();
+    out.push_str(&format!("Id: {cluster_id}\n"));
+    out.push_str(&format!(
+        "Outline: ({:^8.2} {:^8.2}) ({:^8.2} {:^8.2})\n",
+        um(outline.0),
+        um(outline.1),
+        um(outline.2),
+        um(outline.3)
+    ));
+    out.push_str("\n  Penalty Type  |  Weight  |  Value  |  Norm. Factor  |  Cost\n");
+    out.push_str("---------------------------------------------------------------\n");
+
+    let mut row = |name: &str, weight: f32, value: f32, factor: f32| {
+        out.push_str(&format!(
+            "{:>15} | {:>8.4} | {:>7.4} | {:>14.4} | {:>7.4} \n",
+            name,
+            weight,
+            value,
+            factor,
+            weight * value / factor
+        ));
+    };
+
+    // ⛔ The literal `1.0`, not `norms.area`.
+    row("Area", weights.area, area_penalty, 1.0);
+    row("Outline", weights.outline, penalties.outline, norms.outline);
+    row("Wire Length", weights.wirelength, penalties.wirelength, norms.wirelength);
+    row("Guidance", weights.guidance, penalties.guidance, norms.guidance);
+    row("Fence", weights.fence, penalties.fence, norms.fence);
+    row("Boundary", weights.boundary, penalties.boundary, norms.boundary);
+    row("Soft Blockage", weights.soft_blockage, penalties.soft_blockage, norms.soft_blockage);
+    row("Notch", weights.notch, penalties.notch, norms.notch);
+
+    out.push_str("---------------------------------------------------------------\n");
+    out.push_str(&format!("  Total Cost  {total_cost:>49.4} \n\n"));
+    out
 }
 
 // ---------------------------------------------------------------- from a cluster tree
@@ -4564,9 +4632,9 @@ pub fn run_hierarchical_macro_placement(
             probabilities,
             weights,
         )
-        .map(|macros| {
+        .map(|search| {
             let _ = index;
-            macros
+            search.macros
         })
     })
 }

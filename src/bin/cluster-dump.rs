@@ -27,6 +27,7 @@ fn main() {
             "--report" => want_report = true,
             "--shaping" => want_shaping = true,
             "--place" => {}
+            "--placement-trace" => {}
             "--use-full-halo" => use_full_halo = true,
             "--base-halo" => {
                 let Some(spec) = it.next() else { usage("--base-halo needs l,b,r,t in microns") };
@@ -51,6 +52,7 @@ fn main() {
     };
 
     let place = std::env::args().any(|a| a == "--place");
+    let summaries = std::env::args().any(|a| a == "--placement-trace");
     let db = match vyges_opendb::Db::open(&path) {
         Ok(d) => d,
         Err(e) => { eprintln!("cannot read {path}: {e}"); std::process::exit(2); }
@@ -116,7 +118,7 @@ fn main() {
         return;
     }
     if want_shaping {
-        print_coarse_shaping_trace(r, &blockages, dbu, place);
+        print_coarse_shaping_trace(r, &blockages, dbu, place, summaries, &design, &nets);
         return;
     }
     print!("{}", vyges_mpl::dump::physical_hierarchy(&r.root));
@@ -129,11 +131,15 @@ fn main() {
 /// root, and this engine refuses those by name rather than approximating them. Printing a partial
 /// trace for one would put a SHORTER but otherwise matching block in front of the harness, which
 /// reads as a pass on everything it did emit.
+#[allow(clippy::too_many_arguments)]
 fn print_coarse_shaping_trace(
     r: vyges_mpl::engine::Clustering,
     blockages: &[vyges_mpl::design::Rect],
     dbu: i32,
     place: bool,
+    summaries: bool,
+    design: &vyges_mpl::design::Design,
+    nets: &[vyges_mpl::netlist::DbNet],
 ) {
     use vyges_mpl::cluster::ClusterType;
     let Some(h) = r.shaping else {
@@ -196,11 +202,24 @@ fn print_coarse_shaping_trace(
             std::process::exit(4);
         }
     };
-    if !place {
+    if !place && !summaries {
         print!("{}", trace.finish());
         return;
     }
-    report_placement(&root, &h, &shaping, dbu);
+    if summaries {
+        print_placement_summaries(
+            &root,
+            &h,
+            &shaping,
+            dbu,
+            design,
+            nets,
+            &|_| None,
+            h.has_io_pads,
+        );
+    } else {
+        report_placement(&root, &h, &shaping, dbu);
+    }
 }
 
 /// ⚠️ **A smoke path, not an oracle.** It runs the composed placement stage on a real design and
@@ -285,6 +304,136 @@ fn report_placement(
             p::ParentOutcome::NoValidSolution(e) => format!("NO VALID SOLUTION (MPL-{})", e.code),
         };
         println!("cluster {:>3}  {what}", v.cluster);
+    }
+}
+
+/// Emit the reference's `Cluster Placement Summary` for every parent that was placed.
+///
+/// ⛔ **Only a placed parent produces a table.** A macro cluster gets a `Macro Placement Summary`
+/// from a different core, and a leaf gets nothing — so a harness must attribute a missing block,
+/// never treat it as a match.
+#[allow(clippy::too_many_arguments)]
+fn print_placement_summaries(
+    root: &vyges_mpl::cluster::Cluster,
+    h: &vyges_mpl::engine::ShapingHandoff,
+    shaping: &vyges_mpl::shaping::CoarseShaping,
+    dbu: i32,
+    design: &vyges_mpl::design::Design,
+    nets: &[vyges_mpl::netlist::DbNet],
+    pin_cluster_of: &dyn Fn(usize) -> Option<i32>,
+    has_io_pads: bool,
+) {
+    use vyges_mpl::placement as p;
+
+    // 🔑 **Rebuilt from the association as it stands**, which is what `rebuildConnections` does
+    // inside `placeChildren` — not a map built once for the whole design.
+    let assoc = vyges_mpl::tree::associate_instances(root, design);
+    let connections = vyges_mpl::netlist::build_connections(
+        nets,
+        design,
+        &|i| assoc.get(i).copied().flatten(),
+        pin_cluster_of,
+        has_io_pads,
+        50,
+    );
+
+    let floorplan = h.floorplan;
+    let outline = (
+        floorplan.x_min as i32,
+        floorplan.y_min as i32,
+        floorplan.x_max as i32,
+        floorplan.y_max as i32,
+    );
+    let die = h.die;
+    let margin = 2 * ((die.x_max - die.x_min) + (die.y_max - die.y_min));
+    let (weights, tiny) =
+        p::placement_setup(1, vyges_mpl::anneal::SoftWeights::placement_defaults(), 0);
+    let utilizations = p::utilization_list(0.25, 10);
+    let blockages: Vec<(i32, i32, i32, i32)> = shaping
+        .placement_blockages
+        .iter()
+        .map(|b| (b.x_min as i32, b.y_min as i32, b.x_max as i32, b.y_max as i32))
+        .collect();
+    let soft: Vec<(i32, i32, i32, i32)> = shaping
+        .io_blockages
+        .iter()
+        .map(|b| (b.x_min as i32, b.y_min as i32, b.x_max as i32, b.y_max as i32))
+        .collect();
+
+    let mut emit = |parent: &vyges_mpl::cluster::Cluster| {
+        let ctx = p::ParentContext {
+            connections_of: &|id| connections.of(id),
+            virtual_connections: &[],
+            blockages: &blockages,
+            soft_blockages: &soft,
+            fence_of: &|_| None,
+            guide_of: &|_| None,
+            terminals: &[],
+            root: p::Root {
+                x: outline.0,
+                y: outline.1,
+                width: outline.2 - outline.0,
+                height: outline.3 - outline.1,
+            },
+            die_margin: margin,
+            available_regions: &[],
+            constraint_region_of: &|_| None,
+            weights,
+            dbu_per_micron: dbu,
+            tiny_threshold: tiny,
+            min_ar: 0.33,
+        };
+        let problem = p::build_parent_problem(parent, outline, &ctx);
+        // ⚠️ On stderr, so it never reaches a harness diffing stdout. This line is how the first
+        // divergence was attributed — the table alone says "different", this says WHERE.
+        eprintln!(
+            "[diag] cluster {} macros={} seq_pair={} nets={} attrs_with_macros={}",
+            parent.id,
+            problem.macros.len(),
+            problem.number_of_sequence_pair_macros,
+            problem.inputs.nets.len(),
+            problem.inputs.attributes.iter().filter(|a| a.num_macro > 0).count()
+        );
+        for (index, util) in utilizations.iter().enumerate() {
+            let Some(search) = p::anneal_one_run(
+                &problem,
+                *util,
+                0,
+                &vyges_mpl::anneal::SaParameters::default(),
+                vyges_mpl::anneal::ActionProbabilities::normalized(0.2, 0.2, 0.2, 0.2, 0.2),
+                weights,
+            ) else {
+                continue;
+            };
+            let _ = index;
+            println!("Cluster Placement Summary");
+            print!(
+                "{}",
+                p::cluster_placement_summary(
+                    parent.id,
+                    outline,
+                    &search.penalties,
+                    &search.weights,
+                    &search.normalization,
+                    search.area_penalty(),
+                    search.norm_cost(),
+                    dbu,
+                )
+            );
+            return;
+        }
+    };
+
+    // ⚠️ Only clusters the driver would have PLACED — the same guards, so the set matches.
+    let mut stack = vec![root];
+    while let Some(c) = stack.pop() {
+        let action = p::placement_action(p::area_kind_of(c), c.is_fixed_macro, c.children.is_empty());
+        if action == p::PlacementAction::PlaceChildren {
+            emit(c);
+            for child in c.children.iter().rev() {
+                stack.push(child);
+            }
+        }
     }
 }
 
