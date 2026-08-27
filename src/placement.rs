@@ -4206,3 +4206,305 @@ pub fn anneal_one_run(
     }
     Some(search.macros)
 }
+
+// ---------------------------------------------------------------- from a cluster tree
+
+/// Upstream's classification of one child, as every placement stage asks for it.
+///
+/// ⛔ **The order of the tests is upstream's and is not interchangeable.** An IO cluster is asked
+/// about FIRST — before fixedness and before the cluster type — because `placeChildren` defers it
+/// before anything else looks at it. A FIXED macro is asked about second, ahead of its type, which
+/// is `HardMacroCluster` and would otherwise swallow it.
+pub fn area_kind_of(cluster: &crate::cluster::Cluster) -> AreaKind {
+    if cluster.is_io_cluster() {
+        return AreaKind::IoCluster;
+    }
+    if cluster.is_fixed_macro {
+        return AreaKind::FixedMacro;
+    }
+    match cluster.cluster_type {
+        crate::cluster::ClusterType::StdCell => AreaKind::StdCellCluster,
+        crate::cluster::ClusterType::HardMacro => AreaKind::HardMacroCluster,
+        crate::cluster::ClusterType::Mixed => AreaKind::MixedCluster,
+    }
+}
+
+/// What the caller must supply that a `Cluster` does not carry.
+///
+/// ⚠️ **Nets and regions are NOT on the tree.** Connections live in `netlist::Connections`,
+/// rebuilt per level, and the IO regions come from coarse shaping — so they arrive here rather
+/// than being read off a cluster. That is the shape of our clustering output, not upstream's.
+pub struct ParentContext<'a> {
+    /// `Connections::of(cluster_id)` for each child, plus the parent's virtual connections.
+    pub connections_of: &'a dyn Fn(i32) -> Vec<(i32, f32)>,
+    pub virtual_connections: &'a [(i32, i32)],
+    /// Placement blockages, already clipped to this outline and rebased onto it.
+    pub blockages: &'a [(i32, i32, i32, i32)],
+    /// IO blockages, likewise — these are the SOFT ones the blockage penalty scores against.
+    pub soft_blockages: &'a [(i32, i32, i32, i32)],
+    /// A fence or a guide declared for a child, in DIE coordinates.
+    pub fence_of: &'a dyn Fn(i32) -> Option<(i32, i32, i32, i32)>,
+    pub guide_of: &'a dyn Fn(i32) -> Option<(i32, i32, i32, i32)>,
+    /// The fixed terminals, from `fixed_terminal_walk` up the tree.
+    pub terminals: &'a [(String, crate::anneal::SoftMacro)],
+    pub root: Root,
+    pub die_margin: i64,
+    pub available_regions: &'a [Region],
+    pub constraint_region_of: &'a dyn Fn(usize) -> Option<Region>,
+    pub weights: crate::anneal::SoftWeights,
+    pub dbu_per_micron: i32,
+    pub tiny_threshold: i32,
+    pub min_ar: f32,
+}
+
+/// Build one parent's placement problem from its children.
+///
+/// 🔑 **The macro that represents a child depends on what the child IS**, and the three cases are
+/// upstream's: a FIXED macro is its own clustering-time soft macro CLIPPED to this outline and
+/// rebased; an IO cluster is its clustering-time soft macro rebased but NOT clipped, because it is
+/// a region rather than an occupant; anything else starts from its tilings or its area and is
+/// reshaped per utilization.
+///
+/// ⚠️ **`single_array_single_std_cell_cluster` is decided here, once**, from the assembled list —
+/// and it is what forces centralization to stick as well as what collapses the cell cluster.
+///
+/// ⛔ **A cluster with no soft macro contributes a macro at the ORIGIN**, because that is what its
+/// accessors report. Upstream has the same behaviour and it is only ever safe because the four
+/// setters cover every kind that reaches here without going through placement first.
+pub fn build_parent_problem(
+    parent: &crate::cluster::Cluster,
+    outline: (i32, i32, i32, i32),
+    ctx: &ParentContext,
+) -> ParentProblem {
+    let origin = (outline.0, outline.1);
+    let size = (outline.2 - outline.0, outline.3 - outline.1);
+
+    let blockage_macros = soft_macros_for_blockages(ctx.blockages);
+    let mut reshape: Vec<ReshapeInput> = blockage_macros
+        .iter()
+        .map(|_| ReshapeInput {
+            kind: Some(AreaKind::Blockage),
+            cluster_area: 0,
+            cluster_std_cell_area: 0,
+            num_std_cell: 0,
+            tilings: Vec::new(),
+        })
+        .collect();
+
+    let mut children = Vec::new();
+    for child in &parent.children {
+        let kind = area_kind_of(child);
+        let macro_ = child_soft_macro(child, kind, outline);
+        children.push(AssemblyChild {
+            name: child.name.clone(),
+            kind,
+            macro_,
+            fence: (ctx.fence_of)(child.id),
+            guide: (ctx.guide_of)(child.id),
+        });
+    }
+
+    // ⚠️ In the same order `assemble` will place them: children first, then the deferred IO
+    // clusters, then the terminals — so `reshape` indexes match the macro list.
+    for child in children.iter().filter(|c| c.kind != AreaKind::IoCluster) {
+        reshape.push(reshape_input_for(parent, &child.name, child.kind));
+    }
+    for child in children.iter().filter(|c| c.kind == AreaKind::IoCluster) {
+        reshape.push(reshape_input_for(parent, &child.name, child.kind));
+    }
+    for _ in ctx.terminals {
+        // ⚠️ A terminal has no cluster behind it, so nothing reshapes it.
+        reshape.push(ReshapeInput {
+            kind: None,
+            cluster_area: 0,
+            cluster_std_cell_area: 0,
+            num_std_cell: 0,
+            tilings: Vec::new(),
+        });
+    }
+
+    let assembly = assemble(&blockage_macros, &children, outline, ctx.terminals);
+
+    let attributes = assembly
+        .macros
+        .iter()
+        .enumerate()
+        .map(|(id, _)| attributes_for(parent, &assembly, id))
+        .collect();
+
+    let nets = parent_nets(parent, &assembly, ctx);
+
+    let single_array = single_array_single_std_cell_cluster(
+        &reshape
+            .iter()
+            .map(|r| (r.kind.unwrap_or(AreaKind::Blockage), r.tilings.len() > 1))
+            .collect::<Vec<_>>(),
+    );
+
+    ParentProblem {
+        macros: assembly.macros.clone(),
+        reshape,
+        number_of_sequence_pair_macros: assembly.number_of_sequence_pair_macros,
+        inputs: PlacementInputs {
+            attributes,
+            nets,
+            guides: assembly.guides.clone(),
+            fences: assembly.fences.clone(),
+            soft_blockages: ctx.soft_blockages.to_vec(),
+            outline_origin: origin,
+            root: ctx.root,
+            die_margin: ctx.die_margin,
+            available_regions: ctx.available_regions.to_vec(),
+            constraint_regions: assembly
+                .macros
+                .iter()
+                .enumerate()
+                .filter_map(|(id, _)| (ctx.constraint_region_of)(id).map(|r| (id, r)))
+                .collect(),
+            weights: ctx.weights,
+        },
+        outline: size,
+        dbu_per_micron: ctx.dbu_per_micron,
+        fixed_bboxes: children
+            .iter()
+            .filter(|c| c.kind == AreaKind::FixedMacro)
+            .map(|c| c.macro_.bbox())
+            .collect(),
+        tiny_threshold: ctx.tiny_threshold,
+        min_ar: ctx.min_ar,
+        force_centralization: single_array,
+    }
+}
+
+/// The soft macro one child contributes to its parent's annealer.
+fn child_soft_macro(
+    child: &crate::cluster::Cluster,
+    kind: AreaKind,
+    outline: (i32, i32, i32, i32),
+) -> crate::anneal::SoftMacro {
+    let origin = (outline.0, outline.1);
+    match kind {
+        // ⛔ CLIPPED to the outline and rebased — the fixed macro's own soft macro is neither.
+        AreaKind::FixedMacro => {
+            let own = child.soft_macro.unwrap_or_default();
+            let bbox = (own.x, own.y, own.x + own.width, own.y + own.height);
+            let clipped = (
+                bbox.0.max(outline.0),
+                bbox.1.max(outline.1),
+                bbox.2.min(outline.2),
+                bbox.3.min(outline.3),
+            );
+            let (w, h) = ((clipped.2 - clipped.0).max(0), (clipped.3 - clipped.1).max(0));
+            crate::anneal::SoftMacro {
+                x: clipped.0 - origin.0,
+                y: clipped.1 - origin.1,
+                width: w,
+                height: h,
+                fixed: true,
+                area: w as i64 * h as i64,
+                is_macro_cluster: false,
+            }
+        }
+        // ⚠️ Rebased but NOT clipped — an IO cluster is a region, not an occupant, and its area
+        // stays zero.
+        AreaKind::IoCluster => {
+            let own = child.soft_macro.unwrap_or_default();
+            crate::anneal::SoftMacro {
+                x: own.x - origin.0,
+                y: own.y - origin.1,
+                width: own.width,
+                height: own.height,
+                fixed: true,
+                area: 0,
+                is_macro_cluster: false,
+            }
+        }
+        _ => {
+            let first = child.tilings.first();
+            crate::anneal::SoftMacro {
+                x: 0,
+                y: 0,
+                width: first.map_or(0, |t| t.width as i32),
+                height: first.map_or(0, |t| t.height as i32),
+                fixed: false,
+                area: first.map_or(child.area(), |t| t.area()),
+                is_macro_cluster: kind == AreaKind::HardMacroCluster,
+            }
+        }
+    }
+}
+
+fn reshape_input_for(
+    parent: &crate::cluster::Cluster,
+    name: &str,
+    kind: AreaKind,
+) -> ReshapeInput {
+    let child = parent.children.iter().find(|c| c.name == name);
+    ReshapeInput {
+        kind: Some(kind),
+        cluster_area: child.map_or(0, |c| c.area()),
+        cluster_std_cell_area: child.map_or(0, |c| c.std_cell_area()),
+        num_std_cell: child.map_or(0, |c| c.num_std_cell()),
+        tilings: child
+            .map(|c| c.tilings.iter().map(|t| (t.width as i32, t.height as i32)).collect())
+            .unwrap_or_default(),
+    }
+}
+
+fn attributes_for(
+    parent: &crate::cluster::Cluster,
+    assembly: &Assembly,
+    id: usize,
+) -> MacroAttributes {
+    let Some((name, _)) = assembly.id_of.iter().find(|(_, i)| *i == id) else {
+        // ⚠️ A blockage has an id but no name; it has no cluster behind it either.
+        return MacroAttributes::default();
+    };
+    let Some(child) = parent.children.iter().find(|c| &c.name == name) else {
+        return MacroAttributes::default();
+    };
+    let kind = area_kind_of(child);
+    MacroAttributes {
+        kind: Some(kind),
+        num_macro: child.num_macro(),
+        cluster_macro_area: child.macro_area(),
+        cluster_area: child.area(),
+        is_cluster_of_unplaced_io_pins: child.is_cluster_of_unplaced_io_pins,
+        is_unconstrained_io_cluster: child.is_cluster_of_unconstrained_io_pins,
+    }
+}
+
+/// Upstream `buildBundledNets` for cluster placement, driven from the real tree.
+///
+/// ⚠️ **Virtual connections first, at weight `10`, then each child's own** — and only where the
+/// child's id is strictly GREATER than the target's, which halves the undirected pairs.
+fn parent_nets(
+    parent: &crate::cluster::Cluster,
+    assembly: &Assembly,
+    ctx: &ParentContext,
+) -> Vec<BundledNet> {
+    let id_of_cluster = |cluster_id: i32| -> Option<usize> {
+        parent
+            .children
+            .iter()
+            .find(|c| c.id == cluster_id)
+            .and_then(|c| assembly.id(&c.name))
+    };
+    let mut nets = Vec::new();
+    for &(a, b) in ctx.virtual_connections {
+        if let (Some(x), Some(y)) = (id_of_cluster(a), id_of_cluster(b)) {
+            nets.push(BundledNet { source: x, target: y, weight: VIRTUAL_CONNECTION_WEIGHT });
+        }
+    }
+    for child in &parent.children {
+        let Some(source) = assembly.id(&child.name) else { continue };
+        for (target_cluster, weight) in (ctx.connections_of)(child.id) {
+            let Some(target) = id_of_cluster(target_cluster) else { continue };
+            // ⚠️ Strictly greater — halves the pairs, and drops a self-connection.
+            if child.id > target_cluster {
+                nets.push(BundledNet { source, target, weight });
+            }
+        }
+    }
+    nets
+}

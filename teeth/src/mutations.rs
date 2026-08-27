@@ -407,6 +407,94 @@ pub const MUTATIONS: &[Mutation] = &[
     let mut deferred_io: Vec<&AssemblyChild> = Vec::new();"#,
         want: r#"a_blockage_has_no_name"#,
     },
+    // ---------------------------------------------------------------- building from the tree
+    Mutation {
+        name: r#"classification-type-before-fixedness"#,
+        file: r#"src/placement.rs"#,
+        find: r#"    if cluster.is_fixed_macro {
+        return AreaKind::FixedMacro;
+    }"#,
+        replace: r#"    if false {
+        return AreaKind::FixedMacro;
+    }"#,
+        want: r#"the_classification_order_is_not_interchangeable"#,
+    },
+    Mutation {
+        name: r#"classification-io-checked-last"#,
+        file: r#"src/placement.rs"#,
+        find: r#"    if cluster.is_io_cluster() {
+        return AreaKind::IoCluster;
+    }
+    if cluster.is_fixed_macro {"#,
+        replace: r#"    if cluster.is_fixed_macro {
+        return AreaKind::FixedMacro;
+    }
+    if cluster.is_io_cluster() {
+        return AreaKind::IoCluster;
+    }
+    if false {"#,
+        want: r#"the_classification_order_is_not_interchangeable"#,
+    },
+    Mutation {
+        name: r#"fixed-macro-not-clipped-into-the-problem"#,
+        file: r#"src/placement.rs"#,
+        find: r#"            let clipped = (
+                bbox.0.max(outline.0),
+                bbox.1.max(outline.1),
+                bbox.2.min(outline.2),
+                bbox.3.min(outline.3),
+            );"#,
+        replace: r#"            let clipped = bbox;"#,
+        want: r#"a_fixed_macro_is_clipped_and_rebased_into_the_problem"#,
+    },
+    Mutation {
+        name: r#"io-cluster-clipped-into-the-problem"#,
+        file: r#"src/placement.rs"#,
+        find: r#"                width: own.width,
+                height: own.height,
+                fixed: true,
+                area: 0,"#,
+        replace: r#"                width: own.width.min(outline.2 - outline.0),
+                height: own.height.min(outline.3 - outline.1),
+                fixed: true,
+                area: 0,"#,
+        want: r#"an_io_cluster_is_rebased_but_not_clipped"#,
+    },
+    Mutation {
+        name: r#"cluster-starts-from-its-last-tiling"#,
+        file: r#"src/placement.rs"#,
+        find: r#"            let first = child.tilings.first();"#,
+        replace: r#"            let first = child.tilings.last();"#,
+        want: r#"an_ordinary_cluster_starts_from_its_first_tiling"#,
+    },
+    Mutation {
+        name: r#"parent-nets-not-halved"#,
+        file: r#"src/placement.rs"#,
+        find: r#"            if child.id > target_cluster {
+                nets.push(BundledNet { source, target, weight });
+            }"#,
+        replace: r#"            {
+                nets.push(BundledNet { source, target, weight });
+            }"#,
+        want: r#"virtual_connections_lead_and_the_pairs_are_halved"#,
+    },
+    Mutation {
+        name: r#"virtual-connections-appended-last"#,
+        file: r#"src/placement.rs"#,
+        find: r#"    let mut nets = Vec::new();
+    for &(a, b) in ctx.virtual_connections {"#,
+        replace: r#"    let mut nets = Vec::new();
+    for &(a, b) in ctx.virtual_connections.iter().skip(usize::MAX) {"#,
+        want: r#"virtual_connections_lead_and_the_pairs_are_halved"#,
+    },
+    Mutation {
+        name: r#"every-child-reaches-the-fixed-penalty"#,
+        file: r#"src/placement.rs"#,
+        find: r#"            .filter(|c| c.kind == AreaKind::FixedMacro)
+            .map(|c| c.macro_.bbox())"#,
+        replace: r#"            .map(|c| c.macro_.bbox())"#,
+        want: r#"only_fixed_macros_reach_the_fixed_penalty"#,
+    },
     // ---------------------------------------------------------------- annealing one parent
     Mutation {
         name: r#"anneal-skips-initialize"#,
