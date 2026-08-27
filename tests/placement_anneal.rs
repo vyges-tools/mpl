@@ -423,3 +423,38 @@ fn the_driver_fills_dead_space_before_returning_the_placement() {
         "and its area followed the grown shape"
     );
 }
+
+/// ⛔ **A macro cluster's shape curve is its TILING LIST, and nothing else supplies it.** The
+/// utilization pass skips hard-macro clusters entirely, so if the curve is not set here it stays
+/// empty — and an empty curve makes a `resize` action on that macro a no-op where upstream
+/// reshapes it. The random walk then diverges from the first resize onwards.
+///
+/// 🔑 **The final placement of a small design still converges**, so the penalty VALUES match and
+/// only the normalisation factors — averages over the walk — reveal it. Measured on `guides1`:
+/// with the curve set, eight of the nine factors and the total cost become byte-exact against the
+/// reference; without it, six of them are wrong by up to 13%.
+///
+/// ⚠️ `setShapes(tilings)` also MOVES the macro onto its first tiling; it is not only a constraint
+/// list.
+#[test]
+fn a_macro_cluster_is_given_its_tilings_as_its_shape_curve() {
+    let p = SaParameters { max_num_step: 5, num_perturb_per_step: 8, ..Default::default() };
+    let probs = ActionProbabilities::placement_defaults();
+
+    let mut prob = problem();
+    // Two tilings for the macro cluster, the first of which is NOT its current shape.
+    prob.reshape[0].tilings = vec![(400, 100), (100, 400)];
+    let s = anneal_one_run(&prob, 0.25, 1, &p, probs, SoftWeights::placement_defaults())
+        .expect("the fixture places");
+
+    assert_eq!(
+        s.curves[0].width_intervals.len(),
+        2,
+        "both tilings became shape-curve intervals"
+    );
+    assert_eq!(
+        (s.curves[0].width_intervals[0].min, s.curves[0].width_intervals[0].max),
+        (400, 400),
+        "a tiling is a POINT interval, not a range"
+    );
+}

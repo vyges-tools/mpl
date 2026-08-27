@@ -4241,6 +4241,26 @@ pub fn anneal_one_run(
         }
     }
 
+    // Upstream `setMacroClustersShapes`, run over the macro list just before the annealer is
+    // built.
+    //
+    // ⛔ **A macro cluster is never reshaped by the utilization**, so it never appears in
+    // `reshaped` — but it still needs a shape curve, and its curve is its TILING LIST. Leaving it
+    // empty makes a `resize` action on a macro cluster a no-op where upstream reshapes it, so the
+    // random walk diverges from the first resize onwards.
+    //
+    // ⚠️ `setShapes(tilings)` also moves the macro ONTO its first tiling — it is not only a
+    // constraint list — and it refuses anything that is not a non-fixed `HardMacroCluster`.
+    for (id, r) in problem.reshape.iter().enumerate() {
+        if r.kind == Some(AreaKind::HardMacroCluster) && !r.tilings.is_empty() {
+            let (curve, width, height, area) = crate::anneal::shape_curve_from_tilings(&r.tilings);
+            curves[id] = curve;
+            macros[id].width = width;
+            macros[id].height = height;
+            macros[id].area = area;
+        }
+    }
+
     let mut search = crate::anneal::Search {
         sp: crate::anneal::init_sequence_pair(problem.number_of_sequence_pair_macros),
         macros,

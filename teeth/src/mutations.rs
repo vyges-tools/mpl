@@ -2398,6 +2398,13 @@ pub const MUTATIONS: &[Mutation] = &[
         want: r#"growing_a_cluster_recomputes_its_area"#,
     },
     Mutation {
+        name: r#"macro-cluster-gets-no-shape-curve"#,
+        file: r#"src/placement.rs"#,
+        find: r#"        if r.kind == Some(AreaKind::HardMacroCluster) && !r.tilings.is_empty() {"#,
+        replace: r#"        if false && r.kind == Some(AreaKind::HardMacroCluster) && !r.tilings.is_empty() {"#,
+        want: r#"a_macro_cluster_is_given_its_tilings_as_its_shape_curve"#,
+    },
+    Mutation {
         name: r#"placement-resize-share-equals-a-swap"#,
         file: r#"src/anneal.rs"#,
         find: r#"        Self::normalized(0.2, 0.2, 0.2, 0.2, 0.4)"#,
