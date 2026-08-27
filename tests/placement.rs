@@ -550,3 +550,92 @@ fn a_macro_cluster_is_not_grown() {
     fill_dead_space(&mut macros, (1000, 1000));
     assert_eq!(macros[0], before, "untouched");
 }
+
+// ---------------------------------------------------------------- applying one utilization
+
+use vyges_mpl::placement::{apply_utilization, ReshapeInput};
+
+fn reshape(kind: Option<AreaKind>) -> ReshapeInput {
+    ReshapeInput {
+        kind,
+        cluster_area: 1_000_000,
+        cluster_std_cell_area: 400_000,
+        num_std_cell: 5_000,
+        tilings: vec![(100, 200), (200, 400)],
+    }
+}
+
+/// 🔑 **Only STANDARD-CELL and MIXED clusters are reshaped.** A hard-macro cluster keeps the shapes
+/// `setMacroClustersShapes` gave it — its macros do not compress, so a utilization has nothing to
+/// do to it.
+#[test]
+fn only_cell_and_mixed_clusters_are_reshaped() {
+    let macros = [
+        reshape(Some(AreaKind::StdCellCluster)),
+        reshape(Some(AreaKind::MixedCluster)),
+        reshape(Some(AreaKind::HardMacroCluster)),
+    ];
+    let got = apply_utilization(&macros, 0, false, 0.25, 0.33);
+    let ids: Vec<usize> = got.iter().map(|r| r.id).collect();
+    assert_eq!(ids, vec![0, 1], "the macro cluster was left alone");
+}
+
+/// ⛔ **Three kinds are skipped before either test** — a blockage (no cluster behind it), an IO
+/// cluster, and a FIXED macro. A fixed macro keeps its clipped box at every utilization.
+#[test]
+fn blockages_io_clusters_and_fixed_macros_are_untouched() {
+    let macros = [
+        reshape(None),
+        reshape(Some(AreaKind::Blockage)),
+        reshape(Some(AreaKind::IoCluster)),
+        reshape(Some(AreaKind::FixedMacro)),
+    ];
+    assert!(apply_utilization(&macros, 0, false, 0.25, 0.33).is_empty());
+}
+
+/// ⚠️ A lower utilization inflates a standard-cell cluster further.
+#[test]
+fn a_lower_utilization_inflates_further() {
+    let macros = [reshape(Some(AreaKind::StdCellCluster))];
+    let loose = apply_utilization(&macros, 0, false, 0.25, 0.33)[0].area;
+    let tight = apply_utilization(&macros, 0, false, 1.0, 0.33)[0].area;
+    assert!(loose > tight, "{loose} vs {tight}");
+    assert_eq!(tight, 1_000_000, "at full utilization it is the cluster's own area");
+}
+
+/// 🔑 **A tiny cluster is collapsed to ONE UNIT SQUARE** — not shrunk, erased. It still exists, so
+/// the netlist still pulls on it, but it occupies nothing.
+#[test]
+fn a_tiny_cluster_collapses_to_one_unit() {
+    let macros = [reshape(Some(AreaKind::StdCellCluster))];
+    let got = apply_utilization(&macros, 10_000, false, 0.25, 0.33);
+    assert_eq!(got[0].area, 1);
+    assert_eq!(got[0].intervals, vec![vyges_mpl::anneal::Interval { min: 1, max: 1 }]);
+}
+
+/// ⚠️ **The single-array collapse does the same thing**, whatever the cell count.
+#[test]
+fn the_single_array_case_collapses_it_too() {
+    let macros = [reshape(Some(AreaKind::StdCellCluster))];
+    let got = apply_utilization(&macros, 0, true, 0.25, 0.33);
+    assert_eq!(got[0].area, 1, "collapsed despite 5000 cells and a zero threshold");
+}
+
+/// ⛔ **A mixed cluster inflates only its standard-cell half**, and against its LAST tiling — the
+/// largest. Its macro area is added back at full size.
+#[test]
+fn a_mixed_cluster_inflates_only_its_cells() {
+    let macros = [reshape(Some(AreaKind::MixedCluster))];
+    let got = apply_utilization(&macros, 0, false, 0.5, 0.33);
+    // Last tiling is 200 x 400 = 80_000; cells 400_000 / 0.5 = 800_000.
+    assert_eq!(got[0].area, 880_000);
+    assert_eq!(got[0].intervals.len(), 2, "one interval per tiling");
+}
+
+/// ⚠️ **A mixed cluster is NOT collapsed by the tiny threshold** — only a standard-cell cluster is.
+#[test]
+fn a_tiny_threshold_does_not_collapse_a_mixed_cluster() {
+    let macros = [reshape(Some(AreaKind::MixedCluster))];
+    let got = apply_utilization(&macros, 10_000, true, 0.5, 0.33);
+    assert!(got[0].area > 1, "still its inflated area, not one unit");
+}

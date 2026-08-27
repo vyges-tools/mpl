@@ -407,6 +407,63 @@ pub const MUTATIONS: &[Mutation] = &[
     let mut deferred_io: Vec<&AssemblyChild> = Vec::new();"#,
         want: r#"a_blockage_has_no_name"#,
     },
+    // ---------------------------------------------------------------- applying one utilization
+    Mutation {
+        name: r#"utilization-reshapes-macro-clusters-too"#,
+        file: r#"src/placement.rs"#,
+        find: r#"            Some(AreaKind::HardMacroCluster) => continue,"#,
+        replace: r#"            Some(AreaKind::HardMacroCluster) => {
+                out.push(ReshapedMacro { id, intervals: Vec::new(), area: m.cluster_area });
+            }"#,
+        want: r#"only_cell_and_mixed_clusters_are_reshaped"#,
+    },
+    Mutation {
+        name: r#"utilization-reshapes-fixed-macros"#,
+        file: r#"src/placement.rs"#,
+        find: r#"            None | Some(AreaKind::IoCluster) | Some(AreaKind::FixedMacro) | Some(AreaKind::Blockage) => {
+                continue
+            }"#,
+        replace: r#"            None | Some(AreaKind::IoCluster) | Some(AreaKind::Blockage) => continue,
+            Some(AreaKind::FixedMacro) => {
+                out.push(ReshapedMacro { id, intervals: Vec::new(), area: m.cluster_area });
+            }"#,
+        want: r#"blockages_io_clusters_and_fixed_macros_are_untouched"#,
+    },
+    Mutation {
+        name: r#"utilization-multiplies-instead-of-dividing"#,
+        file: r#"src/placement.rs"#,
+        find: r#"    let area = (cluster_area as f32 / utilization) as i64;"#,
+        replace: r#"    let area = (cluster_area as f32 * utilization) as i64;"#,
+        want: r#"a_lower_utilization_inflates_further"#,
+    },
+    Mutation {
+        name: r#"tiny-cluster-collapsed-to-zero"#,
+        file: r#"src/placement.rs"#,
+        find: r#"        const NEGLIGIBLE_WIDTH: i32 = 1;"#,
+        replace: r#"        const NEGLIGIBLE_WIDTH: i32 = 0;"#,
+        want: r#"a_tiny_cluster_collapses_to_one_unit"#,
+    },
+    Mutation {
+        name: r#"single-array-does-not-collapse"#,
+        file: r#"src/placement.rs"#,
+        find: r#"    if num_std_cell <= tiny_threshold || single_array_single_std_cell {"#,
+        replace: r#"    if num_std_cell <= tiny_threshold {"#,
+        want: r#"the_single_array_case_collapses_it_too"#,
+    },
+    Mutation {
+        name: r#"mixed-cluster-inflates-its-whole-area"#,
+        file: r#"src/placement.rs"#,
+        find: r#"                    mixed_cluster_shape(&m.tilings, m.cluster_std_cell_area, utilization)"#,
+        replace: r#"                    mixed_cluster_shape(&m.tilings, m.cluster_area, utilization)"#,
+        want: r#"a_mixed_cluster_inflates_only_its_cells"#,
+    },
+    Mutation {
+        name: r#"mixed-cluster-inflates-against-the-first-tiling"#,
+        file: r#"src/placement.rs"#,
+        find: r#"    let macro_area = tilings.last()?.0 as i64 * tilings.last()?.1 as i64;"#,
+        replace: r#"    let macro_area = tilings.first()?.0 as i64 * tilings.first()?.1 as i64;"#,
+        want: r#"a_mixed_cluster_inflates_only_its_cells"#,
+    },
     // ---------------------------------------------------------------- the placement driver
     // ⚠️ This one must MOVE the recursion, not delete the comment above it. A find/replace whose
     // only difference is a comment is a no-op that can never fail — a badly written mutation, not

@@ -3973,3 +3973,82 @@ pub fn placement_setup(
         adjusted_soft_blockage_weight(max_level, weights.outline, weights.soft_blockage);
     (adjusted, tiny_cluster_max_number_of_std_cells(block_instance_count))
 }
+
+// ---------------------------------------------------------------- applying one utilization
+
+/// A macro's shape curve, as fine shaping leaves it.
+#[derive(Debug, Clone, PartialEq)]
+pub struct ReshapedMacro {
+    pub id: usize,
+    pub intervals: Vec<crate::anneal::Interval>,
+    pub area: i64,
+}
+
+/// What `applyUtilization` needs to know about one macro's cluster.
+#[derive(Debug, Clone, PartialEq)]
+pub struct ReshapeInput {
+    pub kind: Option<AreaKind>,
+    /// `Cluster::getArea` — for a standard-cell cluster, the whole thing.
+    pub cluster_area: i64,
+    /// `Cluster::getStdCellArea` — the standard-cell half only, which is what a mixed cluster
+    /// inflates.
+    pub cluster_std_cell_area: i64,
+    pub num_std_cell: i32,
+    /// ⚠️ Ordered by area, so the LAST is the largest — which is the one a mixed cluster inflates
+    /// against.
+    pub tilings: Vec<(i32, i32)>,
+}
+
+/// Upstream `HierRTLMP::applyUtilization`.
+///
+/// 🔑 **It reshapes only STANDARD-CELL and MIXED clusters.** A hard-macro cluster keeps the shapes
+/// `setMacroClustersShapes` already gave it — its macros do not compress, so there is nothing for a
+/// utilization to do.
+///
+/// ⛔ **Three kinds are skipped before either test**: a macro with no cluster behind it — a
+/// blockage — an IO cluster, and a FIXED macro. So a fixed macro keeps the clipped box it was built
+/// with, at every utilization.
+///
+/// ⚠️ **`singleArraySingleStdCellCluster` is decided ONCE, from the ORIGINAL macros**, before any
+/// reshaping — so the collapse it triggers is judged on the design as it stands, not on a design
+/// half-reshaped.
+///
+/// ⚠️ Upstream copies the whole macro list and reshapes the copy, which is why the original
+/// survives to be re-used at the next utilization. Returning only the changes says the same thing.
+pub fn apply_utilization(
+    macros: &[ReshapeInput],
+    tiny_threshold: i32,
+    single_array_single_std_cell: bool,
+    utilization: f32,
+    min_ar: f32,
+) -> Vec<ReshapedMacro> {
+    let mut out = Vec::new();
+    for (id, m) in macros.iter().enumerate() {
+        // ⛔ Blockage, IO cluster or fixed macro — untouched at every utilization.
+        match m.kind {
+            None | Some(AreaKind::IoCluster) | Some(AreaKind::FixedMacro) | Some(AreaKind::Blockage) => {
+                continue
+            }
+            Some(AreaKind::HardMacroCluster) => continue,
+            Some(AreaKind::StdCellCluster) => {
+                let (interval, area) = std_cell_cluster_shape(
+                    m.cluster_area,
+                    m.num_std_cell,
+                    tiny_threshold,
+                    single_array_single_std_cell,
+                    utilization,
+                    min_ar,
+                );
+                out.push(ReshapedMacro { id, intervals: vec![interval], area });
+            }
+            Some(AreaKind::MixedCluster) => {
+                if let Some((intervals, area)) =
+                    mixed_cluster_shape(&m.tilings, m.cluster_std_cell_area, utilization)
+                {
+                    out.push(ReshapedMacro { id, intervals, area });
+                }
+            }
+        }
+    }
+    out
+}
