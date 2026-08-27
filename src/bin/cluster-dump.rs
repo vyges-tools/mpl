@@ -416,6 +416,46 @@ fn print_placement_summaries(
         .map(|b| (b.x_min as i32, b.y_min as i32, b.x_max as i32, b.y_max as i32))
         .collect();
 
+    // The die-edge stretches an unconstrained IO pin may land on, as the placer wants them.
+    let available: Vec<p::Region> = shaping
+        .available_regions
+        .iter()
+        .map(|r| p::Region {
+            x0: r.line.x_min as i32,
+            y0: r.line.y_min as i32,
+            x1: r.line.x_max as i32,
+            y1: r.line.y_max as i32,
+            boundary: r.boundary,
+        })
+        .collect();
+
+    // 🔑 **A CONSTRAINED IO cluster measures against its OWN region, not the available ones.**
+    // Both paths were stubbed, and the constrained one is the commoner of the two: every
+    // `set_io_pin_constraint` case reaches it, and without it those nets score a distance of zero.
+    let die = h.die;
+    let mut region_of_cluster: std::collections::BTreeMap<i32, p::Region> =
+        std::collections::BTreeMap::new();
+    let mut collect_regions = |c: &vyges_mpl::cluster::Cluster| {
+        if let Some(r) = c.constraint_region {
+            region_of_cluster.insert(
+                c.id,
+                p::Region {
+                    x0: r.x_min as i32,
+                    y0: r.y_min as i32,
+                    x1: r.x_max as i32,
+                    y1: r.y_max as i32,
+                    boundary: vyges_mpl::regions::boundary_of(&die, &r),
+                },
+            );
+        }
+    };
+    for c in &root.children {
+        collect_regions(c);
+        for g in &c.children {
+            collect_regions(g);
+        }
+    }
+
     let mut emit = |parent: &vyges_mpl::cluster::Cluster| {
         let ctx = p::ParentContext {
             connections_of: &|id| connections.of(id),
@@ -432,8 +472,8 @@ fn print_placement_summaries(
                 height: outline.3 - outline.1,
             },
             die_margin: margin,
-            available_regions: &[],
-            constraint_region_of: &|_| None,
+            available_regions: &available,
+            constraint_region_of: &|id| region_of_cluster.get(&id).copied(),
             weights,
             dbu_per_micron: dbu,
             tiny_threshold: tiny,

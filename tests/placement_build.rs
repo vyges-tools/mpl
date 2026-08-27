@@ -181,3 +181,50 @@ fn the_outline_is_split_into_a_size_and_an_origin() {
     assert_eq!(got.outline, (2000, 2000));
     assert_eq!(got.inputs.outline_origin, (1000, 1000));
 }
+
+/// ⛔ **A CONSTRAINED IO cluster measures wirelength against its OWN region.** Only an
+/// *unconstrained* one uses the die-wide available regions, and the two paths are separate: with
+/// the constraint region missing the distance falls to zero and the whole net scores nothing.
+///
+/// 🔑 The context keys this by CLUSTER id, like the fence and guide beside it, and the translation
+/// to the assembled macro index happens inside — a caller cannot predict that index, because it
+/// depends on how many blockages came first and on where the IO clusters were deferred to.
+#[test]
+fn a_constrained_io_clusters_region_reaches_the_problem_by_cluster_id() {
+    let region = vyges_mpl::placement::Region {
+        x0: 3000, y0: 1010, x1: 3000, y1: 1030,
+        boundary: vyges_mpl::halo::Boundary::R,
+    };
+
+    let mut parent = Cluster::new(1, "parent");
+    parent.cluster_type = ClusterType::Mixed;
+    let mut io = Cluster::new(7, "ios_1");
+    io.set_as_cluster_of_unplaced_io_pins((3000, 1010), 0, 20, false);
+    parent.children.push(io);
+    parent.children.push(macro_child(8, "MACRO_1", 200, 200));
+
+    let no_conn: &dyn Fn(i32) -> Vec<(i32, f32)> = &|_| Vec::new();
+    let mut c = ctx(no_conn, &[]);
+    let by_id: &dyn Fn(i32) -> Option<vyges_mpl::placement::Region> =
+        &|id| (id == 7).then_some(region);
+    c.constraint_region_of = by_id;
+    let problem = build_parent_problem(&parent, OUTLINE, &c);
+
+    assert_eq!(problem.inputs.constraint_regions.len(), 1, "the region reached the problem");
+    let (macro_id, got) = problem.inputs.constraint_regions[0];
+    assert_eq!(got, region);
+    // 🔑 **The index is the point.** The IO cluster is the parent's FIRST child but is deferred to
+    // the END of the macro list, so its child position (0) and its macro id (1) differ — keying by
+    // the child's position would put the region on the macro cluster instead.
+    assert_eq!(macro_id, 1, "the ASSEMBLED index, not the child position");
+    assert_eq!(
+        (problem.macros[macro_id].width, problem.macros[macro_id].height),
+        (0, 20),
+        "and that index is the IO cluster's own macro, which is a LINE"
+    );
+
+    // ⚠️ The control: without the lookup the list is empty, so the assertion above is about the
+    // cluster-id translation and not about the list being filled unconditionally.
+    let empty = build_parent_problem(&parent, OUTLINE, &ctx(no_conn, &[]));
+    assert!(empty.inputs.constraint_regions.is_empty());
+}

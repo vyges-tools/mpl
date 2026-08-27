@@ -532,6 +532,17 @@ pub struct CoarseShaping {
     /// appends to one list in that sequence and the placer reads it in order.
     pub io_blockages: Vec<Rect>,
     pub placement_blockages: Vec<Rect>,
+    /// The die-edge stretches an UNCONSTRAINED IO pin may land on.
+    ///
+    /// 🔑 **Upstream keeps these on the tree** (`tree_->available_regions_for_unconstrained_pins`)
+    /// because two stages read them: coarse shaping cuts pin-access blockages from them, and
+    /// cluster placement measures an unconstrained IO cluster's wirelength to the nearest one.
+    /// Computing them here and dropping them left the placer with nothing to measure against, so
+    /// every net to an unconstrained IO cluster scored a distance of ZERO.
+    ///
+    /// ⚠️ Empty when the design has no unconstrained IOs — the search returns before doing
+    /// anything, which is upstream's own first line.
+    pub available_regions: Vec<crate::regions::BoundaryRegion>,
 }
 
 /// Upstream `runCoarseShaping`, minus the annealing tiling search.
@@ -568,6 +579,9 @@ pub fn run_coarse_shaping_traced(
             depth_limits: DepthLimits::default(),
             io_blockages: Vec::new(),
             placement_blockages: Vec::new(),
+            // ⚠️ Upstream returns from `runCoarseShaping` before the region search on this path,
+            // so a macros-only design genuinely has none.
+            available_regions: Vec::new(),
         });
     }
 
@@ -594,6 +608,7 @@ pub fn run_coarse_shaping_traced(
         depth_limits: depth_limits_for(root, input).unwrap_or_default(),
         io_blockages,
         placement_blockages: placement_blockages(input.blockages),
+        available_regions,
     })
 }
 

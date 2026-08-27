@@ -4437,7 +4437,10 @@ pub struct ParentContext<'a> {
     pub root: Root,
     pub die_margin: i64,
     pub available_regions: &'a [Region],
-    pub constraint_region_of: &'a dyn Fn(usize) -> Option<Region>,
+    /// ⚠️ Keyed by CLUSTER id, like `fence_of` and `guide_of` beside it — the translation to the
+    /// assembled macro index happens below, where the assembly is known. A caller cannot predict
+    /// that index: it depends on the blockage count and on where the IO clusters were deferred to.
+    pub constraint_region_of: &'a dyn Fn(i32) -> Option<Region>,
     pub weights: crate::anneal::SoftWeights,
     pub dbu_per_micron: i32,
     pub tiny_threshold: i32,
@@ -4542,11 +4545,13 @@ pub fn build_parent_problem(
             root: ctx.root,
             die_margin: ctx.die_margin,
             available_regions: ctx.available_regions.to_vec(),
-            constraint_regions: assembly
-                .macros
+            constraint_regions: parent
+                .children
                 .iter()
-                .enumerate()
-                .filter_map(|(id, _)| (ctx.constraint_region_of)(id).map(|r| (id, r)))
+                .filter_map(|c| {
+                    let region = (ctx.constraint_region_of)(c.id)?;
+                    Some((assembly.id(&c.name)?, region))
+                })
                 .collect(),
             weights: ctx.weights,
         },

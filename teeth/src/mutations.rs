@@ -2398,6 +2398,21 @@ pub const MUTATIONS: &[Mutation] = &[
         want: r#"growing_a_cluster_recomputes_its_area"#,
     },
     Mutation {
+        name: r#"constraint-region-keyed-by-macro-index"#,
+        file: r#"src/placement.rs"#,
+        find: r#"                .filter_map(|c| {
+                    let region = (ctx.constraint_region_of)(c.id)?;
+                    Some((assembly.id(&c.name)?, region))
+                })"#,
+        replace: r#"                .enumerate()
+                .filter_map(|(i, c)| {
+                    let region = (ctx.constraint_region_of)(c.id)?;
+                    let _ = &c.name;
+                    Some((i, region))
+                })"#,
+        want: r#"a_constrained_io_clusters_region_reaches_the_problem_by_cluster_id"#,
+    },
+    Mutation {
         name: r#"reset-runs-after-the-soft-blockage-adjustment"#,
         file: r#"src/placement.rs"#,
         find: r#"    adjusted.soft_blockage =
