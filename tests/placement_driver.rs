@@ -173,12 +173,12 @@ fn the_soft_blockage_weight_is_adjusted_once_up_front() {
     let base = SoftWeights::placement_defaults();
     assert_eq!(base.soft_blockage, 10.0, "the command's value");
 
-    let (adjusted, tiny) = placement_setup(1, base, 500_000);
+    let (adjusted, tiny, _) = placement_setup(1, base, 500_000, true);
     assert_eq!(adjusted.soft_blockage, 50.0, "half the outline weight, on a single-level tree");
     assert_eq!(tiny, 500);
 
     // A deeper tree leaves it alone.
-    let (deeper, _) = placement_setup(2, base, 500_000);
+    let (deeper, _, _) = placement_setup(2, base, 500_000, true);
     assert_eq!(deeper.soft_blockage, 10.0);
 }
 
@@ -186,9 +186,49 @@ fn the_soft_blockage_weight_is_adjusted_once_up_front() {
 #[test]
 fn the_setup_touches_only_the_soft_blockage_weight() {
     let base = SoftWeights::placement_defaults();
-    let (adjusted, _) = placement_setup(1, base, 0);
+    let (adjusted, _, _) = placement_setup(1, base, 0, true);
     assert_eq!(adjusted.outline, base.outline);
     assert_eq!(adjusted.fence, base.fence);
     assert_eq!(adjusted.notch, base.notch);
     assert_eq!(adjusted.boundary, base.boundary);
+}
+
+/// ⛔ **The reset and the soft-blockage adjustment DISAGREE about soft blockage, and the order
+/// settles it.** `run()` calls `resetSAParameters` — which zeroes fence, boundary, notch AND soft
+/// blockage — before shaping; `runHierarchicalMacroPlacement` then raises soft blockage to half
+/// the outline weight when the tree is one level deep. The reference's own log says
+/// `Changing soft blockage weight from 0 to 50`: the `0` is the reset's.
+///
+/// 🔑 So at one level the reset's soft-blockage zero is INVISIBLE, and below one level it stands.
+/// Applying the two in the other order agrees on every design in the suite and differs on a
+/// deeper tree.
+#[test]
+fn a_design_with_no_standard_cells_is_reset_before_the_soft_blockage_adjustment() {
+    use vyges_mpl::anneal::SoftWeights;
+    let base = SoftWeights::placement_defaults();
+    assert_ne!(base.fence, 0.0, "the command default this turns off");
+
+    let (with_cells, _, probs_with) = placement_setup(1, base, 0, true);
+    assert_eq!(with_cells.fence, base.fence, "no reset when the design has standard cells");
+    assert_ne!(probs_with.resize, 0.0);
+
+    let (without, _, probs_without) = placement_setup(1, base, 0, false);
+    assert_eq!(without.fence, 0.0, "reset");
+    assert_eq!(without.boundary, 0.0);
+    assert_eq!(without.notch, 0.0);
+    assert_eq!(
+        without.soft_blockage,
+        base.outline / 2.0,
+        "zeroed by the reset, then RAISED by the adjustment — the log's 'from 0 to 50'"
+    );
+    assert_eq!(probs_without.resize, 0.0, "and no cluster ever resizes");
+    assert!(
+        (probs_without.pos_swap - 0.25).abs() < 1e-6,
+        "the four swaps now normalise over 0.8, not 1.2"
+    );
+
+    // ⚠️ Below one level the adjustment does not fire, so the reset's zero survives — the only
+    // input that tells the two orderings apart.
+    let (deep, _, _) = placement_setup(2, base, 0, false);
+    assert_eq!(deep.soft_blockage, 0.0, "nothing raises it here");
 }

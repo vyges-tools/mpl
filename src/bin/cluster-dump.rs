@@ -153,7 +153,7 @@ fn main() {
 /// reads as a pass on everything it did emit.
 #[allow(clippy::too_many_arguments)]
 fn print_coarse_shaping_trace(
-    r: vyges_mpl::engine::Clustering,
+    mut r: vyges_mpl::engine::Clustering,
     blockages: &[vyges_mpl::design::Rect],
     dbu: i32,
     place: bool,
@@ -163,6 +163,8 @@ fn print_coarse_shaping_trace(
     guide_regions: &[(usize, (i32, i32, i32, i32))],
 ) {
     use vyges_mpl::cluster::ClusterType;
+    // Taken before `r` is dismantled below: a net reaches an IO cluster only through this.
+    let pin_cluster = std::mem::take(&mut r.pin_cluster);
     let Some(h) = r.shaping else {
         eprintln!("no shaping inputs: the run produced none");
         std::process::exit(3);
@@ -235,7 +237,7 @@ fn print_coarse_shaping_trace(
             dbu,
             design,
             nets,
-            &|_| None,
+            &|i| pin_cluster.get(i).copied().flatten(),
             h.has_io_pads,
             guide_regions,
         );
@@ -265,8 +267,14 @@ fn report_placement(
     let die = h.die;
     let margin = 2 * ((die.x_max - die.x_min) + (die.y_max - die.y_min));
 
-    let (weights, tiny) =
-        p::placement_setup(1, vyges_mpl::anneal::SoftWeights::placement_defaults(), 0);
+    // ⚠️ `has_std_cells` decides whether the reset fires, so it is not a detail the harness may
+    // default — it changes four weights and every action share.
+    let (weights, tiny, probabilities) = p::placement_setup(
+        1,
+        vyges_mpl::anneal::SoftWeights::placement_defaults(),
+        0,
+        h.has_std_cells,
+    );
     let utilizations = p::utilization_list(0.25, 10);
 
     let blockages: Vec<(i32, i32, i32, i32)> = shaping
@@ -285,7 +293,7 @@ fn report_placement(
         &utilizations,
         10,
         &vyges_mpl::anneal::SaParameters::default(),
-        vyges_mpl::anneal::ActionProbabilities::placement_defaults(),
+        probabilities,
         weights,
         0,
         &mut |parent| {
@@ -388,8 +396,14 @@ fn print_placement_summaries(
     );
     let die = h.die;
     let margin = 2 * ((die.x_max - die.x_min) + (die.y_max - die.y_min));
-    let (weights, tiny) =
-        p::placement_setup(1, vyges_mpl::anneal::SoftWeights::placement_defaults(), 0);
+    // ⚠️ `has_std_cells` decides whether the reset fires, so it is not a detail the harness may
+    // default — it changes four weights and every action share.
+    let (weights, tiny, probabilities) = p::placement_setup(
+        1,
+        vyges_mpl::anneal::SoftWeights::placement_defaults(),
+        0,
+        h.has_std_cells,
+    );
     let utilizations = p::utilization_list(0.25, 10);
     let blockages: Vec<(i32, i32, i32, i32)> = shaping
         .placement_blockages
@@ -442,7 +456,7 @@ fn print_placement_summaries(
                 *util,
                 0,
                 &vyges_mpl::anneal::SaParameters::default(),
-                vyges_mpl::anneal::ActionProbabilities::placement_defaults(),
+                probabilities,
                 weights,
             ) else {
                 continue;

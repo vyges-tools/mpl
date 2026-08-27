@@ -4027,19 +4027,50 @@ fn place_one_parent(
     true
 }
 
-/// Upstream `HierRTLMP::runHierarchicalMacroPlacement`'s two setup steps, in order.
+/// Upstream `HierRTLMP::run`'s reset, then `runHierarchicalMacroPlacement`'s two setup steps.
+///
+/// ⛔ **THE ORDER IS THE BEHAVIOUR, and the two steps disagree about soft blockage.**
+/// `run()` calls `resetSAParameters()` — which zeroes fence, boundary, notch **and soft
+/// blockage** — before coarse shaping; `runHierarchicalMacroPlacement` then calls
+/// `adjustSoftBlockageWeight`, which sets soft blockage to half the outline weight when the tree
+/// is one level deep. 🔑 The reference's own log says `Changing soft blockage weight from 0 to 50`
+/// — the `0` is the reset's, and the `50` is the adjustment putting it back.
+///
+/// ⚠️ **So the reset's soft-blockage zero is INVISIBLE at one level and survives below it.**
+/// Applying the two in the other order would agree on every design in the suite and differ on a
+/// deeper tree.
 ///
 /// ⚠️ **`adjustSoftBlockageWeight` runs BEFORE the tiny-cluster threshold**, and both run before
 /// any placement — so every annealer in the design is built with the same adjusted weight.
+///
+/// ℹ️ The action shares come back too: the reset zeroes RESIZE, and the four swaps then normalise
+/// over `0.8` rather than `1.2` — so a design with no standard cells has different swap
+/// probabilities as well as no resize. Coarse shaping already models this half in
+/// `ShapingCtx::probabilities`; this is the placement half of the same upstream call.
 pub fn placement_setup(
     max_level: i32,
     weights: crate::anneal::SoftWeights,
     block_instance_count: usize,
-) -> (crate::anneal::SoftWeights, i32) {
-    let mut adjusted = weights;
+    has_std_cells: bool,
+) -> (crate::anneal::SoftWeights, i32, crate::anneal::ActionProbabilities) {
+    let (mut adjusted, probabilities) = if has_std_cells {
+        (weights, crate::anneal::ActionProbabilities::placement_defaults())
+    } else {
+        let reset = reset_sa_parameters(weights);
+        (
+            reset.weights,
+            crate::anneal::ActionProbabilities::normalized(
+                reset.pos_swap,
+                reset.neg_swap,
+                reset.double_swap,
+                reset.exchange_swap,
+                reset.resize,
+            ),
+        )
+    };
     adjusted.soft_blockage =
-        adjusted_soft_blockage_weight(max_level, weights.outline, weights.soft_blockage);
-    (adjusted, tiny_cluster_max_number_of_std_cells(block_instance_count))
+        adjusted_soft_blockage_weight(max_level, adjusted.outline, adjusted.soft_blockage);
+    (adjusted, tiny_cluster_max_number_of_std_cells(block_instance_count), probabilities)
 }
 
 // ---------------------------------------------------------------- applying one utilization

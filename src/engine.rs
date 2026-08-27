@@ -42,6 +42,16 @@ pub struct Clustering {
     /// What the next stage needs and this one already computed.
     /// ⚠️ `None` exactly when `report` is — a run that never clustered has nothing to shape.
     pub shaping: Option<ShapingHandoff>,
+    /// Which IO cluster each block port was assigned to, by pin index.
+    ///
+    /// 🔑 **A net reaches an IO cluster only through this map.** Upstream's
+    /// `buildNetListConnections` turns a `dbBTerm` into the cluster that owns it; without the map
+    /// every net touching a port has no second endpoint and is DROPPED, which scores wirelength
+    /// zero on any design whose macros talk to the outside world rather than to each other.
+    ///
+    /// ⚠️ Empty for a refused or vacuous run, and for the no-standard-cell path — those never
+    /// reach the assignment.
+    pub pin_cluster: Vec<Option<crate::cluster::ClusterId>>,
 }
 
 /// Everything `runCoarseShaping` reads that the clustering stage has already worked out.
@@ -235,6 +245,7 @@ pub fn run_clustering(input: &DesignInputs, opts: &ClusterOptions) -> Clustering
     let unfixed = crate::design::unfixed_macros(design);
     if unfixed.is_empty() {
         return Clustering {
+            pin_cluster: Vec::new(),
             root: Cluster::new(0, "root"),
             status: Status::Vacuous,
             refusal: None,
@@ -304,6 +315,20 @@ pub fn run_clustering(input: &DesignInputs, opts: &ClusterOptions) -> Clustering
         root.children.push(c.clone());
     }
 
+    // Block ports reach the netlist through the IO cluster they were assigned to.
+    //
+    // ⛔ Built HERE, not inside the split — the no-standard-cell path returns before the split and
+    // still needs it. Leaving it empty there scored wirelength ZERO on every macro-only design
+    // whose macros talk to block ports, because a net whose only other endpoint is a port then has
+    // nowhere to land.
+    //
+    // ⚠️ Legitimately EMPTY when the design has IO pads: `create_io_pad_clusters` assigns by
+    // INSTANCE, not by port, and the pads carry the connectivity instead.
+    let mut bterm_to_cluster = vec![None; input.pins.len()];
+    for &(pin, cluster) in &io.assignment {
+        bterm_to_cluster[pin] = Some(cluster);
+    }
+
     // ---- the split that decides everything after it
     if design_metrics.num_std_cell == 0 {
         // Upstream warns MPL-25 and gives every macro its own cluster.
@@ -311,6 +336,7 @@ pub fn run_clustering(input: &DesignInputs, opts: &ClusterOptions) -> Clustering
             root.children.push(c);
         }
         return Clustering {
+            pin_cluster: bterm_to_cluster,
             root,
             status: Status::Applied,
             refusal: None,
@@ -351,12 +377,6 @@ pub fn run_clustering(input: &DesignInputs, opts: &ClusterOptions) -> Clustering
     // one traversal that both collects and breaks cannot disagree with itself about the order.
     let _groups = crate::tree::fetch_mixed_leaves(&mut root);
 
-    // Block ports reach the netlist through the IO cluster they were assigned to.
-    let mut bterm_to_cluster = vec![None; input.pins.len()];
-    for &(pin, cluster) in &io.assignment {
-        bterm_to_cluster[pin] = Some(cluster);
-    }
-
     let mut ctx = crate::tree::SplitCtx {
         design,
         nets: input.nets,
@@ -371,7 +391,11 @@ pub fn run_clustering(input: &DesignInputs, opts: &ClusterOptions) -> Clustering
     let _virtual = crate::tree::split_mixed_leaves(&mut root, &mut ctx, &mut next_id);
 
     let _ = (is_ignorable_marker(), ClusterType::Mixed, IoClusters::default);
+    // ⚠️ Read back from the context rather than kept aside before the split, so that any change
+    // the split made to the assignment travels with it.
+    let pin_cluster = ctx.bterm_to_cluster;
     Clustering {
+        pin_cluster,
         root,
         status: Status::Applied,
         refusal: None,
@@ -508,6 +532,7 @@ fn shaping_handoff(
 
 fn refuse(r: Refusal) -> Clustering {
     Clustering {
+        pin_cluster: Vec::new(),
         root: Cluster::new(0, "root"),
         status: Status::Refused,
         refusal: Some(r),
