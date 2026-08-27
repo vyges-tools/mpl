@@ -76,3 +76,110 @@ fn a_macro_one_unit_off_forms_its_own_group() {
     let (_, rows) = orientation_groups(&macros);
     assert_eq!(rows, vec![vec![0, 1], vec![2]], "no tolerance at all");
 }
+
+// ---------------------------------------------------------------- flipping, and what it costs
+
+use vyges_mpl::halo::Orient;
+use vyges_mpl::placement::{
+    flip_orientation, flip_real_macro, net_terminal_bbox, real_macro_wirelength, NetTerminal,
+};
+
+/// ⛔ **A "vertical flip" calls `flipY`** — mirroring about the vertical axis, which moves the
+/// macro HORIZONTALLY. The name describes the mirror line, not the direction of travel.
+#[test]
+fn a_vertical_flip_mirrors_about_the_vertical_axis() {
+    assert_eq!(flip_orientation(Orient::R0, true), Orient::My, "vertical flip gives MY");
+    assert_eq!(flip_orientation(Orient::R0, false), Orient::Mx, "horizontal flip gives MX");
+}
+
+/// ⚠️ Each flip is its own inverse.
+#[test]
+fn flipping_twice_returns_to_the_start() {
+    for orient in [Orient::R0, Orient::R180, Orient::Mx, Orient::My] {
+        for vertical in [true, false] {
+            let there = flip_orientation(orient, vertical);
+            assert_eq!(flip_orientation(there, vertical), orient, "{orient:?} {vertical}");
+        }
+    }
+}
+
+/// ⚠️ `R180` is the half-turn, so each flip takes it to the mirror about the OTHER axis.
+#[test]
+fn a_half_turn_flips_to_the_other_mirror() {
+    assert_eq!(flip_orientation(Orient::R180, true), Orient::Mx);
+    assert_eq!(flip_orientation(Orient::R180, false), Orient::My);
+}
+
+/// 🔑 **The location is re-applied after the orientation** — mirroring moves the lower-left corner,
+/// so the real location is written back to put the macro where placement wanted it.
+#[test]
+fn the_location_survives_the_flip() {
+    let (orient, location) = flip_real_macro(Orient::R0, (1234, 5678), true);
+    assert_eq!(orient, Orient::My);
+    assert_eq!(location, (1234, 5678), "unchanged, and that is the point");
+}
+
+// ---------------------------------------------------------------- the real wirelength
+
+/// ⚠️ **Every terminal is a POINT, never a box** — even a fixed block terminal contributes its
+/// centre rather than its extent.
+#[test]
+fn a_net_box_is_the_spread_of_points_not_of_shapes() {
+    let terminals = [
+        NetTerminal::Instance(Some((100, 100))),
+        NetTerminal::FixedPin((500, 300)),
+    ];
+    assert_eq!(net_terminal_bbox(&terminals), Some((100, 100, 500, 300)));
+}
+
+/// ⚠️ **A pin with no geometry yields nothing and is skipped entirely** — it does not contribute a
+/// point at the origin.
+#[test]
+fn a_pin_without_geometry_is_skipped_not_placed_at_zero() {
+    let terminals = [
+        NetTerminal::Instance(None),
+        NetTerminal::Instance(Some((100, 100))),
+        NetTerminal::Instance(Some((200, 200))),
+    ];
+    assert_eq!(net_terminal_bbox(&terminals), Some((100, 100, 200, 200)), "not reaching to 0");
+}
+
+/// ⛔ **An unplaced block terminal contributes its CONSTRAINT REGION's nearest point**, not its own
+/// position — the model asks where the pin could go, not where it currently is.
+#[test]
+fn an_unplaced_pin_contributes_its_region_not_its_position() {
+    // Both are points as far as the merge is concerned; the difference is in what the caller
+    // supplies, and the two kinds are deliberately distinct so the caller cannot confuse them.
+    let fixed = [NetTerminal::Instance(Some((0, 0))), NetTerminal::FixedPin((900, 0))];
+    let unplaced = [NetTerminal::Instance(Some((0, 0))), NetTerminal::UnplacedPin((100, 0))];
+    assert_eq!(net_terminal_bbox(&fixed), Some((0, 0, 900, 0)));
+    assert_eq!(net_terminal_bbox(&unplaced), Some((0, 0, 100, 0)));
+}
+
+/// ℹ️ A net with nothing on it contributes no box, and so no wirelength.
+#[test]
+fn an_empty_net_contributes_nothing() {
+    assert_eq!(net_terminal_bbox(&[]), None);
+    assert_eq!(real_macro_wirelength(&[Vec::new()]), 0.0);
+}
+
+/// ⚠️ The wirelength is the half-perimeter of each net's box, summed.
+#[test]
+fn the_wirelength_is_the_summed_half_perimeter() {
+    let net_a = vec![NetTerminal::Instance(Some((0, 0))), NetTerminal::FixedPin((100, 200))];
+    let net_b = vec![NetTerminal::Instance(Some((0, 0))), NetTerminal::FixedPin((50, 50))];
+    assert_eq!(real_macro_wirelength(&[net_a, net_b]), 300.0 + 100.0);
+}
+
+/// ⛔ **A net is counted ONCE PER PIN OF THIS MACRO ON IT.** The loop walks the macro's own pins and
+/// adds each pin's whole net — so two pins on one net contribute it twice. Since this only ever
+/// compares two orientations of the same macro, the doubling cancels; it is still not the
+/// wirelength of anything.
+#[test]
+fn a_net_reached_by_two_pins_is_counted_twice() {
+    let net = vec![NetTerminal::Instance(Some((0, 0))), NetTerminal::FixedPin((100, 100))];
+    let once = real_macro_wirelength(&[net.clone()]);
+    let twice = real_macro_wirelength(&[net.clone(), net]);
+    assert_eq!(once, 200.0);
+    assert_eq!(twice, 400.0, "the same net, counted for each pin that reaches it");
+}

@@ -3494,3 +3494,111 @@ pub fn snap_layer_data(
     out.sort_by_key(|d| d.layer_number);
     Ok(out)
 }
+
+// ---------------------------------------------------------------- flipping a placed macro
+
+/// Upstream `dbOrientType::flipX` and `flipY`, over the orientations `mpl` can reach.
+///
+/// ⛔ **A "vertical flip" calls `flipY`** — mirroring about the vertical (Y) axis, which moves the
+/// macro HORIZONTALLY. The name describes the mirror line, not the direction of travel, and it is
+/// the opposite of the reading most people arrive at.
+///
+/// ⚠️ The four rotated orientations map among themselves and are outside what `mpl` produces; they
+/// are folded into `Other` here, which flips to itself. ⛔ That is a divergence: upstream maps
+/// `R90 → MYR90` under `flipX`, and a rotated macro reaching this path would take a different
+/// orientation than we give it. Nothing in `mpl` rotates a macro.
+pub fn flip_orientation(orient: crate::halo::Orient, is_vertical_flip: bool) -> crate::halo::Orient {
+    use crate::halo::Orient;
+    if is_vertical_flip {
+        // `flipY`: mirror about the vertical axis.
+        match orient {
+            Orient::R0 => Orient::My,
+            Orient::My => Orient::R0,
+            Orient::R180 => Orient::Mx,
+            Orient::Mx => Orient::R180,
+            Orient::Other => Orient::Other,
+        }
+    } else {
+        // `flipX`: mirror about the horizontal axis.
+        match orient {
+            Orient::R0 => Orient::Mx,
+            Orient::Mx => Orient::R0,
+            Orient::R180 => Orient::My,
+            Orient::My => Orient::R180,
+            Orient::Other => Orient::Other,
+        }
+    }
+}
+
+/// Upstream `flipRealMacro`.
+///
+/// 🔑 **The location is re-applied AFTER the orientation.** Setting an orientation mirrors the
+/// macro about an axis, which moves its lower-left corner — so the real location is written back to
+/// put it where macro placement wanted it. Omitting that leaves every flipped macro displaced by
+/// its own width or height.
+///
+/// ⚠️ Both the instance and the `HardMacro` record the new orientation; they are separate stores.
+pub fn flip_real_macro(
+    orient: crate::halo::Orient,
+    real_location: (i32, i32),
+    is_vertical_flip: bool,
+) -> (crate::halo::Orient, (i32, i32)) {
+    (flip_orientation(orient, is_vertical_flip), real_location)
+}
+
+/// One terminal on a net, as the real-wirelength model sees it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum NetTerminal {
+    /// An instance pin, at its average pin position. ⚠️ A pin with no geometry yields nothing and
+    /// is skipped entirely.
+    Instance(Option<(i32, i32)>),
+    /// A block terminal whose placement is FIXED — its bounding box's CENTRE.
+    FixedPin((i32, i32)),
+    /// A block terminal that is NOT fixed. ⛔ **Its own position is ignored**; what counts is the
+    /// nearest point of its CONSTRAINT REGION, or of the available regions when it has none.
+    /// Upstream says so at the site.
+    UnplacedPin((i32, i32)),
+}
+
+/// The bounding box a net contributes, built by merging one point per terminal.
+///
+/// ⚠️ **Every terminal is a POINT, never a box** — even a fixed block terminal contributes its
+/// centre rather than its extent. So the box is the spread of the terminals, not of their shapes.
+///
+/// ℹ️ `None` when nothing merged, which is upstream's un-merged rect.
+pub fn net_terminal_bbox(terminals: &[NetTerminal]) -> Option<(i32, i32, i32, i32)> {
+    let mut merged: Option<(i32, i32, i32, i32)> = None;
+    for t in terminals {
+        let point = match t {
+            NetTerminal::Instance(Some(p)) => *p,
+            NetTerminal::Instance(None) => continue,
+            NetTerminal::FixedPin(p) | NetTerminal::UnplacedPin(p) => *p,
+        };
+        merged = Some(match merged {
+            None => (point.0, point.1, point.0, point.1),
+            Some(m) => (m.0.min(point.0), m.1.min(point.1), m.2.max(point.0), m.3.max(point.1)),
+        });
+    }
+    merged
+}
+
+/// Upstream `calculateRealMacroWirelength`.
+///
+/// ⛔ **A net is counted ONCE PER PIN OF THIS MACRO ON IT.** The loop walks the macro's own pins and
+/// adds each pin's whole net half-perimeter — so a macro with two pins on one net contributes that
+/// net twice. This is a comparison between two orientations of the same macro, so the doubling
+/// cancels; it is still not the wirelength of anything.
+///
+/// ⚠️ **Only SIGNAL pins**, and a pin with no net contributes nothing.
+///
+/// ⚠️ Accumulated in `int64_t` and returned as a `float`, so a large design loses precision at the
+/// point of return rather than during the sum.
+pub fn real_macro_wirelength(nets_of_macro_pins: &[Vec<NetTerminal>]) -> f32 {
+    let mut wirelength: i64 = 0;
+    for terminals in nets_of_macro_pins {
+        if let Some(b) = net_terminal_bbox(terminals) {
+            wirelength += (b.2 - b.0) as i64 + (b.3 - b.1) as i64;
+        }
+    }
+    wirelength as f32
+}

@@ -709,6 +709,59 @@ pub const MUTATIONS: &[Mutation] = &[
         replace: r#"    (cols.into_values().rev().collect(), rows.into_values().rev().collect())"#,
         want: r#"groups_come_out_in_ascending_coordinate_order"#,
     },
+    Mutation {
+        name: r#"vertical-flip-mirrors-the-wrong-axis"#,
+        file: r#"src/placement.rs"#,
+        find: r#"    if is_vertical_flip {
+        // `flipY`: mirror about the vertical axis."#,
+        replace: r#"    if !is_vertical_flip {
+        // `flipY`: mirror about the vertical axis."#,
+        want: r#"a_vertical_flip_mirrors_about_the_vertical_axis"#,
+    },
+    Mutation {
+        name: r#"half-turn-flips-to-itself"#,
+        file: r#"src/placement.rs"#,
+        find: r#"            Orient::R180 => Orient::Mx,
+            Orient::Mx => Orient::R180,"#,
+        replace: r#"            Orient::R180 => Orient::R180,
+            Orient::Mx => Orient::R180,"#,
+        want: r#"a_half_turn_flips_to_the_other_mirror"#,
+    },
+    Mutation {
+        name: r#"flip-moves-the-macro"#,
+        file: r#"src/placement.rs"#,
+        find: r#"    (flip_orientation(orient, is_vertical_flip), real_location)"#,
+        replace: r#"    (flip_orientation(orient, is_vertical_flip), (0, 0))"#,
+        want: r#"the_location_survives_the_flip"#,
+    },
+    Mutation {
+        name: r#"pin-without-geometry-placed-at-zero"#,
+        file: r#"src/placement.rs"#,
+        find: r#"            NetTerminal::Instance(None) => continue,"#,
+        replace: r#"            NetTerminal::Instance(None) => (0, 0),"#,
+        want: r#"a_pin_without_geometry_is_skipped_not_placed_at_zero"#,
+    },
+    Mutation {
+        name: r#"real-wirelength-is-full-perimeter"#,
+        file: r#"src/placement.rs"#,
+        find: r#"            wirelength += (b.2 - b.0) as i64 + (b.3 - b.1) as i64;"#,
+        replace: r#"            wirelength += 2 * ((b.2 - b.0) as i64 + (b.3 - b.1) as i64);"#,
+        want: r#"the_wirelength_is_the_summed_half_perimeter"#,
+    },
+    Mutation {
+        name: r#"real-wirelength-deduplicates-nets"#,
+        file: r#"src/placement.rs"#,
+        find: r#"    let mut wirelength: i64 = 0;
+    for terminals in nets_of_macro_pins {"#,
+        replace: r#"    let mut wirelength: i64 = 0;
+    let mut seen: Vec<&Vec<NetTerminal>> = Vec::new();
+    for terminals in nets_of_macro_pins {
+        if seen.contains(&terminals) {
+            continue;
+        }
+        seen.push(terminals);"#,
+        want: r#"a_net_reached_by_two_pins_is_counted_twice"#,
+    },
     // ---------------------------------------------------------------- the boundary push
     Mutation {
         name: r#"push-descends-into-std-cell-clusters"#,
