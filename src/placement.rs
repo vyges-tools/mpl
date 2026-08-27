@@ -1518,6 +1518,52 @@ pub fn fill_dead_space(macros: &mut [DeadSpaceMacro], outline: (i32, i32)) {
     }
 }
 
+/// Upstream `best_sa->fillDeadSpace()`, as `hier_rtlmp` calls it on the WINNING run.
+///
+/// ⛔ **The validity guard is upstream's FIRST line and belongs here, not in the filler.**
+/// `fillDeadSpace` returns immediately on an invalid floorplan, so a solution that overflows its
+/// outline — or that overlaps a fixed macro — keeps the geometry the annealer left it with.
+/// [`fill_dead_space`] is pure geometry and cannot ask; the caller must.
+///
+/// 🔑 **Only MIXED and STANDARD-CELL clusters grow.** Everything else — hard-macro clusters, fixed
+/// macros, blockage proxies, IO clusters — is scenery the two passes read and never move.
+///
+/// ℹ️ **`setShapeF`'s `if (fixed_) return;` is not modelled**, deliberately: the passes touch only
+/// mixed and cell clusters, and a soft macro that is either of those is never fixed. ⚠️ Note the
+/// asymmetry it guards, in case a later stage does reach it — `setLocationF` has NO such test, so
+/// upstream would MOVE a fixed macro while refusing to RESIZE it.
+pub fn fill_dead_space_on_solution(
+    macros: &mut [crate::anneal::SoftMacro],
+    kinds: &[Option<AreaKind>],
+    outline: (i32, i32),
+    is_valid: bool,
+) {
+    if !is_valid {
+        return;
+    }
+    let mut cells: Vec<DeadSpaceMacro> = macros
+        .iter()
+        .enumerate()
+        .map(|(i, m)| DeadSpaceMacro {
+            x: m.x,
+            y: m.y,
+            width: m.width,
+            height: m.height,
+            area: m.area,
+            is_mixed_cluster: kinds.get(i).copied().flatten() == Some(AreaKind::MixedCluster),
+            is_std_cell_cluster: kinds.get(i).copied().flatten() == Some(AreaKind::StdCellCluster),
+        })
+        .collect();
+    fill_dead_space(&mut cells, outline);
+    for (m, c) in macros.iter_mut().zip(&cells) {
+        m.x = c.x;
+        m.y = c.y;
+        m.width = c.width;
+        m.height = c.height;
+        m.area = c.area;
+    }
+}
+
 // ---------------------------------------------------------------- the post-anneal enhancements
 
 /// What the two post-anneal enhancements need from the annealer they run on.
@@ -4660,8 +4706,20 @@ pub fn run_hierarchical_macro_placement(
             probabilities,
             weights,
         )
-        .map(|search| {
+        .map(|mut search| {
             let _ = index;
+            // ⛔ Upstream fills the dead space on `best_sa` AFTER the ten runs are judged, not on
+            // each one. Doing it per run reaches the same answer because nothing in the selection
+            // reads the filled geometry — `select_run` is handed a bool — but the cost figures a
+            // run is judged on are the annealer's, and those are computed before this point.
+            let valid = search.is_valid(!search.fixed_bboxes.is_empty());
+            let kinds: Vec<Option<AreaKind>> = problem.reshape.iter().map(|r| r.kind).collect();
+            fill_dead_space_on_solution(
+                &mut search.macros,
+                &kinds,
+                (search.outline_width, search.outline_height),
+                valid,
+            );
             search.macros
         })
     })

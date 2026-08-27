@@ -2369,6 +2369,28 @@ pub const MUTATIONS: &[Mutation] = &[
         want: r#"virtual_connections_are_stored_on_the_broken_leafs_parent_not_on_the_leaf_or_the_root"#,
     },
     Mutation {
+        name: r#"dead-space-not-filled-by-the-driver"#,
+        file: r#"src/placement.rs"#,
+        find: r#"            fill_dead_space_on_solution(
+                &mut search.macros,
+                &kinds,
+                (search.outline_width, search.outline_height),
+                valid,
+            );"#,
+        replace: r#"            let _ = (&kinds, valid);"#,
+        want: r#"the_driver_fills_dead_space_before_returning_the_placement"#,
+    },
+    Mutation {
+        name: r#"dead-space-fills-invalid-solutions"#,
+        file: r#"src/placement.rs"#,
+        find: r#"    if !is_valid {
+        return;
+    }
+    let mut cells: Vec<DeadSpaceMacro> = macros"#,
+        replace: r#"    let mut cells: Vec<DeadSpaceMacro> = macros"#,
+        want: r#"an_invalid_solution_is_not_filled"#,
+    },
+    Mutation {
         name: r#"dead-space-keeps-the-stale-area"#,
         file: r#"src/placement.rs"#,
         find: r#"            macros[id].area = macros[id].width as i64 * macros[id].height as i64;"#,

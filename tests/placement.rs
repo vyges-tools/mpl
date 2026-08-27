@@ -655,3 +655,27 @@ fn growing_a_cluster_recomputes_its_area() {
     assert_eq!((macros[0].width, macros[0].height), (1000, 1000), "it took the whole outline");
     assert_eq!(macros[0].area, 1_000_000, "and its area followed the shape");
 }
+
+/// ⛔ **An INVALID floorplan is left exactly as the annealer left it.** That guard is upstream's
+/// first line in `fillDeadSpace`, and it lives in the caller here because the filler itself is
+/// pure geometry and has nothing to ask.
+#[test]
+fn an_invalid_solution_is_not_filled() {
+    use vyges_mpl::anneal::SoftMacro;
+    use vyges_mpl::placement::{fill_dead_space_on_solution, AreaKind};
+
+    let one = || {
+        vec![SoftMacro { x: 100, y: 100, width: 200, height: 200, area: 40_000, ..Default::default() }]
+    };
+    let kinds = [Some(AreaKind::StdCellCluster)];
+
+    let mut invalid = one();
+    fill_dead_space_on_solution(&mut invalid, &kinds, (1000, 1000), false);
+    assert_eq!(invalid, one(), "untouched");
+
+    // ⚠️ The control: the SAME input with the flag set must grow, or the assertion above passes
+    // for want of anything to fill rather than because the guard held.
+    let mut valid = one();
+    fill_dead_space_on_solution(&mut valid, &kinds, (1000, 1000), true);
+    assert_eq!((valid[0].width, valid[0].height), (1000, 1000), "the guard is what differs");
+}

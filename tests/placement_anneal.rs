@@ -367,3 +367,59 @@ fn a_placement_sweep_fills_the_placement_normalisation_factors() {
     assert_eq!(n.fence, 1.0, "no fence is declared, so its average is zero and floors to one");
     assert_eq!(n.guidance, 1.0, "likewise no guide");
 }
+
+/// 🔑 **The driver fills the dead space before handing the macros back.** Upstream calls
+/// `best_sa->fillDeadSpace()` between choosing the winning run and reporting it, so every consumer
+/// downstream — the summary, the children's shapes, the DEF — sees the GROWN geometry, never the
+/// annealer's.
+///
+/// ⚠️ The fixture's second child is a standard-cell cluster, which is one of the two kinds the
+/// filler grows; the first is a macro cluster, which it must leave alone.
+#[test]
+fn the_driver_fills_dead_space_before_returning_the_placement() {
+    use vyges_mpl::cluster::{Cluster, ClusterType};
+    use vyges_mpl::placement::{run_hierarchical_macro_placement, ParentOutcome};
+
+    let mut root = Cluster::new(0, "root");
+    root.cluster_type = ClusterType::Mixed;
+    let mut child = Cluster::new(1, "child");
+    child.cluster_type = ClusterType::StdCell;
+    root.children.push(child);
+
+    let p = SaParameters { max_num_step: 5, num_perturb_per_step: 8, ..Default::default() };
+    let visits = run_hierarchical_macro_placement(
+        &root,
+        &[0.25],
+        1,
+        &p,
+        ActionProbabilities::normalized(0.2, 0.2, 0.2, 0.2, 0.2),
+        SoftWeights::placement_defaults(),
+        0,
+        &mut |_| Some((problem(), 0)),
+    );
+
+    let macros = visits
+        .iter()
+        .find_map(|v| match &v.outcome {
+            ParentOutcome::Placed { macros, .. } => Some(macros),
+            _ => None,
+        })
+        .expect("the root is placed");
+
+    // ⚠️ The threshold has to clear the size the ANNEALER alone produces, or the test passes
+    // whether or not the fill ran. `apply_utilization` inflates this 90,000-unit cell cluster by
+    // 1/0.25, so unfilled it is 600x600 — 360,000. Filled it takes the outline's spare width and
+    // measures 2000x1423. One million separates the two with room either side.
+    let cell = &macros[1];
+    assert!(
+        cell.width as i64 * cell.height as i64 > 1_000_000,
+        "the cell cluster grew into the dead space, got {}x{}",
+        cell.width,
+        cell.height
+    );
+    assert_eq!(
+        cell.area,
+        cell.width as i64 * cell.height as i64,
+        "and its area followed the grown shape"
+    );
+}
