@@ -343,3 +343,27 @@ fn cluster_placement_perturbs_on_the_full_configured_count() {
     assert_eq!(one, run(N as i32), "one and eight both floor to the eight-macro count");
     assert_ne!(one, run(500), "five hundred is above the floor and must NOT coincide");
 }
+
+/// 🔑 **With a placement context the sweep fills the placement factors too.** Before `initialize`
+/// sampled all nine terms, six of them stayed at `Normalization::default()`'s `1.0` and every
+/// placement cost reached the total undamped — the reference divides by a measured average.
+///
+/// ⚠️ A term that is zero on every sample still floors to exactly `1.0`, and that is not a
+/// failure to sample: no fence is declared here, so the fence average is genuinely zero.
+#[test]
+fn a_placement_sweep_fills_the_placement_normalisation_factors() {
+    let p = SaParameters { max_num_step: 5, num_perturb_per_step: 30, ..Default::default() };
+    let probs = ActionProbabilities::normalized(0.2, 0.2, 0.2, 0.2, 0.2);
+    // ⚠️ The stock fixture declares no nets, and its two macros never overflow the outline, so
+    // every placement term is zero on every sample and all nine would floor to 1.0 — proving
+    // nothing. One bundled net makes the wirelength term real.
+    let mut prob = problem();
+    prob.inputs.nets = vec![vyges_mpl::placement::BundledNet { source: 0, target: 1, weight: 1.0 }];
+    let s = anneal_one_run(&prob, 0.25, 1, &p, probs, SoftWeights::placement_defaults())
+        .expect("the fixture places");
+
+    let n = &s.normalization;
+    assert_ne!(n.wirelength, 1.0, "one net, so the wirelength average is measured, not floored");
+    assert_eq!(n.fence, 1.0, "no fence is declared, so its average is zero and floors to one");
+    assert_eq!(n.guidance, 1.0, "likewise no guide");
+}

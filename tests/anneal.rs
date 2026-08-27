@@ -1562,3 +1562,36 @@ fn initialize_runs_exactly_the_perturbation_count_it_is_given() {
         "and the packing that follows from them"
     );
 }
+
+/// ⛔ **Extending the sweep to all NINE terms must leave coarse shaping untouched.** Without a
+/// placement context `cal_penalty` writes only `outline` and `fixed_macros` — the other six stay at
+/// the zero they were constructed with, average zero, and the `<= 1e-4` floor lifts them to exactly
+/// `1.0`. That is what shaping got when only three terms were sampled, so the extension is inert
+/// there and the shaping traces cannot move.
+#[test]
+fn a_shaping_sweep_leaves_the_six_placement_factors_at_exactly_one() {
+    let mut s = search_with(4);
+    // ⚠️ A TIGHT outline on purpose. `search_with` uses 100_000 units, which four macros of at most
+    // 500 always fit inside — so the outline penalty is zero on every sample and floors to 1.0 as
+    // well, leaving nothing for the control assertion at the end to distinguish.
+    s.outline_width = 600;
+    s.outline_height = 600;
+    let mut g = Mt19937::new(7);
+    let sa = SaParameters { num_perturb_per_step: 30, ..Default::default() };
+    s.initialize(&mut g, &sa);
+
+    let n = &s.normalization;
+    for (name, value) in [
+        ("wirelength", n.wirelength),
+        ("guidance", n.guidance),
+        ("fence", n.fence),
+        ("boundary", n.boundary),
+        ("soft_blockage", n.soft_blockage),
+        ("notch", n.notch),
+    ] {
+        assert_eq!(value, 1.0, "{name} is never scored without a placement context");
+    }
+    // ⚠️ And the three that ARE scored must be real, or the assertions above prove nothing —
+    // a sweep that recorded no samples at all would floor every one of the nine to 1.0.
+    assert_ne!(n.outline, 1.0, "the outline term was sampled");
+}

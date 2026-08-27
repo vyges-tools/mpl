@@ -29,6 +29,15 @@
 //!   two spellings cannot differ for any input. `a_macro_exactly_at_its_slack_limit_costs_nothing`
 //!   still pins the BEHAVIOUR and is worth keeping; it simply cannot be reached by this operator.
 //!
+//! ⛔ **A FIFTH was removed as EQUIVALENT on 2026-08-27**, from the annealing batch:
+//!
+//! * `initialize`'s replay assigning `Penalties { area: self.penalties.area, ..s.penalties }`
+//!   versus the whole struct. `Penalties::area` is never written by `cal_penalty` and never read
+//!   by `norm_cost` — which derives area from the width and height instead — so the sample and the
+//!   live state hold the same untouched zero and the two spellings cannot differ. 🔑 The mutation
+//!   was worth writing anyway: it proved the partial update was drawing a distinction that does
+//!   not exist, and the source now assigns the whole struct.
+//!
 //! Do not re-add them: an equivalent mutant reported as a hole trains people to ignore holes.
 
 use crate::Mutation;
@@ -2358,6 +2367,22 @@ pub const MUTATIONS: &[Mutation] = &[
         find: r#"            virtual_connections.push((virtual_members[i], virtual_members[j]));"#,
         replace: r#"            virtual_connections.push((virtual_members[j], virtual_members[i]));"#,
         want: r#"virtual_connections_are_stored_on_the_broken_leafs_parent_not_on_the_leaf_or_the_root"#,
+    },
+    Mutation {
+        name: r#"norm-sweep-skips-the-placement-terms"#,
+        file: r#"src/anneal.rs"#,
+        find: r#"            wirelength: mean(&|s| s.penalties.wirelength),"#,
+        replace: r#"            wirelength: 1.0,"#,
+        want: r#"a_placement_sweep_fills_the_placement_normalisation_factors"#,
+    },
+    Mutation {
+        name: r#"norm-sweep-floor-is-not-applied"#,
+        file: r#"src/anneal.rs"#,
+        find: r#"        let floor_at = |value: f32| if value <= 1e-4 { 1.0 } else { value };
+        let mean = |f: &dyn Fn(&Sample) -> f32| -> f32 {"#,
+        replace: r#"        let floor_at = |value: f32| value;
+        let mean = |f: &dyn Fn(&Sample) -> f32| -> f32 {"#,
+        want: r#"a_shaping_sweep_leaves_the_six_placement_factors_at_exactly_one"#,
     },
     Mutation {
         name: r#"perturb-count-cluster-uses-shaping-floor"#,

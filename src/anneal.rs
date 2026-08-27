@@ -1301,11 +1301,7 @@ impl Search {
         // gave every other caller the shaping count.
         let perturbations = params.num_perturb_per_step.max(0) as usize;
 
-        let mut widths = Vec::with_capacity(perturbations);
-        let mut heights = Vec::with_capacity(perturbations);
-        let mut area_list = Vec::with_capacity(perturbations);
-        let mut outline_list = Vec::with_capacity(perturbations);
-        let mut fixed_list = Vec::with_capacity(perturbations);
+        let mut samples: Vec<Sample> = Vec::with_capacity(perturbations);
 
         for _ in 0..perturbations {
             let saved = self.save_state();
@@ -1319,24 +1315,46 @@ impl Search {
                 }
                 continue;
             }
-            widths.push(self.width);
-            heights.push(self.height);
-            area_list.push(self.area_penalty());
-            outline_list.push(self.penalties.outline);
-            fixed_list.push(self.penalties.fixed_macros);
+            samples.push(Sample {
+                width: self.width,
+                height: self.height,
+                area: self.area_penalty(),
+                penalties: self.penalties,
+            });
         }
 
+        // ⚠️ **All NINE terms, not the three coarse shaping moves.** Without a placement context
+        // `cal_penalty` writes only `outline` and `fixed_macros`, so for shaping the other six
+        // average zero and the floor lifts them to `1.0` — exactly what shaping got when only
+        // three were sampled. Sampling all nine is therefore inert there and is the only way the
+        // placement path gets real factors.
         let floor_at = |value: f32| if value <= 1e-4 { 1.0 } else { value };
-        self.normalization.area = floor_at(average(&area_list));
-        self.normalization.outline = floor_at(average(&outline_list));
-        self.normalization.fixed_macros = floor_at(average(&fixed_list));
+        let mean = |f: &dyn Fn(&Sample) -> f32| -> f32 {
+            floor_at(average(&samples.iter().map(f).collect::<Vec<f32>>()))
+        };
+        self.normalization = Normalization {
+            area: mean(&|s| s.area),
+            outline: mean(&|s| s.penalties.outline),
+            wirelength: mean(&|s| s.penalties.wirelength),
+            guidance: mean(&|s| s.penalties.guidance),
+            fence: mean(&|s| s.penalties.fence),
+            boundary: mean(&|s| s.penalties.boundary),
+            soft_blockage: mean(&|s| s.penalties.soft_blockage),
+            notch: mean(&|s| s.penalties.notch),
+            fixed_macros: mean(&|s| s.penalties.fixed_macros),
+        };
 
-        let mut cost_list = Vec::with_capacity(outline_list.len());
-        for i in 0..outline_list.len() {
-            self.width = widths[i];
-            self.height = heights[i];
-            self.penalties.outline = outline_list[i];
-            self.penalties.fixed_macros = fixed_list[i];
+        let mut cost_list = Vec::with_capacity(samples.len());
+        for s in &samples {
+            self.width = s.width;
+            self.height = s.height;
+            // ⚠️ Upstream assigns EIGHT members here; `area` is not one of them, because it is not
+            // a member at all — `norm_cost` derives it from the width and height just restored.
+            // ℹ️ Assigning the whole struct is the same program: `Penalties::area` is never
+            // written by `cal_penalty` and never read by `norm_cost`, so the sample carries the
+            // same untouched zero the live state holds. Spelling out a partial update here reads
+            // as a distinction and is not one.
+            self.penalties = s.penalties;
             cost_list.push(self.norm_cost());
         }
 
