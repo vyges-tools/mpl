@@ -2398,6 +2398,15 @@ pub const MUTATIONS: &[Mutation] = &[
         want: r#"growing_a_cluster_recomputes_its_area"#,
     },
     Mutation {
+        name: r#"fixed-macro-does-not-obstruct"#,
+        file: r#"src/placement.rs"#,
+        find: r#"                // it does so through `fixed`, not through this flag.
+                is_macro_cluster: true,"#,
+        replace: r#"                // it does so through `fixed`, not through this flag.
+                is_macro_cluster: false,"#,
+        want: r#"a_fixed_macro_is_a_macro_cluster_to_the_annealer"#,
+    },
+    Mutation {
         name: r#"fixed-macro-soft-macro-uses-the-unhaloed-bbox"#,
         file: r#"src/tree.rs"#,
         find: r#"                let b = ctx.macro_bboxes.get(i).copied().unwrap_or(inst.bbox);"#,

@@ -228,3 +228,36 @@ fn a_constrained_io_clusters_region_reaches_the_problem_by_cluster_id() {
     let empty = build_parent_problem(&parent, OUTLINE, &ctx(no_conn, &[]));
     assert!(empty.inputs.constraint_regions.is_empty());
 }
+
+/// ⛔ **A FIXED macro cluster IS a macro cluster to the annealer.** The constructor `placeChildren`
+/// uses for one — `SoftMacro(logger, hard_macro, outline)` — ends with
+/// `cluster_ = hard_macro->getCluster()`, and that cluster's type is `HardMacroCluster`. So
+/// `isMacroCluster()` holds, and the fixed macro obstructs the notch grid and the coordinate lists
+/// like any other.
+///
+/// ⚠️ **Every guard that must still EXCLUDE a fixed macro does so through `fixed`**, not through
+/// this flag. Reading the exclusion off the flag was wrong for a day and made a flag bug look like
+/// a notch-scan bug: with it false the sampling walk scored against a grid with a hole in it, and
+/// four normalisation factors on `fixed_macros1` were wrong because of that.
+#[test]
+fn a_fixed_macro_is_a_macro_cluster_to_the_annealer() {
+    let mut fixed = Cluster::new(2, "MACRO_1");
+    fixed.set_as_fixed_macro((1100, 1100, 1300, 1300));
+    fixed.cluster_type = ClusterType::HardMacro;
+
+    let mut parent = Cluster::new(1, "parent");
+    parent.cluster_type = ClusterType::Mixed;
+    parent.children.push(fixed);
+    parent.children.push(macro_child(3, "MACRO_2", 200, 200));
+
+    let no_conn: &dyn Fn(i32) -> Vec<(i32, f32)> = &|_| Vec::new();
+    let problem = build_parent_problem(&parent, OUTLINE, &ctx(no_conn, &[]));
+
+    let placed = &problem.macros[0];
+    assert!(placed.fixed, "it is still fixed");
+    assert!(
+        placed.is_macro_cluster,
+        "and it still obstructs — the two flags say different things"
+    );
+    assert_eq!((placed.width, placed.height), (200, 200), "clipped to the outline and rebased");
+}

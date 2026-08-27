@@ -50,6 +50,7 @@ fn problem() -> ParentProblem {
         tiny_threshold: 0,
         min_ar: 0.33,
         force_centralization: false,
+        names: Vec::new(),
     }
 }
 
@@ -311,6 +312,7 @@ fn cluster_placement_perturbs_on_the_full_configured_count() {
             tiny_threshold: 0,
             min_ar: 0.33,
             force_centralization: false,
+            names: Vec::new(),
         }
     };
 

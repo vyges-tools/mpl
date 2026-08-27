@@ -4222,6 +4222,12 @@ pub struct ParentProblem {
     pub min_ar: f32,
     /// ⛔ Set when `singleArraySingleStdCellCluster` holds — it forces centralization to stick.
     pub force_centralization: bool,
+    /// Each macro's name, in id order — `writeFloorplanFile`'s first column.
+    ///
+    /// ℹ️ Carried so the placed geometry can be diffed against the reference's `.fp.txt`, which is
+    /// the only per-cluster oracle this stage has: the penalty table summarises the same placement
+    /// into nine numbers, and a term can agree while the geometry behind it does not.
+    pub names: Vec<String>,
 }
 
 /// Upstream's per-run construction and `runSA`, for one soft-macro annealer.
@@ -4565,6 +4571,15 @@ pub fn build_parent_problem(
         tiny_threshold: ctx.tiny_threshold,
         min_ar: ctx.min_ar,
         force_centralization: single_array,
+        names: {
+            let mut names = vec![String::new(); assembly.macros.len()];
+            for (name, id) in &assembly.id_of {
+                if let Some(slot) = names.get_mut(*id) {
+                    slot.clone_from(name);
+                }
+            }
+            names
+        },
     }
 }
 
@@ -4594,7 +4609,12 @@ fn child_soft_macro(
                 height: h,
                 fixed: true,
                 area: w as i64 * h as i64,
-                is_macro_cluster: false,
+                // ⛔ **TRUE.** The three-argument `SoftMacro(logger, hard_macro, outline)` ends
+                // with `cluster_ = hard_macro->getCluster()`, and that cluster is a
+                // `HardMacroCluster` — so `isMacroCluster()` holds for a FIXED macro too, and it
+                // obstructs the notch grid like any other. ⚠️ Every guard that must still exclude
+                // it does so through `fixed`, not through this flag.
+                is_macro_cluster: true,
             }
         }
         // ⚠️ Rebased but NOT clipped — an IO cluster is a region, not an occupant, and its area

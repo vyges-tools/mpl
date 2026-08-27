@@ -31,6 +31,7 @@ fn main() {
             "--shaping" => want_shaping = true,
             "--place" => {}
             "--placement-trace" => {}
+            "--floorplan" => {}
             "--use-full-halo" => use_full_halo = true,
             "--base-halo" => {
                 let Some(spec) = it.next() else { usage("--base-halo needs l,b,r,t in microns") };
@@ -63,7 +64,8 @@ fn main() {
     };
 
     let place = std::env::args().any(|a| a == "--place");
-    let summaries = std::env::args().any(|a| a == "--placement-trace");
+    let summaries = std::env::args().any(|a| a == "--placement-trace")
+        || std::env::args().any(|a| a == "--floorplan");
     let db = match vyges_opendb::Db::open(&path) {
         Ok(d) => d,
         Err(e) => { eprintln!("cannot read {path}: {e}"); std::process::exit(2); }
@@ -456,6 +458,7 @@ fn print_placement_summaries(
         }
     }
 
+    let floorplan_mode = std::env::args().any(|a| a == "--floorplan");
     let mut emit = |parent: &vyges_mpl::cluster::Cluster| {
         let ctx = p::ParentContext {
             connections_of: &|id| connections.of(id),
@@ -490,18 +493,50 @@ fn print_placement_summaries(
             problem.inputs.nets.len(),
             problem.inputs.attributes.iter().filter(|a| a.num_macro > 0).count()
         );
+        // ⚠️ The same two steps `run_hierarchical_macro_placement` applies around its own call:
+        // the CLUSTER perturbation rule, and the dead-space fill on the winning solution. Without
+        // them this path anneals a different walk and reports geometry the reference has already
+        // grown. They coincide on a small design, which is why the tables agreed anyway.
+        let mut sa = vyges_mpl::anneal::SaParameters::default();
+        sa.num_perturb_per_step = p::cluster_perturbations_per_step(
+            sa.num_perturb_per_step,
+            problem.macros.len() as i32,
+        );
         for (index, util) in utilizations.iter().enumerate() {
-            let Some(search) = p::anneal_one_run(
+            let Some(mut search) = p::anneal_one_run(
                 &problem,
                 *util,
                 0,
-                &vyges_mpl::anneal::SaParameters::default(),
+                &sa,
                 probabilities,
                 weights,
             ) else {
                 continue;
             };
             let _ = index;
+            let valid = search.is_valid(!search.fixed_bboxes.is_empty());
+            let kinds: Vec<Option<p::AreaKind>> =
+                problem.reshape.iter().map(|r| r.kind).collect();
+            p::fill_dead_space_on_solution(
+                &mut search.macros,
+                &kinds,
+                (search.outline_width, search.outline_height),
+                valid,
+            );
+            if floorplan_mode {
+                // `writeFloorplanFile`: name, x, y, width, height — three spaces between.
+                for (i, m) in search.macros.iter().enumerate() {
+                    println!(
+                        "{}   {}   {}   {}   {}",
+                        problem.names.get(i).map(String::as_str).unwrap_or(""),
+                        m.x,
+                        m.y,
+                        m.width,
+                        m.height
+                    );
+                }
+                return;
+            }
             println!("Cluster Placement Summary");
             print!(
                 "{}",
