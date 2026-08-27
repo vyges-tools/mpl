@@ -3824,3 +3824,152 @@ pub const WIRELENGTH_METRIC: &str = "macro_place__wirelength";
 pub fn reported_wirelength(hpwl_dbu: i64, dbu_per_micron: i32) -> f64 {
     hpwl_dbu as f64 / dbu_per_micron as f64
 }
+
+// ---------------------------------------------------------------- the placement driver
+
+/// What one parent's placement produced, or why it did not happen.
+#[derive(Debug, Clone, PartialEq)]
+pub enum ParentOutcome {
+    /// The parent was placed. Carries the winning run and the macros it settled on.
+    Placed { run: SelectedRun, macros: Vec<crate::anneal::SoftMacro> },
+    /// A hard-macro cluster: handed to macro placement instead.
+    MacroCluster,
+    /// A hard-macro cluster that is FIXED: macro placement refuses it at its first line.
+    FixedMacroCluster,
+    /// A leaf — an IO cluster, a leaf standard-cell cluster, or a fixed macro.
+    Leaf,
+    /// ⛔ No run produced a valid solution: MPL-40 at the root, MPL-8 below it.
+    NoValidSolution(crate::options::MplError),
+}
+
+/// One visit the driver made, in the order it made them.
+#[derive(Debug, Clone, PartialEq)]
+pub struct PlacementVisit {
+    pub cluster: i32,
+    pub outcome: ParentOutcome,
+}
+
+/// What the driver needs to know about one cluster to decide and to place it.
+pub struct PlacementTree<'a> {
+    pub kind: &'a dyn Fn(i32) -> AreaKind,
+    pub is_fixed_macro: &'a dyn Fn(i32) -> bool,
+    pub is_leaf: &'a dyn Fn(i32) -> bool,
+    pub children: &'a dyn Fn(i32) -> Vec<i32>,
+    /// The utilizations to try, already ramped — see [`utilization_list`].
+    pub utilizations: &'a [f32],
+    pub num_threads: usize,
+}
+
+/// Upstream `HierRTLMP::placeChildren`, as composition.
+///
+/// 🔑 **The recursion is DEPTH-FIRST and happens AFTER the parent is placed**, never before: a
+/// child's outline is the shape its parent just chose for it, so placing the child first would
+/// place it inside a box that does not exist yet.
+///
+/// ⚠️ **Every child is visited, including the ones that do nothing.** An IO cluster and a leaf
+/// standard-cell cluster both reach `placeChildren` and return at its guards — they are not
+/// filtered out by the caller. That is why the visit list is the honest record of what happened.
+///
+/// ⛔ **A parent that cannot be placed STOPS at that parent**: upstream raises MPL-40 or MPL-8,
+/// which throws, so nothing below it is visited. Returning the error here rather than continuing is
+/// what reproduces that.
+///
+/// ℹ️ `place_one` is the annealer: given a parent and a utilization index, it reports whether that
+/// run reached a valid solution and, for the winner, what it settled on. Threading it through as a
+/// callback is what lets the composition be exercised without the whole database beneath it.
+pub fn place_children(
+    tree: &PlacementTree,
+    root: i32,
+    place_one: &mut dyn FnMut(i32, usize, f32) -> Option<Vec<crate::anneal::SoftMacro>>,
+) -> Vec<PlacementVisit> {
+    let mut visits = Vec::new();
+    place_one_parent(tree, root, root, place_one, &mut visits);
+    visits
+}
+
+fn place_one_parent(
+    tree: &PlacementTree,
+    cluster: i32,
+    root: i32,
+    place_one: &mut dyn FnMut(i32, usize, f32) -> Option<Vec<crate::anneal::SoftMacro>>,
+    visits: &mut Vec<PlacementVisit>,
+) -> bool {
+    let action = placement_action((tree.kind)(cluster), (tree.is_fixed_macro)(cluster), (tree.is_leaf)(cluster));
+    match action {
+        PlacementAction::PlaceMacros => {
+            visits.push(PlacementVisit { cluster, outcome: ParentOutcome::MacroCluster });
+            return true;
+        }
+        PlacementAction::PlaceMacrosButRefused => {
+            visits.push(PlacementVisit { cluster, outcome: ParentOutcome::FixedMacroCluster });
+            return true;
+        }
+        PlacementAction::Nothing => {
+            visits.push(PlacementVisit { cluster, outcome: ParentOutcome::Leaf });
+            return true;
+        }
+        PlacementAction::PlaceChildren => {}
+    }
+
+    let mut winning_macros = None;
+    let selected = select_run(
+        tree.utilizations,
+        tree.num_threads,
+        // ⚠️ Validity of the UTILIZATION is the caller's to judge; the driver only sequences.
+        &mut |_| true,
+        &mut |index, utilization| match place_one(cluster, index, utilization) {
+            Some(macros) => {
+                winning_macros = Some(macros);
+                true
+            }
+            None => false,
+        },
+    );
+
+    match selected {
+        Ok(run) => {
+            visits.push(PlacementVisit {
+                cluster,
+                outcome: ParentOutcome::Placed {
+                    run,
+                    macros: winning_macros.unwrap_or_default(),
+                },
+            });
+        }
+        Err(NoValidSolution) => {
+            // ⛔ Upstream's error THROWS, so nothing below this parent runs.
+            visits.push(PlacementVisit {
+                cluster,
+                outcome: ParentOutcome::NoValidSolution(no_valid_solution_error(
+                    cluster == root,
+                    cluster,
+                    "",
+                )),
+            });
+            return false;
+        }
+    }
+
+    // 🔑 Only now — a child's outline is the shape this parent just chose for it.
+    for child in (tree.children)(cluster) {
+        if !place_one_parent(tree, child, root, place_one, visits) {
+            return false;
+        }
+    }
+    true
+}
+
+/// Upstream `HierRTLMP::runHierarchicalMacroPlacement`'s two setup steps, in order.
+///
+/// ⚠️ **`adjustSoftBlockageWeight` runs BEFORE the tiny-cluster threshold**, and both run before
+/// any placement — so every annealer in the design is built with the same adjusted weight.
+pub fn placement_setup(
+    max_level: i32,
+    weights: crate::anneal::SoftWeights,
+    block_instance_count: usize,
+) -> (crate::anneal::SoftWeights, i32) {
+    let mut adjusted = weights;
+    adjusted.soft_blockage =
+        adjusted_soft_blockage_weight(max_level, weights.outline, weights.soft_blockage);
+    (adjusted, tiny_cluster_max_number_of_std_cells(block_instance_count))
+}

@@ -407,6 +407,68 @@ pub const MUTATIONS: &[Mutation] = &[
     let mut deferred_io: Vec<&AssemblyChild> = Vec::new();"#,
         want: r#"a_blockage_has_no_name"#,
     },
+    // ---------------------------------------------------------------- the placement driver
+    // ⚠️ This one must MOVE the recursion, not delete the comment above it. A find/replace whose
+    // only difference is a comment is a no-op that can never fail — a badly written mutation, not
+    // an equivalent one, and the harness reported it as a hole until it was rewritten.
+    Mutation {
+        name: r#"children-placed-before-the-parent"#,
+        file: r#"src/placement.rs"#,
+        find: r#"    let mut winning_macros = None;
+    let selected = select_run("#,
+        replace: r#"    for child in (tree.children)(cluster) {
+        if !place_one_parent(tree, child, root, place_one, visits) {
+            return false;
+        }
+    }
+    let mut winning_macros = None;
+    let selected = select_run("#,
+        want: r#"a_parent_is_placed_before_its_children"#,
+    },
+    Mutation {
+        name: r#"driver-skips-clusters-that-do-nothing"#,
+        file: r#"src/placement.rs"#,
+        find: r#"        PlacementAction::Nothing => {
+            visits.push(PlacementVisit { cluster, outcome: ParentOutcome::Leaf });
+            return true;
+        }"#,
+        replace: r#"        PlacementAction::Nothing => {
+            return true;
+        }"#,
+        want: r#"clusters_that_do_nothing_are_still_visited"#,
+    },
+    Mutation {
+        name: r#"driver-continues-past-a-refusal"#,
+        file: r#"src/placement.rs"#,
+        find: r#"            return false;
+        }
+    }
+
+    // 🔑 Only now"#,
+        replace: r#"        }
+    }
+
+    // 🔑 Only now"#,
+        want: r#"a_parent_that_cannot_be_placed_stops_the_walk"#,
+    },
+    Mutation {
+        name: r#"driver-reports-the-root-code-everywhere"#,
+        file: r#"src/placement.rs"#,
+        find: r#"                outcome: ParentOutcome::NoValidSolution(no_valid_solution_error(
+                    cluster == root,"#,
+        replace: r#"                outcome: ParentOutcome::NoValidSolution(no_valid_solution_error(
+                    true,"#,
+        want: r#"a_parent_that_cannot_be_placed_stops_the_walk"#,
+    },
+    Mutation {
+        name: r#"setup-adjusts-the-wrong-weight"#,
+        file: r#"src/placement.rs"#,
+        find: r#"    adjusted.soft_blockage =
+        adjusted_soft_blockage_weight(max_level, weights.outline, weights.soft_blockage);"#,
+        replace: r#"    adjusted.notch =
+        adjusted_soft_blockage_weight(max_level, weights.outline, weights.soft_blockage);"#,
+        want: r#"the_soft_blockage_weight_is_adjusted_once_up_front"#,
+    },
     // ---------------------------------------------------------------- temporary std cell places
     Mutation {
         name: r#"std-cell-placed-at-the-cluster-origin"#,
