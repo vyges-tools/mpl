@@ -1595,3 +1595,22 @@ fn a_shaping_sweep_leaves_the_six_placement_factors_at_exactly_one() {
     // a sweep that recorded no samples at all would floor every one of the nine to 1.0.
     assert_ne!(n.outline, 1.0, "the outline term was sampled");
 }
+
+/// ⛔ **The resize share is DOUBLE each swap share, and the five do not sum to one.** Upstream
+/// declares four swaps at `0.2` and resize at `0.4`, then divides every one by their sum of `1.2` —
+/// so a swap is `1/6` and a resize `1/3`.
+///
+/// 🔑 Passing five equal shares looks right and is not. It changes every random walk, which on a
+/// small design still converges to the same placement — so the penalty VALUES match and only the
+/// normalisation factors, which average over the walk, show it. That is how the harness ran for a
+/// while before this was noticed.
+#[test]
+fn the_placement_resize_share_is_double_a_swap_share() {
+    let p = ActionProbabilities::placement_defaults();
+    assert!((p.pos_swap - 1.0 / 6.0).abs() < 1e-6, "0.2 / 1.2");
+    assert_eq!(p.pos_swap, p.neg_swap);
+    assert_eq!(p.pos_swap, p.double_swap);
+    assert_eq!(p.pos_swap, p.exchange);
+    assert!((p.resize - 1.0 / 3.0).abs() < 1e-6, "0.4 / 1.2, twice a swap");
+    assert_ne!(p.resize, p.pos_swap, "five EQUAL shares is the mistake this guards");
+}

@@ -2398,6 +2398,13 @@ pub const MUTATIONS: &[Mutation] = &[
         want: r#"growing_a_cluster_recomputes_its_area"#,
     },
     Mutation {
+        name: r#"placement-resize-share-equals-a-swap"#,
+        file: r#"src/anneal.rs"#,
+        find: r#"        Self::normalized(0.2, 0.2, 0.2, 0.2, 0.4)"#,
+        replace: r#"        Self::normalized(0.2, 0.2, 0.2, 0.2, 0.2)"#,
+        want: r#"the_placement_resize_share_is_double_a_swap_share"#,
+    },
+    Mutation {
         name: r#"norm-sweep-skips-the-placement-terms"#,
         file: r#"src/anneal.rs"#,
         find: r#"            wirelength: mean(&|s| s.penalties.wirelength),"#,

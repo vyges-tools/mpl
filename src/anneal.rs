@@ -171,6 +171,21 @@ impl ActionProbabilities {
         }
     }
 
+    /// Upstream's five action shares as `HierRTLMP` declares them, normalised.
+    ///
+    /// ⛔ **`resize_prob_` is `0.4`, not `0.2`** — the four swaps are `0.2` each and resize is
+    /// double. The five sum to `1.2`, so after normalisation a swap is `0.1667` and a resize
+    /// `0.3333`. Passing five equal shares is a plausible-looking mistake that changes every
+    /// random walk: the final placement of a small design still converges, so the VALUES match
+    /// and only the normalisation factors — averages over the walk — reveal it.
+    ///
+    /// ⚠️ **Coarse shaping does NOT share this constructor.** It zeroes the resize share on a
+    /// design with no standard cells, which changes the divisor to `0.8` and therefore all four
+    /// swap probabilities too — see `ShapingCtx::probabilities`. Cluster placement never zeroes it.
+    pub fn placement_defaults() -> Self {
+        Self::normalized(0.2, 0.2, 0.2, 0.2, 0.4)
+    }
+
     /// Upstream's dispatch: four running totals, each tested with `<=`.
     ///
     /// ⚠️ **`<=`, not `<`.** With a draw landing exactly on a boundary the earlier action wins.

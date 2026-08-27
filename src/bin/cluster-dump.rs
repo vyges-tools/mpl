@@ -285,7 +285,7 @@ fn report_placement(
         &utilizations,
         10,
         &vyges_mpl::anneal::SaParameters::default(),
-        vyges_mpl::anneal::ActionProbabilities::normalized(0.2, 0.2, 0.2, 0.2, 0.2),
+        vyges_mpl::anneal::ActionProbabilities::placement_defaults(),
         weights,
         0,
         &mut |parent| {
@@ -442,7 +442,7 @@ fn print_placement_summaries(
                 *util,
                 0,
                 &vyges_mpl::anneal::SaParameters::default(),
-                vyges_mpl::anneal::ActionProbabilities::normalized(0.2, 0.2, 0.2, 0.2, 0.2),
+                vyges_mpl::anneal::ActionProbabilities::placement_defaults(),
                 weights,
             ) else {
                 continue;
