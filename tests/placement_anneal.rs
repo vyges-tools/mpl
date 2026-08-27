@@ -122,7 +122,11 @@ fn the_same_seed_gives_the_same_placement() {
 /// differently — unlike the tiling search, where every run shares one.
 #[test]
 fn a_different_seed_explores_differently() {
-    let p = SaParameters { max_num_step: 40, num_perturb_per_step: 40, ..Default::default() };
+    // ⚠️ A SHORT search on purpose. `initialize` and `fast_sa` now run exactly the count they are
+    // handed, so a long one saturates this two-macro problem and both seeds land on the same
+    // optimum — which would make the assertion below fail for a reason that has nothing to do
+    // with seeding. Four is what this test effectively ran when the core derived its own count.
+    let p = SaParameters { max_num_step: 40, num_perturb_per_step: 4, ..Default::default() };
     let probs = ActionProbabilities::normalized(0.2, 0.2, 0.2, 0.2, 0.2);
     let a = anneal_one_run(&problem(), 0.25, 1, &p, probs, SoftWeights::placement_defaults());
     let b = anneal_one_run(&problem(), 0.25, 2, &p, probs, SoftWeights::placement_defaults());
@@ -258,4 +262,84 @@ fn the_seam_reports_only_the_sequence_pair() {
     s.sp.pos = vec![2, 0, 1];
     s.sp.neg = vec![0, 1, 2];
     assert_eq!(Enhancements::order(&s), &[2, 0, 1], "the positive one");
+}
+
+/// ⛔ **Cluster placement's perturbation count is `max(macros, num_perturb_per_step)`** — the full
+/// configured count as a floor, not coarse shaping's tenth. Upstream applies it at the call site.
+///
+/// 🔑 **Two assertions that can only both hold if the rule is applied.** With EIGHT macros, asking
+/// for one perturbation and asking for eight must give the SAME placement (the rule floors both to
+/// eight), while asking for five hundred must give a different one (the rule leaves it at five
+/// hundred). Drop the adjustment and the first pair runs one against eight and diverges.
+///
+/// ⚠️ A two-macro problem cannot express this — one perturbation and two settle identically, so
+/// the equivalence holds whether or not the rule is applied. The fixture has to be big enough for
+/// the count to change the answer, and the second assertion is what proves it is.
+#[test]
+fn cluster_placement_perturbs_on_the_full_configured_count() {
+    use vyges_mpl::cluster::{Cluster, ClusterType};
+    use vyges_mpl::placement::{run_hierarchical_macro_placement, ParentOutcome};
+
+    const N: usize = 8;
+    let problem_n = || {
+        let mut macros = Vec::new();
+        let mut reshape = Vec::new();
+        for i in 0..N {
+            let w = 150 + (i as i32 % 3) * 50;
+            macros.push(SoftMacro {
+                width: w,
+                height: w,
+                area: (w as i64) * (w as i64),
+                is_macro_cluster: i % 2 == 0,
+                ..Default::default()
+            });
+            reshape.push(macro_cluster(w, w));
+        }
+        ParentProblem {
+            macros,
+            reshape,
+            number_of_sequence_pair_macros: N,
+            inputs: PlacementInputs {
+                attributes: vec![Default::default(); N],
+                root: Root { x: 0, y: 0, width: 2000, height: 2000 },
+                weights: SoftWeights::placement_defaults(),
+                ..Default::default()
+            },
+            outline: (2000, 2000),
+            dbu_per_micron: 2000,
+            fixed_bboxes: Vec::new(),
+            tiny_threshold: 0,
+            min_ar: 0.33,
+            force_centralization: false,
+        }
+    };
+
+    let run = |n: i32| {
+        let mut root = Cluster::new(0, "root");
+        root.cluster_type = ClusterType::Mixed;
+        for id in 1..=2 {
+            let mut child = Cluster::new(id, format!("child{id}"));
+            child.cluster_type = ClusterType::StdCell;
+            root.children.push(child);
+        }
+        let p = SaParameters { max_num_step: 5, num_perturb_per_step: n, ..Default::default() };
+        run_hierarchical_macro_placement(
+            &root,
+            &[0.25],
+            1,
+            &p,
+            ActionProbabilities::normalized(0.2, 0.2, 0.2, 0.2, 0.2),
+            SoftWeights::placement_defaults(),
+            0,
+            &mut |_| Some((problem_n(), 0)),
+        )
+    };
+
+    let one = run(1);
+    assert!(
+        one.iter().any(|v| matches!(v.outcome, ParentOutcome::Placed { .. })),
+        "the fixture must actually place something, or the comparisons below are vacuous"
+    );
+    assert_eq!(one, run(N as i32), "one and eight both floor to the eight-macro count");
+    assert_ne!(one, run(500), "five hundred is above the floor and must NOT coincide");
 }

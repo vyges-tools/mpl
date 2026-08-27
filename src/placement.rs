@@ -2320,6 +2320,21 @@ pub fn macro_placement_probabilities(
     }
 }
 
+/// Upstream `placeChildren`' perturbation count — the CLUSTER placement rule.
+///
+/// ⛔ **Not the coarse-shaping rule and not the macro rule.** All three sites derive their own:
+/// shaping takes `max(macros, num/10)`, this one takes `max(macros, num)` — the FULL configured
+/// count as a floor, ten times shaping's — and `macro_perturbations_per_step` has a third.
+/// Upstream states the intent at the site: a step should have more perturbations than there are
+/// macros.
+///
+/// 🔑 **So a small cluster is perturbed `num_perturb_per_step` times here**, where coarse shaping
+/// would perturb it fifty. Sharing one derivation between the two silently gives one of them the
+/// other's count, and the annealer's whole trajectory changes with it.
+pub fn cluster_perturbations_per_step(num_perturb_per_step: i32, macro_count: i32) -> i32 {
+    macro_count.max(num_perturb_per_step)
+}
+
 /// Upstream `placeMacros`' perturbation count.
 ///
 /// ⛔ **The floor is a TENTH of the configured count**, by integer division — `500 / 10` is `50`.
@@ -4622,13 +4637,19 @@ pub fn run_hierarchical_macro_placement(
             cached = Some((cluster_id, problem));
         }
         let (_, problem) = cached.as_ref()?;
+        // Upstream computes this at the call site, once per parent, and hands it to the core.
+        let mut params = *params;
+        params.num_perturb_per_step = cluster_perturbations_per_step(
+            params.num_perturb_per_step,
+            problem.macros.len() as i32,
+        );
         anneal_one_run(
             problem,
             utilization,
             // ⚠️ Cluster placement shares ONE seed across its runs — unlike macro placement,
             // which varies it. The runs differ by their utilization alone.
             random_seed,
-            params,
+            &params,
             probabilities,
             weights,
         )

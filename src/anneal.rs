@@ -1256,11 +1256,16 @@ impl Default for SaParameters {
 }
 
 impl SaParameters {
-    /// Upstream's own adjustment at the shaping call site.
+    /// Upstream's own adjustment at the COARSE SHAPING call site — and at that site only.
     ///
     /// ⚠️ **A TENTH of the configured count is the floor**, and the macro count wins only when it
     /// exceeds that — so every cluster with fewer than 50 macros runs exactly 50 perturbations
     /// per step, not one per macro.
+    ///
+    /// ⛔ **Cluster placement does NOT use this rule.** It takes `max(macros, num_perturb_per_step)`
+    /// — the full configured count, ten times this floor — and macro placement has a third rule
+    /// again. The adjustment belongs to the caller; `Search::initialize` uses whatever count it is
+    /// handed.
     pub fn perturbations_for(&self, macro_count: usize) -> usize {
         let tenth = (self.num_perturb_per_step / 10) as usize;
         if macro_count > tenth {
@@ -1289,7 +1294,12 @@ impl Search {
     /// ⚠️ The initial temperature comes from the mean ABSOLUTE step-to-step change in cost, not
     /// from the spread of the costs: `-(mean delta) / ln(init_prob)`.
     pub fn initialize(&mut self, rng: &mut Mt19937, params: &SaParameters) -> f32 {
-        let perturbations = params.perturbations_for(self.macros.len());
+        // ⛔ The count is the CALLER's, not the core's own derivation. Upstream computes it at
+        // each call site and passes it in, and the three sites do NOT agree: coarse shaping takes
+        // `max(macros, num/10)`, cluster placement takes `max(macros, num)` — ten times larger —
+        // and macro placement has a third rule. Re-deriving the shaping formula in here silently
+        // gave every other caller the shaping count.
+        let perturbations = params.num_perturb_per_step.max(0) as usize;
 
         let mut widths = Vec::with_capacity(perturbations);
         let mut heights = Vec::with_capacity(perturbations);
@@ -1363,7 +1373,9 @@ impl Search {
         init_temperature: f32,
         fixed_present: bool,
     ) -> BestResult {
-        let perturbations = params.perturbations_for(self.macros.len());
+        // ⛔ The caller's count, for the same reason as `initialize` — upstream hands ONE
+        // adjusted number to the core and both loops read that member.
+        let perturbations = params.num_perturb_per_step.max(0) as usize;
         let mut best = BestResult::new();
         let mut is_best_valid = false;
 
@@ -1523,8 +1535,11 @@ pub fn search_tilings(
         );
         let fixed_present = !state.fixed_bboxes.is_empty();
         let mut rng = Mt19937::new(search.random_seed);
-        let temperature = state.initialize(&mut rng, &search.sa);
-        state.fast_sa(&mut rng, &search.sa, temperature, fixed_present);
+        // Upstream's adjustment at THIS call site — see `SaParameters::perturbations_for`.
+        let mut sa = search.sa;
+        sa.num_perturb_per_step = sa.perturbations_for(macros.len()) as i32;
+        let temperature = state.initialize(&mut rng, &sa);
+        state.fast_sa(&mut rng, &sa, temperature, fixed_present);
         // ⛔ Against the ORIGINAL outline.
         if state.width <= outline_width && state.height <= outline_height {
             found.push((state.width, state.height));
@@ -1626,4 +1641,15 @@ fn new_search(
     state.height = height;
     state.cal_penalty();
     state
+}
+
+// ---------------------------------------------------------------- normalisation and temperature
+
+/// One accepted sample of `initialize`'s sweep.
+#[derive(Debug, Clone, Copy)]
+pub struct Sample {
+    pub width: i32,
+    pub height: i32,
+    pub area: f32,
+    pub penalties: Penalties,
 }

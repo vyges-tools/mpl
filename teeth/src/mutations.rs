@@ -2360,6 +2360,36 @@ pub const MUTATIONS: &[Mutation] = &[
         want: r#"virtual_connections_are_stored_on_the_broken_leafs_parent_not_on_the_leaf_or_the_root"#,
     },
     Mutation {
+        name: r#"perturb-count-cluster-uses-shaping-floor"#,
+        file: r#"src/placement.rs"#,
+        find: r#"pub fn cluster_perturbations_per_step(num_perturb_per_step: i32, macro_count: i32) -> i32 {
+    macro_count.max(num_perturb_per_step)"#,
+        replace: r#"pub fn cluster_perturbations_per_step(num_perturb_per_step: i32, macro_count: i32) -> i32 {
+    macro_count.max(num_perturb_per_step / 10)"#,
+        want: r#"the_three_perturbation_rules_disagree_on_the_same_cluster"#,
+    },
+    Mutation {
+        name: r#"perturb-count-initialize-rederives"#,
+        file: r#"src/anneal.rs"#,
+        find: r#"        let perturbations = params.num_perturb_per_step.max(0) as usize;
+
+        let mut widths = Vec::with_capacity(perturbations);"#,
+        replace: r#"        let perturbations = params.perturbations_for(self.macros.len());
+
+        let mut widths = Vec::with_capacity(perturbations);"#,
+        want: r#"initialize_runs_exactly_the_perturbation_count_it_is_given"#,
+    },
+    Mutation {
+        name: r#"perturb-count-not-applied-at-call-site"#,
+        file: r#"src/placement.rs"#,
+        find: r#"        params.num_perturb_per_step = cluster_perturbations_per_step(
+            params.num_perturb_per_step,
+            problem.macros.len() as i32,
+        );"#,
+        replace: r#"        params.num_perturb_per_step = params.num_perturb_per_step;"#,
+        want: r#"cluster_placement_perturbs_on_the_full_configured_count"#,
+    },
+    Mutation {
         name: r#"threshold-guard-is-per-field"#,
         file: r#"src/thresholds.rs"#,
         find: r#"    if t.max_macro <= 0 || t.min_macro <= 0 || t.max_std_cell <= 0 || t.min_std_cell <= 0 {"#,

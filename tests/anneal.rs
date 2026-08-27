@@ -1180,14 +1180,17 @@ fn initialize_leaves_the_last_sample_in_the_live_state() {
     // Reproduce the sweep by hand and keep the final sample.
     let mut replay = search_with(3);
     let mut rg = Mt19937::new(2);
-    let n = SaParameters::default().perturbations_for(replay.macros.len());
+    // ⛔ The count is the CALLER's. `initialize` now runs exactly `num_perturb_per_step`, so the
+    // shaping adjustment has to be applied here — where upstream applies it — rather than inside.
+    let mut sa = SaParameters::default();
+    sa.num_perturb_per_step = sa.perturbations_for(replay.macros.len()) as i32;
     let mut last = (0, 0, 0.0f32);
-    for _ in 0..n {
+    for _ in 0..sa.num_perturb_per_step {
         replay.perturb(&mut rg);
         last = (replay.width, replay.height, replay.penalties.outline);
     }
 
-    s.initialize(&mut g, &SaParameters::default());
+    s.initialize(&mut g, &sa);
     assert_eq!((s.width, s.height, s.penalties.outline), last);
 }
 
@@ -1502,4 +1505,60 @@ fn the_sequence_pair_covers_only_the_placeable_macros() {
 #[test]
 fn invalid_states_are_allowed_by_default() {
     assert!(SaParameters::default().invalid_states_allowed);
+}
+
+/// ⛔ **Three call sites, three different rules.** Upstream derives the perturbation count at each
+/// site and hands it to the core; the core never derives it. Sharing one derivation between them
+/// gives one site another's count, which changes the annealer's whole trajectory.
+#[test]
+fn the_three_perturbation_rules_disagree_on_the_same_cluster() {
+    use vyges_mpl::placement::{cluster_perturbations_per_step, macro_perturbations_per_step};
+    let shaping = SaParameters::default();
+    assert_eq!(shaping.num_perturb_per_step, 500, "the configured count these three adjust");
+
+    // A SMALL cluster — three macros. This is the input that separates cluster placement from the
+    // other two: they floor at a tenth, it floors at the whole count.
+    assert_eq!(shaping.perturbations_for(3), 50, "coarse shaping: max(macros, num/10)");
+    assert_eq!(macro_perturbations_per_step(500, 3, false), 50, "macro placement: same floor");
+    assert_eq!(cluster_perturbations_per_step(500, 3), 500, "cluster placement: max(macros, num)");
+
+    // A LARGE array — 200 macros. Here the macro rule is the odd one out, taking the full count
+    // because a large array needs more steps to converge.
+    assert_eq!(shaping.perturbations_for(200), 200);
+    assert_eq!(macro_perturbations_per_step(500, 200, false), 200, "large, but not an array");
+    assert_eq!(macro_perturbations_per_step(500, 200, true), 500, "a large ARRAY takes them all");
+    assert_eq!(cluster_perturbations_per_step(500, 200), 500);
+
+    // Past the configured count every rule tracks the problem size.
+    assert_eq!(shaping.perturbations_for(900), 900);
+    assert_eq!(cluster_perturbations_per_step(500, 900), 900);
+}
+
+/// ⛔ **`initialize` runs exactly the count it is HANDED** — it must not re-derive one. A core that
+/// applied the shaping floor here would run 50 sweeps for a caller that asked for 2.
+#[test]
+fn initialize_runs_exactly_the_perturbation_count_it_is_given() {
+    let mut sa = SaParameters::default();
+    sa.num_perturb_per_step = 2;
+
+    // Hand replay of exactly two perturbations, from the same seed.
+    let mut replay = search_with(3);
+    let mut rg = Mt19937::new(2);
+    for _ in 0..2 {
+        replay.perturb(&mut rg);
+    }
+
+    // `initialize` leaves the live state on its last sample, so the two must coincide.
+    let mut s = search_with(3);
+    let mut g = Mt19937::new(2);
+    s.initialize(&mut g, &sa);
+    // ⚠️ Compare the MACROS, not just the packed width and height. A perturbation can resize
+    // within one shape or swap two equal-sized macros and leave the bounding box untouched, so a
+    // width/height comparison passes even when a different number of perturbations ran.
+    assert_eq!(s.macros, replay.macros, "two perturbations, not a re-derived count");
+    assert_eq!(
+        (s.width, s.height),
+        (replay.width, replay.height),
+        "and the packing that follows from them"
+    );
 }
