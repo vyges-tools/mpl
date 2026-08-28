@@ -63,6 +63,30 @@ impl SequencePair {
 /// ℹ️ An empty sequence pair returns `(0, 0)`. Upstream reads `accumulated_length.back()` on an
 /// empty vector instead, which is undefined; it cannot arise, because a cluster with nothing in it
 /// is never shaped.
+impl SoftMacro {
+    /// Upstream `SoftMacro::setX`.
+    ///
+    /// ⛔ **THE GUARD LIVES IN THE SETTER, not at the call sites.** `moveFloorplan`,
+    /// `setClustersLocations` and `packFloorplan` all assign positions with no `isFixed` test of
+    /// their own — they do not need one, because `setX`/`setY` refuse silently for a fixed macro.
+    ///
+    /// ⚠️ **Reading a call site and concluding "there is no fixed test" is how this was got wrong
+    /// four separate times** in this engine's notes and comments. When the reference assigns
+    /// through a setter, read the setter.
+    pub fn set_x(&mut self, x: i32) {
+        if !self.fixed {
+            self.x = x;
+        }
+    }
+
+    /// Upstream `SoftMacro::setY`. See [`SoftMacro::set_x`] — the guard is here, not at the callers.
+    pub fn set_y(&mut self, y: i32) {
+        if !self.fixed {
+            self.y = y;
+        }
+    }
+}
+
 pub fn pack_floorplan(macros: &mut [SoftMacro], sp: &SequencePair) -> (i32, i32) {
     let n = sp.len();
     if n == 0 {
@@ -80,9 +104,7 @@ pub fn pack_floorplan(macros: &mut [SoftMacro], sp: &SequencePair) -> (i32, i32)
     let mut accumulated = vec![0i32; n];
     for &id in &sp.pos {
         let neg_pos = sp_pos[id].1;
-        if !macros[id].fixed {
-            macros[id].x = accumulated[neg_pos];
-        }
+        macros[id].set_x(accumulated[neg_pos]);
         let current = macros[id].x + macros[id].width;
         for slot in accumulated.iter_mut().skip(neg_pos) {
             if current > *slot {
@@ -112,9 +134,7 @@ pub fn pack_floorplan(macros: &mut [SoftMacro], sp: &SequencePair) -> (i32, i32)
     for i in 0..n {
         let id = reversed[i];
         let neg_pos = sp_pos[id].1;
-        if !macros[id].fixed {
-            macros[id].y = accumulated[neg_pos];
-        }
+        macros[id].set_y(accumulated[neg_pos]);
         let current = macros[id].y + macros[id].height;
         for slot in accumulated.iter_mut().skip(neg_pos) {
             if current > *slot {

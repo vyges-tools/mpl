@@ -114,17 +114,21 @@ fn a_mismatched_location_list_is_refused() {
     assert_eq!((macros[0].x, macros[1].y), (5, 6));
 }
 
-/// ⛔ **A FIXED macro moves too** — there is no `isFixed` test in the shift. A blockage's soft
-/// macro is both fixed and inside the sequence pair, so centralizing displaces the proxy of a
-/// hard blockage that the die itself cannot move.
+/// ⛔ **CORRECTED — a FIXED macro is NOT shifted.** This asserted the opposite, reasoning that
+/// `moveFloorplan` has no `isFixed` test. It has none because it does not need one: it assigns
+/// through `setX`/`setY`, and the guard is in those. A blockage's soft macro is fixed and inside
+/// the sequence pair, and centralizing leaves it exactly where the die put it.
+///
+/// ⚠️ The sixth place this same misreading was written down. Every one of them read a CALL SITE
+/// and never the setter it assigns through.
 #[test]
-fn a_fixed_macro_is_shifted_along_with_the_rest() {
+fn a_fixed_macro_is_not_shifted_with_the_rest() {
     let mut blockage = sm(100, 100, 50, 50);
     blockage.fixed = true;
     let mut macros = vec![blockage, sm(200, 200, 50, 50)];
     move_floorplan(&mut macros, &[0, 1], (10, 20));
-    assert_eq!((macros[0].x, macros[0].y), (110, 120), "the blockage moved");
-    assert_eq!((macros[1].x, macros[1].y), (210, 220));
+    assert_eq!((macros[0].x, macros[0].y), (100, 100), "the blockage stayed put");
+    assert_eq!((macros[1].x, macros[1].y), (210, 220), "everything else shifted");
 }
 
 /// ⚠️ **Anything outside the sequence pair stays put** — the IO clusters and fixed terminals
@@ -335,4 +339,41 @@ fn an_overflowing_floorplan_is_left_entirely_alone() {
     run_enhancements(&mut s, false);
     assert_eq!(s.positions(), vec![(30, 30)]);
     assert_eq!(s.penalty_calls, 0);
+}
+
+/// ⛔ **THE `isFixed` GUARD LIVES IN `setX`/`setY`, NOT AT THE CALL SITES.** `moveFloorplan`,
+/// `setClustersLocations`, `packFloorplan` and the boundary alignment all assign positions with no
+/// fixed test of their own — they do not need one, because the setters refuse silently.
+///
+/// ⚠️ **Reading a call site and concluding "there is no fixed test" got this wrong four times** in
+/// this engine's notes and comments. The alignment then snapped a FIXED macro to the outline edge,
+/// moving an input the design does not allow to move: on `fixed_macros1` it put the macro at
+/// `outline.dy() - height` instead of its real position, and the whole placement was scored
+/// against a floorplan that does not exist.
+#[test]
+fn a_fixed_macro_is_selected_by_the_alignment_but_never_moved() {
+    use vyges_mpl::anneal::SoftMacro;
+    // Close enough to the top edge that the alignment would snap it there.
+    // ⚠️ Near the LEFT edge and the TOP edge, so both axes are actually exercised. With x at 100
+    // against a threshold of 100 the `lx < h_th` test is false and the x assignment never happens
+    // at all — the mutation harness caught that as a WRONG TEST.
+    let make = |fixed: bool| SoftMacro {
+        x: 50,
+        y: 800,
+        width: 200,
+        height: 150,
+        fixed,
+        area: 200 * 150,
+        is_macro_cluster: true,
+    };
+
+    let mut movable = [make(false)];
+    align_macro_clusters(&mut movable, &[0], (1000, 1000), (100, 100));
+    assert_eq!(movable[0].y, 850, "a movable macro snaps to the top edge");
+    assert_eq!(movable[0].x, 0, "and to the left edge");
+
+    let mut pinned = [make(true)];
+    align_macro_clusters(&mut pinned, &[0], (1000, 1000), (100, 100));
+    assert_eq!(pinned[0].y, 800, "a FIXED one is considered and then refused");
+    assert_eq!(pinned[0].x, 50, "on both axes");
 }

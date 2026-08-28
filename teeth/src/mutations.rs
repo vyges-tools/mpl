@@ -2433,6 +2433,32 @@ pub const MUTATIONS: &[Mutation] = &[
         want: r#"an_io_pin_cluster_takes_its_constraint_region_or_the_whole_die"#,
     },
     Mutation {
+        name: r#"set-x-ignores-the-fixed-guard"#,
+        file: r#"src/anneal.rs"#,
+        find: r#"    pub fn set_x(&mut self, x: i32) {
+        if !self.fixed {
+            self.x = x;
+        }
+    }"#,
+        replace: r#"    pub fn set_x(&mut self, x: i32) {
+        self.x = x;
+    }"#,
+        want: r#"a_fixed_macro_is_selected_by_the_alignment_but_never_moved"#,
+    },
+    Mutation {
+        name: r#"set-y-ignores-the-fixed-guard"#,
+        file: r#"src/anneal.rs"#,
+        find: r#"    pub fn set_y(&mut self, y: i32) {
+        if !self.fixed {
+            self.y = y;
+        }
+    }"#,
+        replace: r#"    pub fn set_y(&mut self, y: i32) {
+        self.y = y;
+    }"#,
+        want: r#"a_fixed_macro_is_selected_by_the_alignment_but_never_moved"#,
+    },
+    Mutation {
         name: r#"notch-grid-skips-fixed-macros"#,
         file: r#"src/placement.rs"#,
         find: r#"            Some(AreaKind::HardMacroCluster)

@@ -1637,26 +1637,32 @@ pub fn set_cluster_locations(
         return Err(ClusterCountMismatch);
     }
     for &id in order {
-        macros[id].x = locations[id].0;
-        macros[id].y = locations[id].1;
+        // ⚠️ Through the setters, like upstream — a fixed macro was never moved, so putting it
+        // back is a no-op either way, but the guard belongs where the reference has it.
+        macros[id].set_x(locations[id].0);
+        macros[id].set_y(locations[id].1);
     }
     Ok(())
 }
 
 /// Upstream `moveFloorplan`: shift every macro in the sequence pair by one offset.
 ///
-/// ⛔ **A FIXED macro moves too.** There is no `isFixed` test here, and a blockage's soft macro is
-/// both fixed and inside the sequence pair — so centralizing a floorplan displaces the proxies of
-/// the die's hard blockages along with everything else. The packer would have pinned them; this
-/// runs after the packer and nothing puts them back.
+/// ⛔ **CORRECTED — a FIXED macro does NOT move.** This said the opposite, on the grounds that
+/// `moveFloorplan` has no `isFixed` test. It does not need one: it assigns through `setX`/`setY`,
+/// and the guard is in those. So centralizing shifts everything the packer could place and leaves
+/// the fixed macros and blockage proxies exactly where they were.
+///
+/// ⚠️ Getting this wrong moved a FIXED macro during the anneal — its position is an input, so the
+/// placement was scored against a floorplan the design does not have.
 pub fn move_floorplan(
     macros: &mut [crate::anneal::SoftMacro],
     order: &[usize],
     offset: (i32, i32),
 ) {
     for &id in order {
-        macros[id].x += offset.0;
-        macros[id].y += offset.1;
+        let (x, y) = (macros[id].x + offset.0, macros[id].y + offset.1);
+        macros[id].set_x(x);
+        macros[id].set_y(y);
     }
 }
 
@@ -1755,14 +1761,16 @@ pub fn align_macro_clusters(
         let (ux, uy) = (lx + macros[id].width, ly + macros[id].height);
         // ⛔ X is governed by the `h` threshold, Y by the `v` one. See `alignment_thresholds`.
         if lx < h_th {
-            macros[id].x = 0;
+            macros[id].set_x(0);
         } else if outline.0 - ux < h_th {
-            macros[id].x = outline.0 - macros[id].width;
+            let x = outline.0 - macros[id].width;
+            macros[id].set_x(x);
         }
         if ly < v_th {
-            macros[id].y = 0;
+            macros[id].set_y(0);
         } else if outline.1 - uy < v_th {
-            macros[id].y = outline.1 - macros[id].height;
+            let y = outline.1 - macros[id].height;
+            macros[id].set_y(y);
         }
     }
 }
