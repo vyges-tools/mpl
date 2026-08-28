@@ -31,8 +31,13 @@ pub fn read_design(db: &Db) -> Result<Design, String> {
 
     let mut instances = Vec::new();
     let mut by_name: HashMap<String, usize> = HashMap::new();
+    // Interned so two instances of the same master compare equal — `placeMacros` counts DISTINCT
+    // masters to scale its exchange probability.
+    let mut master_ids: HashMap<String, usize> = HashMap::new();
     for name in db.block_get_insts() {
         let master = db.inst_get_master(&name);
+        let next_master_id = master_ids.len();
+        let master_id = *master_ids.entry(master.clone()).or_insert(next_master_id);
         let bbox = db.inst_bbox(&name).map_err(|e| format!("bbox of {name}: {e}"))?;
         // ⚠️ Four values, in order; a short vector means the instance has no bbox and would
         // otherwise silently read as a zero-area cell at the origin.
@@ -41,6 +46,7 @@ pub fn read_design(db: &Db) -> Result<Design, String> {
         }
         by_name.insert(name.clone(), instances.len());
         instances.push(Instance {
+            master_id,
             is_block: db.inst_is_block(&name),
             is_fixed: db.inst_is_fixed(&name),
             bbox: Rect {

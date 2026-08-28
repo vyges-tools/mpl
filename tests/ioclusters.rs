@@ -377,6 +377,7 @@ fn an_io_pin_cluster_takes_its_constraint_region_or_the_whole_die() {
 fn an_io_pad_cluster_takes_the_pads_own_bbox() {
     use vyges_mpl::design::{Design, Instance, MasterKind};
     let pad = Instance {
+        master_id: 0,
         name: "PAD_1".into(),
         is_block: false,
         is_fixed: true,

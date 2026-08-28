@@ -65,6 +65,14 @@ pub struct Instance {
     pub is_fixed: bool,
     pub bbox: Rect,
     pub master: MasterKind,
+    /// An interned id for the instance's MASTER, so two instances of the same master compare equal.
+    ///
+    /// 🔑 **`placeMacros` counts DISTINCT masters** to scale its exchange probability: exchanging
+    /// two macros only helps when they might be interchangeable, so the share is multiplied by
+    /// `5 * (1 - masters/macros)`. Every macro having its own master makes that exactly zero and
+    /// switches exchange off. The classification flags beside this cannot answer it — two
+    /// different masters can both be non-pad, non-cover, non-endcap.
+    pub master_id: usize,
     /// Set for a **fixed macro that does not overlap the placement area**, which is dropped from
     /// consideration entirely. Upstream's `ignorable_macros_`.
     pub is_ignorable_macro: bool,

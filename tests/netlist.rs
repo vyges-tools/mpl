@@ -8,6 +8,7 @@ use vyges_mpl::netlist::{
 
 fn inst(name: &str) -> Instance {
     Instance {
+        master_id: 0,
         name: name.into(),
         is_block: false,
         is_fixed: false,

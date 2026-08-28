@@ -11,6 +11,7 @@ fn r(x0: i64, y0: i64, x1: i64, y1: i64) -> Rect {
 
 fn inst(name: &str, is_block: bool, is_fixed: bool, bbox: Rect) -> Instance {
     Instance {
+        master_id: 0,
         name: name.into(),
         is_block,
         is_fixed,

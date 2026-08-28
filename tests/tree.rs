@@ -6,6 +6,7 @@ use vyges_mpl::tree::TreeBuilder;
 
 fn inst(name: &str, is_block: bool) -> Instance {
     Instance {
+        master_id: 0,
         name: name.into(),
         is_block,
         is_fixed: false,
