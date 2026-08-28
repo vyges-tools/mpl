@@ -288,3 +288,41 @@ fn blockages_are_clipped_to_the_outline_and_rebased() {
     // And one that misses entirely.
     assert!(find_offset_intersections(&[(5000, 5000, 6000, 6000)], outline).is_empty());
 }
+
+/// ⛔ **`findFixedMacros` walks the SEQUENCE PAIR and takes anything fixed** — not the children,
+/// and not only the fixed macros. A BLOCKAGE proxy is fixed and sits in the sequence pair ahead of
+/// every child, so it counts.
+///
+/// ⚠️ **The miss is invisible until something overlaps the blockage.** With the proxy absent the
+/// fixed-macro penalty stays zero, `isValid` then reads true, and the notch term takes its ordinary
+/// scan where upstream treats the whole floorplan as one huge notch — which changes which state
+/// wins as best, and with it the final geometry.
+///
+/// ℹ️ IO clusters are fixed too and are correctly excluded: they are appended AFTER the sequence
+/// pair ends.
+#[test]
+fn a_blockage_proxy_counts_as_a_fixed_macro() {
+    let mut parent = Cluster::new(1, "parent");
+    parent.cluster_type = ClusterType::Mixed;
+    let mut io = Cluster::new(7, "ios_1");
+    io.set_as_cluster_of_unplaced_io_pins((3000, 1010), 0, 20, true);
+    parent.children.push(io);
+    parent.children.push(macro_child(8, "MACRO_1", 200, 200));
+
+    let no_conn: &dyn Fn(i32) -> Vec<(i32, f32)> = &|_| Vec::new();
+    let mut c = ctx(no_conn, &[]);
+    // ℹ️ Already clipped and rebased — that is what `ParentContext::blockages` documents, and the
+    // harness applies `find_offset_intersections` before handing them over.
+    let one_blockage = [(100, 100, 500, 400)];
+    c.blockages = &one_blockage;
+    let problem = build_parent_problem(&parent, OUTLINE, &c);
+
+    assert_eq!(
+        problem.fixed_bboxes.len(),
+        1,
+        "the blockage proxy is fixed and in the sequence pair, so it is collected"
+    );
+    // ⚠️ The control: the IO cluster is fixed too but sits past the sequence pair, so exactly one
+    // entry is right — two would mean the bound was ignored.
+    assert_eq!(problem.fixed_bboxes[0], (100, 100, 500, 400), "the proxy's own box");
+}

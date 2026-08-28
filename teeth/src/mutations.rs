@@ -2440,6 +2440,31 @@ pub const MUTATIONS: &[Mutation] = &[
         want: r#"an_io_pin_cluster_takes_its_constraint_region_or_the_whole_die"#,
     },
     Mutation {
+        name: r#"fixed-macros-from-children-not-the-sequence"#,
+        file: r#"src/placement.rs"#,
+        find: r#"        fixed_bboxes: assembly
+            .macros
+            .iter()
+            .take(assembly.number_of_sequence_pair_macros)
+            .filter(|m| m.fixed)
+            .map(|m| m.bbox())
+            .collect(),"#,
+        replace: r#"        fixed_bboxes: children
+            .iter()
+            .filter(|c| c.kind == AreaKind::FixedMacro)
+            .map(|c| c.macro_.bbox())
+            .collect(),"#,
+        want: r#"a_blockage_proxy_counts_as_a_fixed_macro"#,
+    },
+    Mutation {
+        name: r#"fixed-macros-ignore-the-sequence-bound"#,
+        file: r#"src/placement.rs"#,
+        find: r#"            .take(assembly.number_of_sequence_pair_macros)
+            .filter(|m| m.fixed)"#,
+        replace: r#"            .filter(|m| m.fixed)"#,
+        want: r#"a_blockage_proxy_counts_as_a_fixed_macro"#,
+    },
+    Mutation {
         name: r#"blockages-not-clipped-to-the-outline"#,
         file: r#"src/placement.rs"#,
         find: r#"        if (x1 - x0) as i64 * (y1 - y0) as i64 == 0 {

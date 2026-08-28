@@ -4344,10 +4344,13 @@ pub fn anneal_one_run(
     };
 
     let mut rng = crate::rng::Mt19937::new(seed);
-    let fixed_present = !search.fixed_bboxes.is_empty();
 
     // ⛔ `initialize` leaves the state where its last perturbation put it; `fast_sa` starts there.
     let init_temperature = search.initialize(&mut rng, params);
+    // ⚠️ Read AFTER `initialize`, which re-runs `findFixedMacros` over the sequence pair. Upstream
+    // has no snapshot at all — `isValid()` consults `fixed_macros_` on every call — so taking it
+    // beforehand would freeze a list the sweep is about to rebuild.
+    let fixed_present = !search.fixed_bboxes.is_empty();
     search.fast_sa(&mut rng, params, init_temperature, fixed_present);
 
     // 🔑 Part of `run`, not a post-process.
@@ -4602,10 +4605,23 @@ pub fn build_parent_problem(
         },
         outline: size,
         dbu_per_micron: ctx.dbu_per_micron,
-        fixed_bboxes: children
+        // ⛔ **`findFixedMacros` walks the SEQUENCE PAIR and takes anything `isFixed()`** — not
+        // the children, and not only the fixed macros. A BLOCKAGE proxy is fixed and sits in the
+        // sequence pair ahead of every child, so it belongs here too.
+        //
+        // ⚠️ Filtering the children by `AreaKind::FixedMacro` missed it, and the miss is invisible
+        // until something overlaps the blockage: the fixed-macro penalty stays zero, `isValid`
+        // then reads true, and the notch term takes its ordinary scan where upstream treats the
+        // whole floorplan as one huge notch.
+        //
+        // ℹ️ IO clusters are fixed too, and are correctly absent — they are appended AFTER the
+        // sequence pair ends, so the bound below excludes them.
+        fixed_bboxes: assembly
+            .macros
             .iter()
-            .filter(|c| c.kind == AreaKind::FixedMacro)
-            .map(|c| c.macro_.bbox())
+            .take(assembly.number_of_sequence_pair_macros)
+            .filter(|m| m.fixed)
+            .map(|m| m.bbox())
             .collect(),
         tiny_threshold: ctx.tiny_threshold,
         min_ar: ctx.min_ar,
