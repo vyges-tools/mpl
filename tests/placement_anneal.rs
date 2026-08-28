@@ -338,6 +338,7 @@ fn cluster_placement_perturbs_on_the_full_configured_count() {
             SoftWeights::placement_defaults(),
             0,
             &mut |_| Some((problem_n(), 0)),
+            &mut |_, _| {},
             &mut |_| None,
             10,
         )
@@ -404,6 +405,7 @@ fn the_driver_fills_dead_space_before_returning_the_placement() {
         SoftWeights::placement_defaults(),
         0,
         &mut |_| Some((problem(), 0)),
+        &mut |_, _| {},
         &mut |_| None,
         10,
     );

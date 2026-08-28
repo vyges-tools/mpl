@@ -379,8 +379,9 @@ fn report_placement(
             };
             Some((p::build_parent_problem(parent, outline, &ctx), parent.id))
         },
-        // ℹ️ The `--place` smoke path does not assemble macro-cluster inputs; `--placement-trace`
-        // is the mode the macro summaries are read from.
+        // ℹ️ The `--place` smoke path neither writes back nor assembles macro-cluster inputs;
+        // `--placement-trace` is the mode the macro summaries are read from.
+        &mut |_, _| {},
         &mut |_| None,
         10,
     );

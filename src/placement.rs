@@ -3979,9 +3979,18 @@ pub fn place_children(
     root: i32,
     place_one: &mut dyn FnMut(i32, usize, f32) -> Option<Vec<crate::anneal::SoftMacro>>,
     place_macros_one: &mut dyn FnMut(i32) -> Option<Vec<crate::anneal::SoftMacro>>,
+    on_parent_placed: &mut dyn FnMut(i32, &[crate::anneal::SoftMacro]),
 ) -> Vec<PlacementVisit> {
     let mut visits = Vec::new();
-    place_one_parent(tree, root, root, place_one, place_macros_one, &mut visits);
+    place_one_parent(
+        tree,
+        root,
+        root,
+        place_one,
+        place_macros_one,
+        on_parent_placed,
+        &mut visits,
+    );
     visits
 }
 
@@ -3991,6 +4000,7 @@ fn place_one_parent(
     root: i32,
     place_one: &mut dyn FnMut(i32, usize, f32) -> Option<Vec<crate::anneal::SoftMacro>>,
     place_macros_one: &mut dyn FnMut(i32) -> Option<Vec<crate::anneal::SoftMacro>>,
+    on_parent_placed: &mut dyn FnMut(i32, &[crate::anneal::SoftMacro]),
     visits: &mut Vec<PlacementVisit>,
 ) -> bool {
     let action = placement_action((tree.kind)(cluster), (tree.is_fixed_macro)(cluster), (tree.is_leaf)(cluster));
@@ -4038,12 +4048,16 @@ fn place_one_parent(
 
     match selected {
         Ok(run) => {
+            let macros = winning_macros.unwrap_or_default();
+            // ⛔ **BEFORE the recursion, exactly as upstream orders it.** `placeChildren` calls
+            // `updateChildrenShapesAndLocations` and `updateChildrenRealLocation` and only THEN
+            // loops into the children — so a macro-cluster child reads the outline this parent
+            // just gave it. Deferring the write-back until the walk finishes would hand every
+            // macro run a stale outline and look like a search bug.
+            on_parent_placed(cluster, &macros);
             visits.push(PlacementVisit {
                 cluster,
-                outcome: ParentOutcome::Placed {
-                    run,
-                    macros: winning_macros.unwrap_or_default(),
-                },
+                outcome: ParentOutcome::Placed { run, macros },
             });
         }
         Err(NoValidSolution) => {
@@ -4062,7 +4076,15 @@ fn place_one_parent(
 
     // 🔑 Only now — a child's outline is the shape this parent just chose for it.
     for child in (tree.children)(cluster) {
-        if !place_one_parent(tree, child, root, place_one, place_macros_one, visits) {
+        if !place_one_parent(
+            tree,
+            child,
+            root,
+            place_one,
+            place_macros_one,
+            on_parent_placed,
+            visits,
+        ) {
             return false;
         }
     }
@@ -4817,6 +4839,11 @@ pub fn run_hierarchical_macro_placement(
     weights: crate::anneal::SoftWeights,
     random_seed: u32,
     context_for: &mut dyn FnMut(&crate::cluster::Cluster) -> Option<(ParentProblem, i32)>,
+    // ⛔ Called with each parent's winning macros BEFORE the walk descends into its children —
+    // upstream writes the shapes onto the tree at exactly this point, so a macro-cluster child
+    // reads the outline its parent just gave it. The caller owns the write-back because it owns
+    // the outlines and the name map; the driver only guarantees the ORDER.
+    on_parent_placed: &mut dyn FnMut(i32, &[crate::anneal::SoftMacro]),
     // The per-macro-cluster inputs `placeMacros` assembles. `None` refuses the cluster.
     macro_context_for: &mut dyn FnMut(&crate::cluster::Cluster) -> Option<MacroProblem>,
     num_runs: i32,
@@ -4884,7 +4911,7 @@ pub fn run_hierarchical_macro_placement(
             );
             search.macros
         })
-    }, &mut place_macros_one)
+    }, &mut place_macros_one, on_parent_placed)
 }
 
 /// Depth-first lookup by id. ⚠️ Ids are unique across the tree, so the first match is the only one.

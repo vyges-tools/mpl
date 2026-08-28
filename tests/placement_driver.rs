@@ -46,6 +46,7 @@ fn a_parent_is_placed_before_its_children() {
             Some(macros(1))
         },
         &mut |_| Some(macros(1)),
+        &mut |_, _| {},
     );
 
     // ⚠️ Ten calls per parent, not one: with ten threads the WHOLE batch anneals before any of it
@@ -80,7 +81,7 @@ fn clusters_that_do_nothing_are_still_visited() {
         num_threads: 10,
     };
 
-    let visits = place_children(&tree, 0, &mut |_, _, _| Some(macros(1)), &mut |_| Some(macros(1)));
+    let visits = place_children(&tree, 0, &mut |_, _, _| Some(macros(1)), &mut |_| Some(macros(1)), &mut |_, _| {});
     assert_eq!(visits.len(), 5);
     assert!(matches!(visits[1].outcome, ParentOutcome::Leaf), "the IO cluster");
     assert!(matches!(visits[2].outcome, ParentOutcome::Leaf), "the leaf cell cluster");
@@ -109,7 +110,7 @@ fn a_parent_that_cannot_be_placed_stops_the_walk() {
     };
 
     // The root places; its child never finds a valid solution.
-    let visits = place_children(&tree, 0, &mut |c, _, _| (c == 0).then(|| macros(1)), &mut |_| Some(macros(1)));
+    let visits = place_children(&tree, 0, &mut |c, _, _| (c == 0).then(|| macros(1)), &mut |_| Some(macros(1)), &mut |_, _| {});
 
     assert_eq!(visits.len(), 2, "cluster 2 was never reached");
     match &visits[1].outcome {
@@ -136,7 +137,7 @@ fn the_root_failing_is_a_different_code() {
         utilizations: &utils,
         num_threads: 10,
     };
-    let visits = place_children(&tree, 0, &mut |_, _, _| None, &mut |_| Some(macros(1)));
+    let visits = place_children(&tree, 0, &mut |_, _, _| None, &mut |_| Some(macros(1)), &mut |_, _| {});
     match &visits[0].outcome {
         ParentOutcome::NoValidSolution(e) => assert_eq!(e.code, 40),
         other => panic!("expected a refusal, got {other:?}"),
@@ -158,7 +159,7 @@ fn the_winning_run_is_recorded() {
         num_threads: 10,
     };
     // Only the third utilization works.
-    let visits = place_children(&tree, 0, &mut |_, i, _| (i == 2).then(|| macros(3)), &mut |_| Some(macros(1)));
+    let visits = place_children(&tree, 0, &mut |_, i, _| (i == 2).then(|| macros(3)), &mut |_| Some(macros(1)), &mut |_, _| {});
     match &visits[0].outcome {
         ParentOutcome::Placed { run, macros } => {
             assert_eq!(run.index, 2);
