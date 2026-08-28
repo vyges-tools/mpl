@@ -24,6 +24,13 @@ fn main() {
     // ⛔ `set_macro_guidance_region` is ENGINE state, like the halo commands — a prepared `.odb`
     // cannot carry it, so the case's `.tcl` has to be translated onto this command line.
     let mut macro_guides: Vec<(String, [f64; 4])> = Vec::new();
+    // ⚠️ Zero means "not supplied" — the same sentinel `setBaseThresholds` reads.
+    let mut sup = vyges_mpl::thresholds::Thresholds {
+        max_macro: 0,
+        min_macro: 0,
+        max_std_cell: 0,
+        min_std_cell: 0,
+    };
     let mut it = args.iter();
     while let Some(a) = it.next() {
         match a.as_str() {
@@ -46,6 +53,13 @@ fn main() {
                 };
                 macro_halos.push((name.to_string(), four(vals)));
             }
+            // ⛔ `rtl_macro_placer`'s threshold options are ENGINE state like the halos: a
+            // prepared `.odb` cannot carry them, and supplying them keeps `max_level` at 2 where
+            // the derivation would otherwise drop it to 1 — which changes the soft-blockage weight.
+            "--max-num-inst" => sup.max_std_cell = next_i32(&mut it, "--max-num-inst"),
+            "--min-num-inst" => sup.min_std_cell = next_i32(&mut it, "--min-num-inst"),
+            "--max-num-macro" => sup.max_macro = next_i32(&mut it, "--max-num-macro"),
+            "--min-num-macro" => sup.min_macro = next_i32(&mut it, "--min-num-macro"),
             "--macro-guide" => {
                 let Some(spec) = it.next() else { usage("--macro-guide needs NAME=lx,ly,ux,uy") };
                 let Some((name, vals)) = spec.split_once('=') else {
@@ -94,6 +108,7 @@ fn main() {
     let dbu = db.dbu_per_micron();
     let mut opts = vyges_mpl::engine::ClusterOptions::default();
     opts.use_full_halo = use_full_halo;
+    opts.thresholds = sup;
     if let Some(h) = base_halo {
         opts.base_halo = to_dbu(h, dbu);
     }
@@ -277,8 +292,11 @@ fn report_placement(
 
     // ⚠️ `has_std_cells` decides whether the reset fires, so it is not a detail the harness may
     // default — it changes four weights and every action share.
+    // ⛔ The tree's own level cap, not a hardcoded 1. `adjustSoftBlockageWeight` fires only at
+    // level 1, so a design that keeps `max_level = 2` — one supplying its own thresholds — must
+    // keep the command default of 10 rather than being raised to 50.
     let (weights, tiny, probabilities) = p::placement_setup(
-        1,
+        h.max_level,
         vyges_mpl::anneal::SoftWeights::placement_defaults(),
         0,
         h.has_std_cells,
@@ -423,8 +441,11 @@ fn print_placement_summaries(
     let margin = 2 * ((die.x_max - die.x_min) + (die.y_max - die.y_min));
     // ⚠️ `has_std_cells` decides whether the reset fires, so it is not a detail the harness may
     // default — it changes four weights and every action share.
+    // ⛔ The tree's own level cap, not a hardcoded 1. `adjustSoftBlockageWeight` fires only at
+    // level 1, so a design that keeps `max_level = 2` — one supplying its own thresholds — must
+    // keep the command default of 10 rather than being raised to 50.
     let (weights, tiny, probabilities) = p::placement_setup(
-        1,
+        h.max_level,
         vyges_mpl::anneal::SoftWeights::placement_defaults(),
         0,
         h.has_std_cells,
@@ -638,6 +659,13 @@ fn print_placement_summaries(
 fn region_to_dbu(r: [f64; 4], dbu: i32) -> (i32, i32, i32, i32) {
     let d = |v: f64| ((v as f32) as f64 * dbu as f64).round() as i32;
     (d(r[0]), d(r[1]), d(r[2]), d(r[3]))
+}
+
+fn next_i32(it: &mut std::slice::Iter<'_, String>, flag: &str) -> i32 {
+    match it.next().and_then(|v| v.parse().ok()) {
+        Some(v) => v,
+        None => usage(&format!("{flag} needs an integer")),
+    }
 }
 
 fn to_dbu(h: [f64; 4], dbu: i32) -> vyges_mpl::options::Halo {

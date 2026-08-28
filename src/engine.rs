@@ -89,6 +89,13 @@ pub struct ShapingHandoff {
     /// ⚠️ Whether the design has any standard cells at all — it selects the search's action
     /// probabilities, because the reference zeroes the resize share when it does not.
     pub has_std_cells: bool,
+    /// `tree_->max_level` — the level cap `setBaseThresholds` derived, NOT the depth reached.
+    ///
+    /// 🔑 **`adjustSoftBlockageWeight` fires only when this is 1**, raising the soft-blockage
+    /// weight to half the outline weight. A design that keeps `max_level = 2` — one that supplies
+    /// its own thresholds — leaves the weight at its command default of `10`, and hardcoding `1`
+    /// gives every such design a weight of `50` instead.
+    pub max_level: i32,
     /// Summed over the UNFIXED macros, as `init` computed it for the MPL-16 test.
     pub macro_with_halo_area: i64,
     pub io_bundles: Vec<crate::regions::IoRegion>,
@@ -362,6 +369,7 @@ pub fn run_clustering(input: &DesignInputs, opts: &ClusterOptions) -> Clustering
                 &io,
                 !pads.is_empty(),
                 design_metrics.num_std_cell,
+                base.max_level,
             )),
         };
     }
@@ -424,6 +432,7 @@ pub fn run_clustering(input: &DesignInputs, opts: &ClusterOptions) -> Clustering
             &io,
             !pads.is_empty(),
             design_metrics.num_std_cell,
+            base.max_level,
         )),
     }
 }
@@ -499,6 +508,7 @@ fn shaping_handoff(
     io: &IoClusters,
     has_io_pads: bool,
     num_std_cell: i32,
+    max_level: i32,
 ) -> ShapingHandoff {
     let die = design.die_area;
     // ⚠️ Upstream measures an IO cluster by its BBOX, which for every kind that reaches here is a
@@ -522,6 +532,7 @@ fn shaping_handoff(
         macro_dims,
         macro_bboxes,
         has_std_cells: num_std_cell > 0,
+        max_level,
         macro_with_halo_area,
         io_bundles: io.bundles.iter().filter_map(as_region).collect(),
         // ⚠️ The CONSTRAINED ones only. An unconstrained cluster is served by the available-region

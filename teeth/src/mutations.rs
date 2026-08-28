@@ -38,6 +38,13 @@
 //!   was worth writing anyway: it proved the partial update was drawing a distinction that does
 //!   not exist, and the source now assigns the whole struct.
 //!
+//! ⚠️ **`engine::run_clustering` has NO unit coverage at all** — nothing in `tests/` drives it, so
+//! a mutation to the handoff it builds (e.g. hardcoding `max_level: 1`) leaves `cargo test` green
+//! and cannot be scored here. It IS caught, by `compare-placement.py` on the box, which this
+//! harness does not run. A mutation whose only witness is an integration gate is not a hole in the
+//! unit suite so much as a statement about where the coverage lives — recorded rather than added,
+//! because adding it would report a permanent false hole.
+//!
 //! Do not re-add them: an equivalent mutant reported as a hole trains people to ignore holes.
 
 use crate::Mutation;

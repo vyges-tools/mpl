@@ -232,3 +232,22 @@ fn a_design_with_no_standard_cells_is_reset_before_the_soft_blockage_adjustment(
     let (deep, _, _) = placement_setup(2, base, 0, false);
     assert_eq!(deep.soft_blockage, 0.0, "nothing raises it here");
 }
+
+/// ⛔ **The soft-blockage weight is raised ONLY on a one-level tree.** `adjustSoftBlockageWeight`
+/// tests `tree_->max_level == 1`; a design that keeps `max_level = 2` — one supplying its own
+/// clustering thresholds — stays at the command default of `10`.
+///
+/// ⚠️ The reference says so in its own log: *"Tree max level is 1, Changing soft blockage weight
+/// from 10 to 50"*. `keep_clustering_data2` has no such line, and hardcoding level 1 gave it `50`.
+#[test]
+fn the_soft_blockage_weight_is_raised_only_at_one_level() {
+    use vyges_mpl::anneal::SoftWeights;
+    let base = SoftWeights::placement_defaults();
+    assert_eq!(base.soft_blockage, 10.0, "the command default this replaces");
+
+    let (one, _, _) = placement_setup(1, base, 0, true);
+    assert_eq!(one.soft_blockage, base.outline / 2.0, "half the outline weight");
+
+    let (two, _, _) = placement_setup(2, base, 0, true);
+    assert_eq!(two.soft_blockage, 10.0, "deeper than one level: left alone");
+}

@@ -27,6 +27,15 @@ tcl_dir = sys.argv[3] if len(sys.argv) > 3 else odb_dir
 MACRO_HALO = re.compile(r"set_macro_halo\s+-macro_name\s+(\S+)\s+-halo\s*\{([^}]*)\}")
 BASE_HALO = re.compile(r"set_macro_base_halo\s+([0-9.\s]+)")
 GUIDE = re.compile(r"set_macro_guidance_region\s+-macro_name\s+(\S+)\s+-region\s*\{([^}]*)\}")
+# ⛔ `rtl_macro_placer`'s own threshold options are engine state too. Supplying them keeps the
+# tree's `max_level` at 2, and `adjustSoftBlockageWeight` fires only at 1 -- so an untranslated
+# threshold silently changes the soft-blockage WEIGHT, not just the clustering.
+THRESH = {
+    "-max_num_inst": "--max-num-inst",
+    "-min_num_inst": "--min-num-inst",
+    "-max_num_macro": "--max-num-macro",
+    "-min_num_macro": "--min-num-macro",
+}
 
 
 def flags(case):
@@ -43,6 +52,10 @@ def flags(case):
         out += ["--use-full-halo"]
     for name, vals in GUIDE.findall(text):
         out += ["--macro-guide", f"{name}={','.join(vals.split())}"]
+    for tcl_opt, flag in THRESH.items():
+        m = re.search(re.escape(tcl_opt) + r"\s+(\d+)", text)
+        if m:
+            out += [flag, m.group(1)]
     return out
 
 
