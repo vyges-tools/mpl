@@ -553,7 +553,10 @@ fn print_placement_summaries(
     let floorplan_mode = std::env::args().any(|a| a == "--floorplan");
     let nets_mode = std::env::args().any(|a| a == "--nets");
     let cost_mode = std::env::args().any(|a| a == "--cost");
-    let mut emit = |parent: &vyges_mpl::cluster::Cluster| {
+    // Returns the winning run's macros and their names, so the caller can do the write-back that
+    // `updateChildrenShapesAndLocations` does on the tree.
+    let mut emit = |parent: &vyges_mpl::cluster::Cluster|
+     -> Option<(Vec<String>, Vec<vyges_mpl::anneal::SoftMacro>)> {
         let ctx = p::ParentContext {
             connections_of: &|id| connections.of(id),
             virtual_connections: &parent.virtual_connections,
@@ -595,7 +598,7 @@ fn print_placement_summaries(
             for n in &problem.inputs.nets {
                 println!("{}   {}   {}", name(n.source), name(n.target), n.weight);
             }
-            return;
+            return None;
         }
 
         // ⚠️ The same two steps `run_hierarchical_macro_placement` applies around its own call:
@@ -624,7 +627,7 @@ fn print_placement_summaries(
                 for (t, c) in &search.cost_history {
                     println!("{t}  {c}");
                 }
-                return;
+                return None;
             }
             let valid = search.is_valid(!search.fixed_bboxes.is_empty());
             let kinds: Vec<Option<p::AreaKind>> =
@@ -647,37 +650,165 @@ fn print_placement_summaries(
                         m.height
                     );
                 }
-                return;
             }
-            println!("Cluster Placement Summary");
-            print!(
-                "{}",
-                p::cluster_placement_summary(
-                    parent.id,
-                    outline,
-                    &search.penalties,
-                    &search.weights,
-                    &search.normalization,
-                    search.area_penalty(),
-                    search.norm_cost(),
-                    dbu,
-                )
-            );
-            return;
+            if !floorplan_mode {
+                println!("Cluster Placement Summary");
+                print!(
+                    "{}",
+                    p::cluster_placement_summary(
+                        parent.id,
+                        outline,
+                        &search.penalties,
+                        &search.weights,
+                        &search.normalization,
+                        search.area_penalty(),
+                        search.norm_cost(),
+                        dbu,
+                    )
+                );
+            }
+            return Some((problem.names.clone(), search.macros.clone()));
         }
+        None
     };
+
+    // ⛔ **A macro cluster's outline is the box CLUSTER placement just gave it**, so the walk has
+    // to write back before it descends — the order `placeChildren` uses. Keyed by cluster id and
+    // held beside the tree rather than on it; the values and the order are upstream's.
+    let mut placed: std::collections::HashMap<i32, (i32, i32, i32, i32)> =
+        std::collections::HashMap::new();
 
     // ⚠️ Only clusters the driver would have PLACED — the same guards, so the set matches.
     let mut stack = vec![root];
     while let Some(c) = stack.pop() {
         let action = p::placement_action(p::area_kind_of(c), c.is_fixed_macro, c.children.is_empty());
-        if action == p::PlacementAction::PlaceChildren {
-            emit(c);
-            for child in c.children.iter().rev() {
-                stack.push(child);
+        match action {
+            p::PlacementAction::PlaceChildren => {
+                if let Some((names, macros)) = emit(c) {
+                    // `updateChildrenShapesAndLocations`, then `updateChildrenRealLocation`.
+                    let children: Vec<(String, p::AreaKind)> = c
+                        .children
+                        .iter()
+                        .map(|k| (k.name.clone(), p::area_kind_of(k)))
+                        .collect();
+                    let assembly = p::Assembly {
+                        id_of: names.iter().cloned().enumerate().map(|(i, n)| (n, i)).collect(),
+                        ..Default::default()
+                    };
+                    if let Ok(shaped) =
+                        p::update_children_shapes_and_locations(&children, &macros, &assembly)
+                    {
+                        // The parent's own corner: the floorplan for the root, its placed box below.
+                        let (ox, oy) = placed
+                            .get(&c.id)
+                            .map(|b| (b.0, b.1))
+                            .unwrap_or((outline.0, outline.1));
+                        let mut points: Vec<(i32, i32)> =
+                            shaped.iter().map(|(_, m)| (m.x, m.y)).collect();
+                        p::to_real_locations(&mut points, (ox, oy));
+                        for ((name, m), (x, y)) in shaped.iter().zip(points) {
+                            if let Some(child) = c.children.iter().find(|k| &k.name == name) {
+                                placed.insert(
+                                    child.id,
+                                    (x, y, x + m.width, y + m.height),
+                                );
+                            }
+                        }
+                    }
+                }
+                for child in c.children.iter().rev() {
+                    stack.push(child);
+                }
             }
+            p::PlacementAction::PlaceMacros => {
+                emit_macro_summary(c, &placed, design, h, dbu, weights, probabilities);
+            }
+            _ => {}
         }
     }
+}
+
+/// Upstream `placeMacros` for ONE hard-macro cluster, and its five-row summary.
+///
+/// ⛔ **The outline is the box CLUSTER placement gave this cluster**, not its shaping box — which
+/// is why the caller must have written back before descending.
+#[allow(clippy::too_many_arguments)]
+fn emit_macro_summary(
+    cluster: &vyges_mpl::cluster::Cluster,
+    placed: &std::collections::HashMap<i32, (i32, i32, i32, i32)>,
+    design: &vyges_mpl::design::Design,
+    h: &vyges_mpl::engine::ShapingHandoff,
+    dbu: i32,
+    weights: vyges_mpl::anneal::SoftWeights,
+    probabilities: vyges_mpl::anneal::ActionProbabilities,
+) {
+    use vyges_mpl::placement as p;
+    let Some(&(x0, y0, x1, y1)) = placed.get(&cluster.id) else { return };
+    let outline = (x1 - x0, y1 - y0);
+    if outline.0 <= 0 || outline.1 <= 0 {
+        return;
+    }
+
+    // The cluster's hard macros, in its OWN coordinates — `createTempMacroClusters`' view.
+    let mut macros = Vec::new();
+    let mut masters: Vec<usize> = Vec::new();
+    for &inst in &cluster.leaf_macros {
+        let b = h.macro_bboxes[inst];
+        macros.push(vyges_mpl::anneal::SoftMacro {
+            x: b.x_min as i32 - x0,
+            y: b.y_min as i32 - y0,
+            width: (b.x_max - b.x_min) as i32,
+            height: (b.y_max - b.y_min) as i32,
+            fixed: design.instances[inst].is_fixed,
+            area: (b.x_max - b.x_min) * (b.y_max - b.y_min),
+            is_macro_cluster: true,
+        });
+        masters.push(design.instances[inst].master_id);
+    }
+    if macros.is_empty() {
+        return;
+    }
+    masters.sort_unstable();
+    masters.dedup();
+
+    let n = macros.len();
+    let problem = p::MacroProblem {
+        macros,
+        number_of_sequence_pair_macros: n,
+        inputs: p::PlacementInputs {
+            attributes: vec![Default::default(); n],
+            root: p::Root { x: x0, y: y0, width: outline.0, height: outline.1 },
+            weights,
+            ..Default::default()
+        },
+        outline,
+        dbu_per_micron: dbu,
+        is_macro_array: false,
+        array_has_empty_space: false,
+        initial_sequence_pair: None,
+        master_count: masters.len(),
+    };
+
+    // ℹ️ `placeMacros` derives its own perturbation count inside `place_macros`; the other SA
+    // hyperparameters are the command defaults.
+    let params = vyges_mpl::anneal::SaParameters::default();
+    let Some(search) = p::place_macros(&problem, weights, probabilities, &params, 10, 0) else {
+        return;
+    };
+    println!("Macro Placement Summary");
+    print!(
+        "{}",
+        p::macro_placement_summary(
+            cluster.id,
+            (x0, y0, x1, y1),
+            &search.penalties,
+            &search.weights,
+            &search.normalization,
+            search.area_penalty(),
+            search.norm_cost(),
+            dbu,
+        )
+    );
 }
 
 /// `micronsToDbu`: multiply by the tech's units per micron and **round**, not truncate.

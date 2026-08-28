@@ -78,11 +78,11 @@ def flags(case):
     return out
 
 
-def tables(text):
-    """Every Cluster Placement Summary in a log, as {id: {term: (w, v, n, c)}, 'total': x}."""
+def tables(text, marker="Cluster Placement Summary"):
+    """Every summary of one kind in a log, as [{rows: {term: (w, v, n, c)}, total: x}]."""
     out, cur = [], None
     for line in text.splitlines():
-        if line.strip() == "Cluster Placement Summary":
+        if line.strip() == marker:
             cur = {"rows": {}, "total": None}
             out.append(cur)
             continue
@@ -100,10 +100,15 @@ def tables(text):
 
 
 cases = sorted(f[:-4] for f in os.listdir(log_dir) if f.endswith(".log"))
+# [differ, match] for the macro summaries.
+macro_counts = [0, 0]
 ok = differ = macro_path = refused = 0
 bad_terms = {}
 for case in cases:
-    ref = tables(io.open(os.path.join(log_dir, case + ".log"), encoding="utf-8", errors="replace").read())
+    ref_text = io.open(
+        os.path.join(log_dir, case + ".log"), encoding="utf-8", errors="replace"
+    ).read()
+    ref = tables(ref_text)
     if not ref:
         print(f"  {case:32} macro-path (no cluster summary)"); macro_path += 1; continue
     path = os.path.join(odb_dir, case + ".odb")
@@ -112,6 +117,29 @@ for case in cases:
     r = subprocess.run(["./target/debug/cluster-dump", "--shaping", "--placement-trace"]
                        + flags(case) + [path], capture_output=True, text=True)
     got = tables(r.stdout)
+    # 🔑 The MACRO summaries are scored too — `placeMacros` runs on nearly every design, several
+    # times on some, and its table is the five-term one the hard core prints.
+    want_macro = tables(ref_text, "Macro Placement Summary")
+    got_macro = tables(r.stdout, "Macro Placement Summary")
+    if want_macro:
+        if len(got_macro) != len(want_macro):
+            macro_counts[0] += 1
+            print(f"  {case:32} MACRO {len(got_macro)} tables, upstream has {len(want_macro)}")
+        elif got_macro == want_macro:
+            macro_counts[1] += 1
+        else:
+            macro_counts[0] += 1
+            for g, e in zip(got_macro, want_macro):
+                for term, w in e["rows"].items():
+                    if g["rows"].get(term) != w:
+                        print(f"  {case:32} MACRO {term}: {g['rows'].get(term)} != {w}")
+                        break
+                else:
+                    if g["total"] != e["total"]:
+                        print(f"  {case:32} MACRO TOTAL: {g['total']} != {e['total']}")
+                        break
+                    continue
+                break
     if len(got) != len(ref):
         print(f"  {case:32} {len(got)} tables, upstream has {len(ref)}"); differ += 1; continue
     diffs = []
@@ -131,7 +159,8 @@ for case in cases:
         print(f"  {case:32} match ({len(got)} table(s))")
         ok += 1
 
-print(f"\n{ok} match, {differ} differ, {macro_path} macro-path, {refused} refused, of {len(cases)}")
+print(f"\ncluster: {ok} match, {differ} differ, {macro_path} macro-path, {refused} refused, of {len(cases)}")
+print(f"macro:   {macro_counts[1]} match, {macro_counts[0]} differ")
 if bad_terms:
     print("terms differing, by count: " + ", ".join(
         f"{t}={n}" for t, n in sorted(bad_terms.items(), key=lambda kv: -kv[1])))
