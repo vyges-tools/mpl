@@ -721,11 +721,26 @@ fn print_placement_summaries(
                 }
             }
             p::PlacementAction::PlaceMacros => {
-                emit_macro_summary(c, &placed, design, h, dbu, weights, probabilities);
+                emit_macro_summary(
+                    c, &placed, design, h, dbu, weights, probabilities, root, &available, nets,
+                    &assoc,
+                    pin_cluster_of, has_io_pads,
+                );
             }
             _ => {}
         }
     }
+}
+
+/// Depth-first lookup of any cluster by id.
+fn sibling_of(
+    root: &vyges_mpl::cluster::Cluster,
+    id: i32,
+) -> Option<&vyges_mpl::cluster::Cluster> {
+    if root.id == id {
+        return Some(root);
+    }
+    root.children.iter().find_map(|c| sibling_of(c, id))
 }
 
 /// Upstream `placeMacros` for ONE hard-macro cluster, and its five-row summary.
@@ -741,6 +756,12 @@ fn emit_macro_summary(
     dbu: i32,
     weights: vyges_mpl::anneal::SoftWeights,
     probabilities: vyges_mpl::anneal::ActionProbabilities,
+    root: &vyges_mpl::cluster::Cluster,
+    available: &[vyges_mpl::placement::Region],
+    nets_in: &[vyges_mpl::netlist::DbNet],
+    assoc: &[Option<i32>],
+    pin_cluster_of: &dyn Fn(usize) -> Option<i32>,
+    has_io_pads: bool,
 ) {
     use vyges_mpl::placement as p;
     let Some(&(x0, y0, x1, y1)) = placed.get(&cluster.id) else { return };
@@ -772,11 +793,119 @@ fn emit_macro_summary(
     masters.dedup();
 
     let n = macros.len();
+
+    // ⛔ **`rebuildConnections` runs with the TEMP clusters in the association** — one per hard
+    // macro — so a net between two macros of the same cluster becomes a net between two temp
+    // clusters. Reusing the parent-level connections would collapse them all onto one id and
+    // score no wirelength at all, which is what an unassembled problem looks like.
+    let first_temp_id = 1_000_000;
+    let mut temp_assoc: Vec<Option<i32>> = assoc.to_vec();
+    for (k, &inst) in cluster.leaf_macros.iter().enumerate() {
+        temp_assoc[inst] = Some(first_temp_id + k as i32);
+    }
+    let connections = vyges_mpl::netlist::build_connections(
+        nets_in,
+        design,
+        &|i| temp_assoc.get(i).copied().flatten(),
+        pin_cluster_of,
+        has_io_pads,
+        50,
+    );
+
+    // `createFixedTerminals`: every connected cluster that is not one of these macros becomes a
+    // fixed terminal, appended AFTER the sequence pair.
+    let mut connected: Vec<i32> = Vec::new();
+    for k in 0..n {
+        for (id, _) in connections.of(first_temp_id + k as i32) {
+            connected.push(id);
+        }
+    }
+    let terminal_ids = p::hard_terminal_cluster_ids(&connected, &|id| {
+        (first_temp_id..first_temp_id + n as i32).contains(&id)
+    });
+    let mut macro_of: std::collections::HashMap<i32, usize> = std::collections::HashMap::new();
+    for k in 0..n {
+        macro_of.insert(first_temp_id + k as i32, k);
+    }
+    let mut macros = macros;
+    for id in &terminal_ids {
+        // ⛔ **An IO cluster is NOT in the placed map** — `updateChildrenShapesAndLocations` skips
+        // it on purpose, because its position is already absolute and must not be overwritten. So
+        // a terminal's geometry comes from the cluster's OWN soft macro when it has one, and from
+        // the placed box otherwise. Reading only the map drops every net to an IO cluster, which
+        // scores wirelength zero on any design whose macros talk to the outside world.
+        let sibling = sibling_of(root, *id);
+        let (tx0, ty0, tx1, ty1, is_unplaced_ios) = match sibling.and_then(|c| {
+            c.soft_macro.map(|m| {
+                (m.x, m.y, m.x + m.width, m.y + m.height, c.is_cluster_of_unplaced_io_pins)
+            })
+        }) {
+            Some(v) => v,
+            None => match placed.get(id) {
+                Some(&(a, b, c2, d)) => (a, b, c2, d, false),
+                None => continue,
+            },
+        };
+        macro_of.insert(*id, macros.len());
+        macros.push(p::fixed_terminal(
+            &p::TerminalCluster {
+                center: ((tx0 + tx1) / 2, (ty0 + ty1) / 2),
+                origin: (tx0, ty0),
+                width: tx1 - tx0,
+                height: ty1 - ty0,
+                is_cluster_of_unplaced_io_pins: is_unplaced_ios,
+            },
+            (x0, y0),
+        ));
+    }
+
+    let per_cluster: Vec<(i32, Vec<(i32, f32)>)> = (0..n)
+        .map(|k| {
+            let id = first_temp_id + k as i32;
+            (id, connections.of(id))
+        })
+        .collect();
+    let nets = p::build_bundled_nets_for_macros(&per_cluster, &|id| macro_of.get(&id).copied())
+        .unwrap_or_default();
+
+    let total = macros.len();
+
+    // ⛔ **The terminals' IO flags and constraint regions are what the wirelength model branches
+    // on.** A net whose TARGET is a cluster of unplaced IO pins takes the region path, not the
+    // half-perimeter one, so a terminal left with default attributes scores zero however correct
+    // the net is.
+    let mut attributes = vec![p::MacroAttributes::default(); total];
+    let mut constraint_regions: Vec<(usize, p::Region)> = Vec::new();
+    for id in &terminal_ids {
+        let Some(&index) = macro_of.get(id) else { continue };
+        let Some(sib) = sibling_of(root, *id) else { continue };
+        attributes[index].is_cluster_of_unplaced_io_pins = sib.is_cluster_of_unplaced_io_pins;
+        attributes[index].is_unconstrained_io_cluster = sib.is_cluster_of_unconstrained_io_pins;
+        if let Some(r) = sib.constraint_region {
+            // ⚠️ ABSOLUTE, like the cluster path — the asymmetry with the available regions is
+            // upstream's and is documented on `ParentContext::constraint_region_of`.
+            constraint_regions.push((
+                index,
+                p::Region {
+                    x0: r.x_min as i32,
+                    y0: r.y_min as i32,
+                    x1: r.x_max as i32,
+                    y1: r.y_max as i32,
+                    boundary: vyges_mpl::regions::boundary_of(&design.die_area, &r),
+                },
+            ));
+        }
+    }
     let problem = p::MacroProblem {
         macros,
         number_of_sequence_pair_macros: n,
         inputs: p::PlacementInputs {
-            attributes: vec![Default::default(); n],
+            attributes,
+            nets,
+            constraint_regions,
+            available_regions: available.to_vec(),
+            die_margin: 2 * ((design.die_area.x_max - design.die_area.x_min)
+                + (design.die_area.y_max - design.die_area.y_min)),
             root: p::Root { x: x0, y: y0, width: outline.0, height: outline.1 },
             weights,
             ..Default::default()
