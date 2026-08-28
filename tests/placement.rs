@@ -338,50 +338,68 @@ fn an_unshaped_macro_cluster_gets_no_curve_at_placement() {
 
 // ---------------------------------------------------------------- fine shaping
 
+use vyges_mpl::cluster::ClusterType;
 use vyges_mpl::placement::{
     mixed_cluster_shape, single_array_single_std_cell_cluster, std_cell_cluster_shape,
 };
 
+/// ⛔ **These entries are in the REFERENCE's vocabulary, not ours.**
+/// `singleArraySingleStdCellCluster` asks `SoftMacro::isMixedCluster()` /`isMacroCluster()` /
+/// `isStdCellCluster()`, and each is a test on `Cluster::getClusterType()` — so an IO cluster
+/// answers MIXED (the `type_` member's default, which the `setAs*` IO methods never change) and a
+/// fixed macro cluster answers HARD MACRO. `None` is a null cluster: a blockage, or a conventional
+/// fixed terminal.
+const ARRAY: (Option<ClusterType>, bool) = (Some(ClusterType::HardMacro), true);
+const CELLS: (Option<ClusterType>, bool) = (Some(ClusterType::StdCell), false);
+
 /// 🔑 Exactly one macro array and exactly one cell cluster, and nothing else.
 #[test]
 fn the_single_array_case_needs_exactly_one_of_each() {
-    let one_each = [(AreaKind::HardMacroCluster, true), (AreaKind::StdCellCluster, false)];
-    assert!(single_array_single_std_cell_cluster(&one_each));
+    assert!(single_array_single_std_cell_cluster(&[ARRAY, CELLS]));
 
-    let two_arrays = [
-        (AreaKind::HardMacroCluster, true),
-        (AreaKind::HardMacroCluster, true),
-        (AreaKind::StdCellCluster, false),
-    ];
-    assert!(!single_array_single_std_cell_cluster(&two_arrays));
-    assert!(!single_array_single_std_cell_cluster(&[(AreaKind::HardMacroCluster, true)]), "no cells");
-    assert!(!single_array_single_std_cell_cluster(&[(AreaKind::StdCellCluster, false)]), "no array");
+    assert!(!single_array_single_std_cell_cluster(&[ARRAY, ARRAY, CELLS]));
+    assert!(!single_array_single_std_cell_cluster(&[ARRAY]), "no cells");
+    assert!(!single_array_single_std_cell_cluster(&[CELLS]), "no array");
 }
 
 /// ⛔ **Any mixed cluster fails it outright**, and a macro cluster that is not an ARRAY does too.
 #[test]
 fn a_mixed_cluster_or_a_non_array_disqualifies_it() {
-    let with_mixed = [
-        (AreaKind::HardMacroCluster, true),
-        (AreaKind::StdCellCluster, false),
-        (AreaKind::MixedCluster, false),
-    ];
+    let with_mixed = [ARRAY, CELLS, (Some(ClusterType::Mixed), false)];
     assert!(!single_array_single_std_cell_cluster(&with_mixed));
 
-    let not_an_array = [(AreaKind::HardMacroCluster, false), (AreaKind::StdCellCluster, false)];
+    let not_an_array = [(Some(ClusterType::HardMacro), false), CELLS];
     assert!(!single_array_single_std_cell_cluster(&not_an_array));
 }
 
-/// ℹ️ Blockages and IO clusters are skipped, so they cannot disqualify it.
+/// ℹ️ **A blockage is skipped** — its soft macro is built with a null cluster, which is the `!cluster`
+/// half of the reference's `continue`. A conventional fixed terminal is skipped for the same reason.
 #[test]
-fn blockages_and_io_clusters_do_not_disqualify_the_single_array_case() {
-    let with_extras = [
-        (AreaKind::Blockage, false),
-        (AreaKind::IoCluster, false),
-        (AreaKind::HardMacroCluster, true),
-        (AreaKind::StdCellCluster, false),
-    ];
-    assert!(single_array_single_std_cell_cluster(&with_extras));
+fn a_blockage_does_not_disqualify_the_single_array_case() {
+    assert!(single_array_single_std_cell_cluster(&[(None, false), ARRAY, CELLS]));
+}
+
+/// ⛔ **AN IO CLUSTER DISQUALIFIES IT.** Its `type_` is `MixedCluster`, so `isMixedCluster()` is
+/// true and the reference returns false at that line — ABOVE its own `isIOCluster()` skip, which
+/// is therefore dead for IO clusters and live only for the null-cluster case.
+///
+/// ⚠️ This was recorded the other way round in a comment and in this test, and the test kept the
+/// suite green: on all 34 reference designs the old reading reached `false` by another route, so
+/// nothing scored differently either way. ⛔ **An agreeing oracle is not proof of a correct rule
+/// when both readings happen to agree on every case it holds.**
+#[test]
+fn an_io_cluster_disqualifies_the_single_array_case() {
+    let with_io = [(Some(ClusterType::Mixed), false), ARRAY, CELLS];
+    assert!(!single_array_single_std_cell_cluster(&with_io), "an IO cluster is a Mixed cluster");
+}
+
+/// ⛔ **A FIXED macro cluster disqualifies it too.** Its type is `HardMacro`, so it takes the macro
+/// branch and is required to be an array of interconnected macros — which only a MOVABLE cluster is
+/// ever marked as. Treating it as a kind of its own skipped it.
+#[test]
+fn a_fixed_macro_cluster_disqualifies_the_single_array_case() {
+    let with_fixed = [ARRAY, CELLS, (Some(ClusterType::HardMacro), false)];
+    assert!(!single_array_single_std_cell_cluster(&with_fixed), "it is not an array");
 }
 
 /// 🔑 **A tiny cluster is collapsed to ONE unit square** — erased, not shrunk. It still exists for

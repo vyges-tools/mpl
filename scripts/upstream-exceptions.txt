@@ -1,0 +1,45 @@
+# Upstream cases in `src/mpl/test` that this engine does NOT score, and why.
+# SPDX-License-Identifier: Apache-2.0
+#
+# 🔑 **The denominator is upstream's test directory, not the set our harnesses enumerate.**
+# `check-case-coverage.py` asserts `scored + excepted == shipped`; a case in neither set is a
+# HARNESS FAILURE, not a skip. That identity is what stops this file rotting — a new case appearing
+# at a pin move fails the gate until someone classifies it.
+#
+# ⛔ Every line is `<case>  <reason-code>  <detail>`. The reason codes, and what each shrinks on:
+#   needs-feature       we have not built what it exercises — NAME the feature; goes when it lands
+#   refused-by-design   deliberately out of scope; goes only if the decision is revisited
+#   upstream-bug        the oracle cannot be captured — CITE the issue number
+#   oracle-unavailable  the behaviour emits nothing diffable
+#   architecture        the behaviour DOES NOT EXIST in our design — must cite a divergence-register
+#                       class; see the warning below, this is the code that needs the most evidence
+#   not-a-case          not a test case at all (a helper, a fixture) — never goes, but is listed
+#
+# ⚠️ `needs-feature` is the burn-down. Its count is the honest distance to a complete engine, and
+# it belongs beside any score this engine quotes.
+#
+# ⛔⛔ **`architecture` IS THE DANGEROUS CODE, because it is the only one we grant ourselves.**
+# Every other code points at something outside us — an unbuilt feature, an upstream bug, a decision
+# on the record. This one says "the reference tests something our design has no equivalent of", and
+# nothing but our own judgement checks it. The programme has been wrong this way before: `ppl`'s
+# annealing was written off as "cannot be reproduced, on principle", and the premise was never
+# checked — it was reproducible. ⚠️ **Overstating a limit is the same class of error as
+# understating a cost, and it is the more dangerous one: it retires scope permanently and nobody
+# re-examines a principle.**
+#
+# ⟹ Three rules, enforced or stated at the site:
+#   1. It MUST cite a class in `mpl-divergence-register.md` (`class A`…`class E`, `D2`, `D3`). If
+#      the architectural difference is not written down there, it is not established enough to
+#      except a test on.
+#   2. It MUST say what would FALSIFY it — the observation that would make the test applicable
+#      again. A claim with no falsifier is the `ppl` failure verbatim.
+#   3. ⛔ **A STRUCTURAL difference is NOT grounds for this code.** Register class E is "same
+#      behaviour, different shape" — a trait where upstream has members, a parallel vector where it
+#      has a field. Those tests are still applicable; they apply at a different SEAM. Only a
+#      behaviour that genuinely does not exist qualifies.
+#
+# ℹ️ There are currently NO `architecture` entries for this engine, and that is the honest state:
+# the default is that an upstream test is applicable until shown otherwise, not the reverse.
+
+helpers                             not-a-case       Not a test case. A shared Tcl library the other cases `source`; listed in BUILD as a data dependency, absent from the case list in both BUILD and CMakeLists.
+place_macro_right_angle_rotation    needs-feature    Exercises the `place_macro` command (manual placement at an explicit location and orientation), not `rtl_macro_placer`. The scoping row measured `place_macro` at exactly this one case, which is why splitting the deterministic commands off was rejected for mpl.

@@ -241,3 +241,36 @@ fn a_hard_macro_run_does_not_compute_the_soft_penalties() {
     s.cal_penalty();
     assert_ne!(s.penalties.fixed_macros, 0.0, "the soft core does compute it");
 }
+
+/// ⛔ **The HARD core restores the placement context too**, and it is a separate line from the soft
+/// core's — `calPenalty` has two branches and each takes the context out and puts it back.
+///
+/// ⚠️ **Both restores need their own witness.** The soft one is pinned by
+/// `the_placement_context_survives_being_scored`, which drives a soft run and therefore never
+/// enters this branch — so a mutation dropping the hard restore went NOT CAUGHT until this test
+/// existed. A dropped context here is silent and cumulative: the first hard evaluation scores
+/// correctly and every later one reads wirelength, guidance and fence as zero.
+#[test]
+fn the_placement_context_survives_a_hard_run_too() {
+    let macros = vec![macro_cluster(0, 0, 400, 400), macro_cluster(0, 450, 400, 400)];
+    let mut s = search(macros, (1000, 1000));
+    let w = SoftWeights::placement_defaults();
+    let mut ins = inputs(2, w);
+    ins.weights = w;
+    s.placement = Some(Box::new(ins));
+    s.weights = w;
+    s.hard_probabilities = Some(vyges_mpl::placement::HardActionProbabilities {
+        pos_swap: 0.25,
+        neg_swap: 0.25,
+        double_swap: 0.25,
+        exchange: 0.25,
+    });
+
+    s.cal_penalty();
+    let first = s.penalties.wirelength;
+    // 🔑 The SECOND call is the whole test — the first would pass even if the context were dropped.
+    s.cal_penalty();
+
+    assert!(s.placement.is_some(), "the hard branch put it back");
+    assert_eq!(s.penalties.wirelength, first, "and is still scoring from it");
+}

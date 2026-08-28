@@ -130,9 +130,16 @@ pub const MUTATIONS: &[Mutation] = &[
     Mutation {
         name: r#"notch-fixed-macro-obstructs"#,
         file: r#"src/placement.rs"#,
-        find: r#"        matches!(self.kind, AreaKind::HardMacroCluster | AreaKind::MixedCluster)"#,
-        replace: r#"        matches!(self.kind, AreaKind::HardMacroCluster | AreaKind::MixedCluster | AreaKind::FixedMacro)"#,
-        want: r#"a_fixed_macro_does_not_create_a_notch"#,
+        find: r#"            Some(AreaKind::HardMacroCluster)
+                | Some(AreaKind::MixedCluster)
+                | Some(AreaKind::FixedMacro)"#,
+        replace: r#"            Some(AreaKind::HardMacroCluster)
+                | Some(AreaKind::MixedCluster)"#,
+        // ⛔ The old `want` named `a_fixed_macro_does_not_create_a_notch`, a test DELETED when the
+        // "a fixed macro obstructs nothing" misreading was corrected. ⚠️ A STALE PATTERN HID THAT:
+        // the harness never reached the test name, so it reported 0 no-such-test while pointing at
+        // a test that had not existed for two days.
+        want: r#"a_fixed_macro_obstructs_the_notch_grid"#,
     },
     Mutation {
         name: r#"notch-invalid-floorplan-scanned"#,
@@ -244,10 +251,9 @@ pub const MUTATIONS: &[Mutation] = &[
     Mutation {
         name: r#"move-floorplan-skips-fixed"#,
         file: r#"src/placement.rs"#,
-        find: r#"    for &id in order {
-        macros[id].x += offset.0;
-        macros[id].y += offset.1;
-    }"#,
+        find: r#"        let (x, y) = (macros[id].x + offset.0, macros[id].y + offset.1);
+        macros[id].set_x(x);
+        macros[id].set_y(y);"#,
         replace: r#"    for &id in order {
         if macros[id].fixed {
             continue;
@@ -255,7 +261,9 @@ pub const MUTATIONS: &[Mutation] = &[
         macros[id].x += offset.0;
         macros[id].y += offset.1;
     }"#,
-        want: r#"a_fixed_macro_is_shifted_along_with_the_rest"#,
+        // ⛔ Same story: the old `want` named a test deleted with the same misreading. The rule
+        // INVERTED — a fixed macro is NOT shifted, because `set_x`/`set_y` refuse it.
+        want: r#"a_fixed_macro_is_not_shifted_with_the_rest"#,
     },
     Mutation {
         name: r#"locations-indexed-positionally"#,
@@ -291,7 +299,7 @@ pub const MUTATIONS: &[Mutation] = &[
         name: r#"alignment-right-edge-wins"#,
         file: r#"src/placement.rs"#,
         find: r#"        if lx < h_th {
-            macros[id].x = 0;
+            macros[id].set_x(0);
         } else if outline.0 - ux < h_th {"#,
         replace: r#"        if lx < h_th {
             macros[id].x = 0;
@@ -506,9 +514,12 @@ pub const MUTATIONS: &[Mutation] = &[
     Mutation {
         name: r#"every-child-reaches-the-fixed-penalty"#,
         file: r#"src/placement.rs"#,
-        find: r#"            .filter(|c| c.kind == AreaKind::FixedMacro)
-            .map(|c| c.macro_.bbox())"#,
-        replace: r#"            .map(|c| c.macro_.bbox())"#,
+        // ⚠️ The list is the SEQUENCE-PAIR PREFIX filtered by `fixed`, not the children filtered
+        // by `AreaKind::FixedMacro` — a blockage proxy is fixed and belongs here too, and the old
+        // pattern was written against the version that missed it.
+        find: r#"            .take(assembly.number_of_sequence_pair_macros)
+            .filter(|m| m.fixed)"#,
+        replace: r#"            .take(assembly.number_of_sequence_pair_macros)"#,
         want: r#"only_fixed_macros_reach_the_fixed_penalty"#,
     },
     // ---------------------------------------------------------------- annealing one parent
@@ -658,8 +669,20 @@ pub const MUTATIONS: &[Mutation] = &[
         file: r#"src/placement.rs"#,
         find: r#"    let mut winning_macros = None;
     let selected = select_run("#,
+        // ⚠️ The call must carry the CURRENT arity. This replacement was written against a
+        // five-parameter `place_one_parent` and went uncompilable when macro placement and the
+        // write-back callback were added — a `replace` can rot exactly like a `find`, and
+        // `check-patterns.py` cannot see it.
         replace: r#"    for child in (tree.children)(cluster) {
-        if !place_one_parent(tree, child, root, place_one, visits) {
+        if !place_one_parent(
+            tree,
+            child,
+            root,
+            place_one,
+            place_macros_one,
+            on_parent_placed,
+            visits,
+        ) {
             return false;
         }
     }
@@ -706,7 +729,7 @@ pub const MUTATIONS: &[Mutation] = &[
         name: r#"setup-adjusts-the-wrong-weight"#,
         file: r#"src/placement.rs"#,
         find: r#"    adjusted.soft_blockage =
-        adjusted_soft_blockage_weight(max_level, weights.outline, weights.soft_blockage);"#,
+        adjusted_soft_blockage_weight(max_level, adjusted.outline, adjusted.soft_blockage);"#,
         replace: r#"    adjusted.notch =
         adjusted_soft_blockage_weight(max_level, weights.outline, weights.soft_blockage);"#,
         want: r#"the_soft_blockage_weight_is_adjusted_once_up_front"#,
@@ -1221,18 +1244,19 @@ pub const MUTATIONS: &[Mutation] = &[
     Mutation {
         name: r#"push-descends-into-std-cell-clusters"#,
         file: r#"src/placement.rs"#,
-        find: r#"            AreaKind::MixedCluster => {
-                out.extend(fetch_macro_clusters(child, kind_of, children_of));
-            }"#,
-        replace: r#"            AreaKind::MixedCluster | AreaKind::StdCellCluster => {
-                out.extend(fetch_macro_clusters(child, kind_of, children_of));
+        find: r#"            ClusterType::Mixed => {
+                out.extend(fetch_macro_clusters(child, type_of, children_of));
+            }
+            ClusterType::StdCell => {}"#,
+        replace: r#"            ClusterType::Mixed | ClusterType::StdCell => {
+                out.extend(fetch_macro_clusters(child, type_of, children_of));
             }"#,
         want: r#"a_macro_cluster_under_a_std_cell_cluster_is_never_fetched"#,
     },
     Mutation {
         name: r#"push-does-not-descend-at-all"#,
         file: r#"src/placement.rs"#,
-        find: r#"                out.extend(fetch_macro_clusters(child, kind_of, children_of));"#,
+        find: r#"                out.extend(fetch_macro_clusters(child, type_of, children_of));"#,
         replace: r#"                let _ = child;"#,
         want: r#"macro_clusters_are_fetched_depth_first_through_mixed_clusters"#,
     },
@@ -1248,9 +1272,32 @@ pub const MUTATIONS: &[Mutation] = &[
     Mutation {
         name: r#"centralized-array-allows-a-mixed-cluster"#,
         file: r#"src/placement.rs"#,
-        find: r#"            AreaKind::MixedCluster => return false,"#,
-        replace: r#"            AreaKind::MixedCluster => {}"#,
+        find: r#"            ClusterType::Mixed => return false,
+            ClusterType::HardMacro => macro_cluster_count += 1,"#,
+        replace: r#"            ClusterType::Mixed => {}
+            ClusterType::HardMacro => macro_cluster_count += 1,"#,
         want: r#"a_mixed_cluster_fails_it_at_once"#,
+    },
+    // ⚠️ The first spelling of this mutation skipped a Mixed child only when its area was zero —
+    // and the test's IO cluster HAS area zero, so the mutant behaved identically and reported as a
+    // hole. A mutation must break the rule for the fixture that pins it, not for some other input.
+    // ⛔ **The rule this replaces was the WRONG WAY ROUND.** Its predecessor asserted that an IO
+    // cluster and a fixed macro cluster are both ignored by the guard, and named a test that has
+    // since been deleted for saying the same thing. Both are read through `getClusterType()`,
+    // where an IO cluster is `Mixed` and a fixed macro cluster is `HardMacro` — so each is
+    // load-bearing rather than ignored, and this is the mutation that says so.
+    Mutation {
+        name: r#"centralized-array-skips-io-clusters"#,
+        file: r#"src/placement.rs"#,
+        find: r#"pub fn has_single_centralized_macro_array(children: &[(crate::cluster::ClusterType, i64)]) -> bool {
+    use crate::cluster::ClusterType;
+    let mut macro_cluster_count = 0;
+    for &(cluster_type, soft_macro_area) in children {"#,
+        replace: r#"pub fn has_single_centralized_macro_array(children: &[(crate::cluster::ClusterType, i64)]) -> bool {
+    use crate::cluster::ClusterType;
+    let mut macro_cluster_count = 0;
+    for &(cluster_type, soft_macro_area) in children.iter().filter(|c| c.0 != ClusterType::Mixed) {"#,
+        want: r#"an_io_cluster_fails_the_guard_because_its_type_is_mixed"#,
     },
     Mutation {
         name: r#"centralized-array-allows-two-arrays"#,
@@ -1264,16 +1311,22 @@ pub const MUTATIONS: &[Mutation] = &[
         want: r#"two_macro_clusters_fail_it"#,
     },
     Mutation {
-        name: r#"centralized-array-counts-fixed-macros"#,
+        name: r#"centralized-array-does-not-count-a-fixed-cluster"#,
         file: r#"src/placement.rs"#,
-        find: r#"            AreaKind::HardMacroCluster => macro_cluster_count += 1,"#,
-        replace: r#"            AreaKind::HardMacroCluster | AreaKind::FixedMacro => macro_cluster_count += 1,"#,
-        want: r#"io_clusters_and_fixed_macros_are_ignored"#,
+        find: r#"            ClusterType::HardMacro => macro_cluster_count += 1,
+            ClusterType::StdCell => {"#,
+        replace: r#"            ClusterType::HardMacro => {
+                if soft_macro_area != 999 {
+                    macro_cluster_count += 1;
+                }
+            }
+            ClusterType::StdCell => {"#,
+        want: r#"a_fixed_macro_cluster_counts_towards_the_two"#,
     },
     Mutation {
         name: r#"push-guards-in-the-wrong-order"#,
         file: r#"src/placement.rs"#,
-        find: r#"    if root_kind == AreaKind::HardMacroCluster {
+        find: r#"    if root_type == crate::cluster::ClusterType::HardMacro {
         return Err(NoPush::DesignIsAllMacros);
     }
     if has_single_centralized_macro_array(root_children) {
@@ -1282,7 +1335,7 @@ pub const MUTATIONS: &[Mutation] = &[
         replace: r#"    if has_single_centralized_macro_array(root_children) {
         return Err(NoPush::SingleCentralizedMacroArray);
     }
-    if root_kind == AreaKind::HardMacroCluster {
+    if root_type == crate::cluster::ClusterType::HardMacro {
         return Err(NoPush::DesignIsAllMacros);
     }"#,
         want: r#"the_all_macro_guard_is_checked_first"#,
@@ -1392,9 +1445,11 @@ pub const MUTATIONS: &[Mutation] = &[
     Mutation {
         name: r#"push-stops-after-a-revert"#,
         file: r#"src/placement.rs"#,
-        find: r#"            attempts.push(PushAttempt { boundary, distance, committed: false });"#,
-        replace: r#"            attempts.push(PushAttempt { boundary, distance, committed: false });
-            break;"#,
+        find: r#"                attempts.push(PushAttempt { boundary, distance, committed: false, obstacle: Some(obstacle) })
+            }"#,
+        replace: r#"                attempts.push(PushAttempt { boundary, distance, committed: false, obstacle: Some(obstacle) });
+                break;
+            }"#,
         want: r#"a_reverted_push_does_not_block_the_next"#,
     },
     Mutation {
@@ -1410,10 +1465,80 @@ pub const MUTATIONS: &[Mutation] = &[
     Mutation {
         name: r#"push-reverted-attempt-not-recorded"#,
         file: r#"src/placement.rs"#,
-        find: r#"        if overlaps(moved) {"#,
-        replace: r#"        if overlaps(moved) {
-            continue;"#,
+        find: r#"            Some(obstacle) => {
+                attempts.push(PushAttempt { boundary, distance, committed: false, obstacle: Some(obstacle) })
+            }"#,
+        replace: r#"            Some(obstacle) => {
+                let _ = obstacle;
+            }"#,
         want: r#"a_reverted_push_is_still_an_attempt"#,
+    },
+    // ---------------------------------------------------------------- the push COMPOSITION
+    //
+    // 🔑 **Witnessed only by `placement_push_upstream.rs`**, the port of upstream's own
+    // `TestPusher.cpp`. No design in the 34-case regression suite reaches an all-macro root, a
+    // fixed cluster inside the push loop, the HARD-MACRO revert, or a cluster too far from every
+    // edge to move — so before that file existed these rules had no unit witness and every one of
+    // these mutations would have reported as a hole.
+    Mutation {
+        name: r#"push-header-only-when-something-moves"#,
+        file: r#"src/placement.rs"#,
+        find: r#"        out.push("Distance to Close Boundaries:".to_string());"#,
+        replace: r#"        if !distances.is_empty() {
+            out.push("Distance to Close Boundaries:".to_string());
+        }"#,
+        want: r#"a_cluster_far_from_every_edge_still_prints_the_header"#,
+    },
+    Mutation {
+        name: r#"push-moved-printed-only-when-committed"#,
+        file: r#"src/placement.rs"#,
+        find: r#"        for attempt in attempts {
+            out.push(format!("#,
+        replace: r#"        for attempt in attempts.iter().filter(|a| a.committed) {
+            out.push(format!("#,
+        want: r#"a_horizontal_push_onto_another_macro_is_reverted"#,
+    },
+    Mutation {
+        name: r#"push-visits-fixed-clusters"#,
+        file: r#"src/placement.rs"#,
+        find: r#"        if cluster.is_fixed_macro {
+            continue;
+        }"#,
+        replace: r#"        if false {
+            continue;
+        }"#,
+        want: r#"a_fixed_macro_cluster_is_skipped_without_a_trace_line"#,
+    },
+    Mutation {
+        name: r#"push-obstacles-exclude-fixed-clusters"#,
+        file: r#"src/placement.rs"#,
+        find: r#"        let flat: Vec<(i32, (i32, i32, i32, i32))> =
+            macros.iter().map(|m| (m.cluster_id, m.bbox())).collect();"#,
+        replace: r#"        let flat: Vec<(i32, (i32, i32, i32, i32))> = macros
+            .iter()
+            .filter(|m| !clusters.iter().any(|c| c.id == m.cluster_id && c.is_fixed_macro))
+            .map(|m| (m.cluster_id, m.bbox()))
+            .collect();"#,
+        want: r#"a_fixed_macro_cluster_still_obstructs_another_clusters_push"#,
+    },
+    // ⛔ **The obvious spelling of this one is EQUIVALENT and was replaced, not kept.** Turning the
+    // commit arm's `None =>` into `_ =>` changes nothing: Rust matches arms IN ORDER, so the two
+    // `Some(...)` arms above still win and `_` catches exactly what `None` caught. It reported as a
+    // hole on 2026-08-28 and was not one. This version breaks the rule for real, by making every
+    // attempt take the commit arm.
+    Mutation {
+        name: r#"push-commits-macros-even-when-reverted"#,
+        file: r#"src/placement.rs"#,
+        find: r#"            match attempt.obstacle {"#,
+        replace: r#"            match None::<PushObstacle> {"#,
+        want: r#"a_horizontal_push_onto_another_macro_is_reverted"#,
+    },
+    Mutation {
+        name: r#"push-threshold-from-the-wrong-macro"#,
+        file: r#"src/placement.rs"#,
+        find: r#"        let Some(&first) = cluster.macros.first() else { continue };"#,
+        replace: r#"        let Some(&first) = cluster.macros.last() else { continue };"#,
+        want: r#"the_push_threshold_comes_from_the_first_macro_not_the_last"#,
     },
     // ---------------------------------------------------------------- temporary macro clusters
     Mutation {
@@ -2057,10 +2182,31 @@ pub const MUTATIONS: &[Mutation] = &[
     Mutation {
         name: r#"cal-penalty-drops-the-placement-context"#,
         file: r#"src/anneal.rs"#,
-        find: r#"            self.placement = Some(inputs);"#,
-        replace: r#"            self.placement = None;
+        // ⛔ **DISAMBIGUATED.** `self.placement = Some(inputs);` appears TWICE — once in the
+        // hard-macro branch and once in the soft one — and the harness mutates the FIRST. The test
+        // named here drives a SOFT run, so the mutation was landing in the branch the test never
+        // enters and reported as a hole. ⚠️ `check-patterns.py` flags this class as `ambiguous`;
+        // that warning is what it is for.
+        find: r#"                inputs.notch(&self.macros, outline, (self.width, self.height), valid);
+
+            self.placement = Some(inputs);"#,
+        replace: r#"                inputs.notch(&self.macros, outline, (self.width, self.height), valid);
+
+            self.placement = None;
             drop(inputs);"#,
         want: r#"the_placement_context_survives_being_scored"#,
+    },
+    // 🔑 The HARD branch's own restore. ⚠️ It is a DIFFERENT line from the soft one above and needs
+    // its own witness: the soft test never enters this branch.
+    Mutation {
+        name: r#"hard-cal-penalty-drops-the-placement-context"#,
+        file: r#"src/anneal.rs"#,
+        find: r#"                self.penalties.fence = inputs.fence(&self.macros, outline);
+                self.placement = Some(inputs);"#,
+        replace: r#"                self.penalties.fence = inputs.fence(&self.macros, outline);
+                self.placement = None;
+                drop(inputs);"#,
+        want: r#"the_placement_context_survives_a_hard_run_too"#,
     },
     // ---------------------------------------------------------------- the cluster's soft macro
     Mutation {
@@ -2653,10 +2799,11 @@ pub const MUTATIONS: &[Mutation] = &[
         file: r#"src/anneal.rs"#,
         find: r#"        let perturbations = params.num_perturb_per_step.max(0) as usize;
 
-        let mut widths = Vec::with_capacity(perturbations);"#,
-        replace: r#"        let perturbations = params.perturbations_for(self.macros.len());
+        let mut samples: Vec<Sample> = Vec::with_capacity(perturbations);"#,
+        replace: r#"        let perturbations =
+            (params.num_perturb_per_step.max(0) as usize).max(self.macros.len());
 
-        let mut widths = Vec::with_capacity(perturbations);"#,
+        let mut samples: Vec<Sample> = Vec::with_capacity(perturbations);"#,
         want: r#"initialize_runs_exactly_the_perturbation_count_it_is_given"#,
     },
     Mutation {
@@ -3724,11 +3871,13 @@ pub const MUTATIONS: &[Mutation] = &[
         name: r#"constrained-joins-unconstrained"#,
         file: r#"src/ioclusters.rs"#,
         find: r#"            None => {
-                c.is_cluster_of_unconstrained_io_pins = true;
                 unconstrained = Some(c.id);
             }"#,
         replace: r#"            None => {}"#,
-        want: r#"a_constrained_pin_does_not_join_the_unconstrained_cluster"#,
+        // ⚠️ Dropping the assignment means no cluster is ever REMEMBERED as the unconstrained one,
+        // so every unconstrained pin makes its own. That breaks SHARING, not the constrained-pin
+        // exclusion the old `want` named — which is why it reported WRONG TEST rather than a hole.
+        want: r#"every_unconstrained_pin_shares_ONE_cluster"#,
     },
     Mutation {
         name: r#"no-ports-still-has-io-clusters"#,

@@ -1287,26 +1287,28 @@ pub fn set_macro_cluster_shapes(
 /// ⛔ **Any mixed cluster fails it outright**, before anything is counted.
 /// ⛔ A macro cluster that is not an ARRAY of interconnected macros also fails it.
 pub fn single_array_single_std_cell_cluster(
-    entries: &[(AreaKind, bool)],
+    entries: &[(Option<crate::cluster::ClusterType>, bool)],
 ) -> bool {
+    use crate::cluster::ClusterType;
     let mut arrays = 0;
     let mut std_clusters = 0;
-    for &(kind, is_array_of_interconnected_macros) in entries {
-        if kind == AreaKind::MixedCluster {
-            return false;
-        }
-        if kind == AreaKind::Blockage || kind == AreaKind::IoCluster {
-            continue;
-        }
-        match kind {
-            AreaKind::HardMacroCluster => {
+    for &(cluster_type, is_array_of_interconnected_macros) in entries {
+        match cluster_type {
+            // ⛔ `isMixedCluster()` — and it is TRUE for an IO cluster, whose `type_` is the
+            // member's `MixedCluster` default. So this is the line an IO cluster leaves by, not
+            // the `isIOCluster()` skip below it.
+            Some(ClusterType::Mixed) => return false,
+            // ⛔ `!cluster` — a blockage, and a conventional fixed terminal, are built with a null
+            // cluster. ⚠️ The reference's `|| cluster->isIOCluster()` half of this test is DEAD:
+            // an IO cluster has already returned above.
+            None => continue,
+            Some(ClusterType::HardMacro) => {
                 if !is_array_of_interconnected_macros {
                     return false;
                 }
                 arrays += 1;
             }
-            AreaKind::StdCellCluster => std_clusters += 1,
-            _ => {}
+            Some(ClusterType::StdCell) => std_clusters += 1,
         }
         if arrays > 1 || std_clusters > 1 {
             return false;
@@ -4810,12 +4812,48 @@ pub fn build_parent_problem(
 
     let nets = parent_nets(parent, &assembly, ctx);
 
-    let single_array = single_array_single_std_cell_cluster(
-        &reshape
-            .iter()
-            .map(|r| (r.kind.unwrap_or(AreaKind::Blockage), r.tilings.len() > 1))
-            .collect::<Vec<_>>(),
-    );
+    // ⛔ **In the reference's vocabulary, not ours.** `singleArraySingleStdCellCluster` reads
+    // `SoftMacro::isMixedCluster()`/`isMacroCluster()`/`isStdCellCluster()`, and every one of those
+    // is a test on `Cluster::getClusterType()` — so an IO cluster answers MIXED and a fixed macro
+    // cluster answers HARD MACRO. `AreaKind` has variants for both and would skip them.
+    //
+    // ⚠️ **A fixed terminal is `None` unless it is a cluster of UNPLACED IO PINS**, which is the
+    // one kind `createFixedTerminal` keeps the cluster pointer for — and that cluster is Mixed, so
+    // it ends the scan. A conventional terminal is a bare point with no cluster behind it.
+    let entries: Vec<(Option<crate::cluster::ClusterType>, bool)> = reshape
+        .iter()
+        .enumerate()
+        .map(|(id, r)| {
+            let is_array = r.tilings.len() > 1;
+            let cluster_type = match r.kind {
+                Some(AreaKind::Blockage) => None,
+                Some(AreaKind::IoCluster) => Some(crate::cluster::ClusterType::Mixed),
+                Some(AreaKind::FixedMacro) | Some(AreaKind::HardMacroCluster) => {
+                    Some(crate::cluster::ClusterType::HardMacro)
+                }
+                Some(AreaKind::StdCellCluster) => Some(crate::cluster::ClusterType::StdCell),
+                Some(AreaKind::MixedCluster) => Some(crate::cluster::ClusterType::Mixed),
+                // A terminal. Its index into `ctx.terminals` is its position past the others.
+                //
+                // ⚠️ **A terminal's SIZE stands in for its cluster pointer**, and the two are set
+                // together at the one site that builds them: `createFixedTerminal` gives a
+                // conventional terminal a bare point and a null cluster, and gives a cluster of
+                // UNPLACED IO PINS both its real shape and its cluster. So a sized terminal is
+                // exactly the one whose cluster is non-null — and that cluster is Mixed.
+                None => {
+                    let first_terminal = reshape.len() - ctx.terminals.len();
+                    match ctx.terminals.get(id.wrapping_sub(first_terminal)) {
+                        Some((_, m)) if m.width > 0 || m.height > 0 => {
+                            Some(crate::cluster::ClusterType::Mixed)
+                        }
+                        _ => None,
+                    }
+                }
+            };
+            (cluster_type, is_array)
+        })
+        .collect();
+    let single_array = single_array_single_std_cell_cluster(&entries);
 
     ParentProblem {
         macros: assembly.macros.clone(),
