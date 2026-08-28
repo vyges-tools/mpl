@@ -2433,6 +2433,17 @@ pub const MUTATIONS: &[Mutation] = &[
         want: r#"an_io_pin_cluster_takes_its_constraint_region_or_the_whole_die"#,
     },
     Mutation {
+        name: r#"blockages-not-clipped-to-the-outline"#,
+        file: r#"src/placement.rs"#,
+        find: r#"        if (x1 - x0) as i64 * (y1 - y0) as i64 == 0 {
+            continue;
+        }"#,
+        replace: r#"        if false {
+            continue;
+        }"#,
+        want: r#"blockages_are_clipped_to_the_outline_and_rebased"#,
+    },
+    Mutation {
         name: r#"set-x-ignores-the-fixed-guard"#,
         file: r#"src/anneal.rs"#,
         find: r#"    pub fn set_x(&mut self, x: i32) {

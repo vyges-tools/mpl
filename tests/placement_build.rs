@@ -261,3 +261,30 @@ fn a_fixed_macro_is_a_macro_cluster_to_the_annealer() {
     );
     assert_eq!((placed.width, placed.height), (200, 200), "clipped to the outline and rebased");
 }
+
+/// ⛔ **Both blockage lists are CLIPPED to the outline and REBASED onto it** before the annealer
+/// sees them — `placeChildren` opens with `findOffsetIntersections` on the placement blockages and
+/// again on the pin-access ones. Everything inside a placement problem is outline-relative.
+///
+/// 🔑 **A raw blockage is in DIE coordinates, and the die is BIGGER than the outline.** On
+/// `guides1` the pin-access blockage runs to the die's `250000` while the outline ends at
+/// `249200`, so every overlap measured against it was 800 units too tall.
+///
+/// ⚠️ **Invisible in the final penalty and visible only in the normalisation factor.** The final
+/// soft-blockage value on that design is ZERO — nothing overlaps once placed — so the term looked
+/// perfect while the average over the sweep was wrong. A term whose final value is zero is scored
+/// by its factor alone.
+#[test]
+fn blockages_are_clipped_to_the_outline_and_rebased() {
+    use vyges_mpl::placement::find_offset_intersections;
+    let outline = (1000, 1000, 3000, 3000);
+
+    // A blockage running past the outline's top edge, as a die-sized one does.
+    let clipped = find_offset_intersections(&[(1000, 1000, 1200, 3500)], outline);
+    assert_eq!(clipped, vec![(0, 0, 200, 2000)], "cut at the outline, then rebased to its corner");
+
+    // ⚠️ A blockage that only touches the edge has zero area and is DROPPED, not kept degenerate.
+    assert!(find_offset_intersections(&[(3000, 1000, 3200, 2000)], outline).is_empty());
+    // And one that misses entirely.
+    assert!(find_offset_intersections(&[(5000, 5000, 6000, 6000)], outline).is_empty());
+}

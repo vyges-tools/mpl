@@ -285,16 +285,24 @@ fn report_placement(
     );
     let utilizations = p::utilization_list(0.25, 10);
 
-    let blockages: Vec<(i32, i32, i32, i32)> = shaping
+    // ⛔ **Both lists are CLIPPED to the outline and rebased onto it.** `placeChildren` opens with
+    // `findOffsetIntersections` on each, and everything inside a placement problem is
+    // outline-relative. Passing them raw leaves a blockage in DIE coordinates: on `guides1` the
+    // pin-access blockage runs to the die's 250000 while the outline ends at 249200, so every
+    // overlap measured against it was slightly too large — invisible in the final penalty, which
+    // is zero there, and visible only in the normalisation factor averaged over the sweep.
+    let raw_hard: Vec<(i32, i32, i32, i32)> = shaping
         .placement_blockages
         .iter()
         .map(|b| (b.x_min as i32, b.y_min as i32, b.x_max as i32, b.y_max as i32))
         .collect();
-    let soft: Vec<(i32, i32, i32, i32)> = shaping
+    let raw_soft: Vec<(i32, i32, i32, i32)> = shaping
         .io_blockages
         .iter()
         .map(|b| (b.x_min as i32, b.y_min as i32, b.x_max as i32, b.y_max as i32))
         .collect();
+    let blockages = p::find_offset_intersections(&raw_hard, outline);
+    let soft = p::find_offset_intersections(&raw_soft, outline);
 
     let visits = p::run_hierarchical_macro_placement(
         root,
@@ -422,16 +430,24 @@ fn print_placement_summaries(
         h.has_std_cells,
     );
     let utilizations = p::utilization_list(0.25, 10);
-    let blockages: Vec<(i32, i32, i32, i32)> = shaping
+    // ⛔ **Both lists are CLIPPED to the outline and rebased onto it.** `placeChildren` opens with
+    // `findOffsetIntersections` on each, and everything inside a placement problem is
+    // outline-relative. Passing them raw leaves a blockage in DIE coordinates: on `guides1` the
+    // pin-access blockage runs to the die's 250000 while the outline ends at 249200, so every
+    // overlap measured against it was slightly too large — invisible in the final penalty, which
+    // is zero there, and visible only in the normalisation factor averaged over the sweep.
+    let raw_hard: Vec<(i32, i32, i32, i32)> = shaping
         .placement_blockages
         .iter()
         .map(|b| (b.x_min as i32, b.y_min as i32, b.x_max as i32, b.y_max as i32))
         .collect();
-    let soft: Vec<(i32, i32, i32, i32)> = shaping
+    let raw_soft: Vec<(i32, i32, i32, i32)> = shaping
         .io_blockages
         .iter()
         .map(|b| (b.x_min as i32, b.y_min as i32, b.x_max as i32, b.y_max as i32))
         .collect();
+    let blockages = p::find_offset_intersections(&raw_hard, outline);
+    let soft = p::find_offset_intersections(&raw_soft, outline);
 
     // The die-edge stretches an unconstrained IO pin may land on, as the placer wants them.
     let available: Vec<p::Region> = shaping
