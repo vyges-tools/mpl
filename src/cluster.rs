@@ -51,6 +51,16 @@ pub struct Cluster {
     /// ⚠️ NOT part of `is_io_cluster` — it only affects the printed type string.
     pub is_cluster_of_unconstrained_io_pins: bool,
     pub is_fixed_macro: bool,
+    /// Upstream `setAsMacroArray`, set on every MOVABLE macro cluster `breakMixedLeaf` creates.
+    ///
+    /// 🔑 **It changes the macro run's starting point and its actions.** An array starts from
+    /// `computeArraySequencePair`'s grid rather than the identity, and — when the grid has no
+    /// empty space — the probabilities collapse to EXCHANGE ONLY, because there are no shapes left
+    /// to explore.
+    ///
+    /// ⚠️ A one-macro array is indistinguishable from a non-array: the grid is 1×1, so the pair is
+    /// the identity and exchange does nothing. It only shows on a cluster with two or more.
+    pub is_macro_array: bool,
     /// Only meaningful for a pin-carrying cluster; the dump prints it instead of the counts.
     pub num_io_pins: usize,
     /// The region an unplaced-IO cluster is restricted to. ⚠️ Two pins share a cluster only when
@@ -107,6 +117,7 @@ impl Cluster {
             is_io_bundle: false,
             is_cluster_of_unconstrained_io_pins: false,
             is_fixed_macro: false,
+            is_macro_array: false,
             num_io_pins: 0,
             constraint_region: None,
             io_region: None,

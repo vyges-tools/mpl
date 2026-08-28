@@ -2544,6 +2544,20 @@ pub const MUTATIONS: &[Mutation] = &[
         want: r#"a_fixed_macro_is_a_macro_cluster_to_the_annealer"#,
     },
     Mutation {
+        name: r#"macro-arrays-not-marked"#,
+        file: r#"src/tree.rs"#,
+        find: r#"            c.is_macro_array = plan.arrays.iter().any(|a| a.id == c.id);"#,
+        replace: r#"            c.is_macro_array = false;"#,
+        want: r#"a_movable_macro_cluster_is_marked_as_an_array"#,
+    },
+    Mutation {
+        name: r#"fixed-macro-clusters-marked-as-arrays"#,
+        file: r#"src/tree.rs"#,
+        find: r#"            c.is_macro_array = plan.arrays.iter().any(|a| a.id == c.id);"#,
+        replace: r#"            c.is_macro_array = true;"#,
+        want: r#"a_movable_macro_cluster_is_marked_as_an_array"#,
+    },
+    Mutation {
         name: r#"fixed-macro-soft-macro-uses-the-unhaloed-bbox"#,
         file: r#"src/tree.rs"#,
         find: r#"                let b = ctx.macro_bboxes.get(i).copied().unwrap_or(inst.bbox);"#,

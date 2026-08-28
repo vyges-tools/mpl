@@ -810,6 +810,16 @@ fn emit_macro_summary(
 
     let n = macros.len();
 
+    // `computeArraySequencePair`: the grid the macros already sit in, from the CLUSTER's box and
+    // the FIRST macro's haloed size. ⚠️ It also reports whether the grid has cells the macros do
+    // not fill — which decides whether invalid states are allowed, or the actions collapse to
+    // exchange only.
+    let array = if cluster.is_macro_array {
+        p::array_sequence_pair(n, outline.0, outline.1, macros[0].width, macros[0].height)
+    } else {
+        Default::default()
+    };
+
     // ⛔ **`rebuildConnections` runs with the TEMP clusters in the association** — one per hard
     // macro — so a net between two macros of the same cluster becomes a net between two temp
     // clusters. Reusing the parent-level connections would collapse them all onto one id and
@@ -960,9 +970,13 @@ fn emit_macro_summary(
         },
         outline,
         dbu_per_micron: dbu,
-        is_macro_array: false,
-        array_has_empty_space: false,
-        initial_sequence_pair: None,
+        is_macro_array: cluster.is_macro_array,
+        array_has_empty_space: array.has_empty_space,
+        initial_sequence_pair: if cluster.is_macro_array {
+            Some(vyges_mpl::anneal::SequencePair { pos: array.pos.clone(), neg: array.neg.clone() })
+        } else {
+            None
+        },
         master_count: masters.len(),
     };
 

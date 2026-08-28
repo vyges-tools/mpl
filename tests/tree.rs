@@ -961,3 +961,25 @@ fn a_fixed_macro_cluster_carries_its_haloed_soft_macro() {
     let movable = root.children.iter().find(|c| c.name == "MACRO_0").unwrap();
     assert!(movable.soft_macro.is_none(), "only a FIXED macro gets one here");
 }
+
+/// ⛔ **Every MOVABLE macro cluster is a macro ARRAY** — upstream calls `setAsMacroArray` on each
+/// one `breakMixedLeaf` creates. The fixed ones are lifted to the root and never marked.
+///
+/// 🔑 **It changes the macro run's starting point and its actions.** An array starts from
+/// `computeArraySequencePair`'s grid rather than the identity, and when that grid has no empty
+/// space the probabilities collapse to exchange only.
+///
+/// ⚠️ **A ONE-macro array hides it.** The grid is 1×1, so the pair is the identity and exchange
+/// does nothing — every single-macro design scores the same either way. It shows only on a cluster
+/// with two or more, which is why one design in the suite carried the whole signal.
+#[test]
+fn a_movable_macro_cluster_is_marked_as_an_array() {
+    let (d, mut root) = mixed_leaf_design(&[1]);
+    split(&d, &mut root);
+
+    let movable = root.children.iter().find(|c| c.name == "MACRO_0").unwrap();
+    assert!(movable.is_macro_array, "the movable macro cluster is an array");
+
+    let fixed = root.children.iter().find(|c| c.is_fixed_macro).unwrap();
+    assert!(!fixed.is_macro_array, "a FIXED macro cluster is not");
+}

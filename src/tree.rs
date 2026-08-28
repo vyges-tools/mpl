@@ -665,6 +665,9 @@ fn split_recursive(
             if !survivors.contains(&c.id) {
                 continue;
             }
+            // Upstream `setAsMacroArray`, on every MOVABLE macro cluster — the fixed ones are
+            // lifted to the root and never marked.
+            c.is_macro_array = plan.arrays.iter().any(|a| a.id == c.id);
             // ⚠️ `attemptMerge` moves the absorbed cluster's macros into the leader, and
             // `setClusterMetrics` then recounts. A leader that kept only its own macro would
             // print `Macros: 1` for a group of four.
