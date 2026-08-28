@@ -3926,8 +3926,11 @@ pub fn reported_wirelength(hpwl_dbu: i64, dbu_per_micron: i32) -> f64 {
 pub enum ParentOutcome {
     /// The parent was placed. Carries the winning run and the macros it settled on.
     Placed { run: SelectedRun, macros: Vec<crate::anneal::SoftMacro> },
-    /// A hard-macro cluster: handed to macro placement instead.
-    MacroCluster,
+    /// A hard-macro cluster: handed to macro placement, which returns the placed hard macros.
+    ///
+    /// ⚠️ In the CLUSTER's own coordinates — `placeMacros` shifts them onto the outline's corner
+    /// only after the summary is written.
+    MacroCluster { macros: Vec<crate::anneal::SoftMacro> },
     /// A hard-macro cluster that is FIXED: macro placement refuses it at its first line.
     FixedMacroCluster,
     /// A leaf — an IO cluster, a leaf standard-cell cluster, or a fixed macro.
@@ -3975,9 +3978,10 @@ pub fn place_children(
     tree: &PlacementTree,
     root: i32,
     place_one: &mut dyn FnMut(i32, usize, f32) -> Option<Vec<crate::anneal::SoftMacro>>,
+    place_macros_one: &mut dyn FnMut(i32) -> Option<Vec<crate::anneal::SoftMacro>>,
 ) -> Vec<PlacementVisit> {
     let mut visits = Vec::new();
-    place_one_parent(tree, root, root, place_one, &mut visits);
+    place_one_parent(tree, root, root, place_one, place_macros_one, &mut visits);
     visits
 }
 
@@ -3986,13 +3990,25 @@ fn place_one_parent(
     cluster: i32,
     root: i32,
     place_one: &mut dyn FnMut(i32, usize, f32) -> Option<Vec<crate::anneal::SoftMacro>>,
+    place_macros_one: &mut dyn FnMut(i32) -> Option<Vec<crate::anneal::SoftMacro>>,
     visits: &mut Vec<PlacementVisit>,
 ) -> bool {
     let action = placement_action((tree.kind)(cluster), (tree.is_fixed_macro)(cluster), (tree.is_leaf)(cluster));
     match action {
         PlacementAction::PlaceMacros => {
-            visits.push(PlacementVisit { cluster, outcome: ParentOutcome::MacroCluster });
-            return true;
+            // Upstream `placeChildren`'s first branch: a hard-macro cluster is handed straight to
+            // `placeMacros` and the walk does NOT descend into it.
+            let outcome = match place_macros_one(cluster) {
+                Some(macros) => ParentOutcome::MacroCluster { macros },
+                // ⛔ MPL-10, which upstream raises rather than returning.
+                None => ParentOutcome::NoValidSolution(crate::options::MplError::new(
+                    10,
+                    "Macro placement failed for macro cluster",
+                )),
+            };
+            let failed = matches!(outcome, ParentOutcome::NoValidSolution(_));
+            visits.push(PlacementVisit { cluster, outcome });
+            return !failed;
         }
         PlacementAction::PlaceMacrosButRefused => {
             visits.push(PlacementVisit { cluster, outcome: ParentOutcome::FixedMacroCluster });
@@ -4046,7 +4062,7 @@ fn place_one_parent(
 
     // 🔑 Only now — a child's outline is the shape this parent just chose for it.
     for child in (tree.children)(cluster) {
-        if !place_one_parent(tree, child, root, place_one, visits) {
+        if !place_one_parent(tree, child, root, place_one, place_macros_one, visits) {
             return false;
         }
     }
@@ -4801,6 +4817,9 @@ pub fn run_hierarchical_macro_placement(
     weights: crate::anneal::SoftWeights,
     random_seed: u32,
     context_for: &mut dyn FnMut(&crate::cluster::Cluster) -> Option<(ParentProblem, i32)>,
+    // The per-macro-cluster inputs `placeMacros` assembles. `None` refuses the cluster.
+    macro_context_for: &mut dyn FnMut(&crate::cluster::Cluster) -> Option<MacroProblem>,
+    num_runs: i32,
 ) -> Vec<PlacementVisit> {
     let by_id = |id: i32| -> Option<&crate::cluster::Cluster> { find_cluster(root, id) };
 
@@ -4811,6 +4830,16 @@ pub fn run_hierarchical_macro_placement(
         children: &|id| by_id(id).map_or(Vec::new(), |c| c.children.iter().map(|k| k.id).collect()),
         utilizations,
         num_threads,
+    };
+
+    // Upstream `placeChildren`'s first branch: a hard-macro cluster goes straight to `placeMacros`.
+    let mut place_macros_one = |cluster_id: i32| -> Option<Vec<crate::anneal::SoftMacro>> {
+        let cluster = find_cluster(root, cluster_id)?;
+        // ⛔ `placeMacros` returns at its first line for a FIXED macro cluster — it is not the
+        // placer's to move — and the driver reports that separately, so it never reaches here.
+        let problem = macro_context_for(cluster)?;
+        place_macros(&problem, weights, probabilities, params, num_runs, random_seed)
+            .map(|search| search.macros)
     };
 
     let mut cached: Option<(i32, ParentProblem)> = None;
@@ -4855,7 +4884,7 @@ pub fn run_hierarchical_macro_placement(
             );
             search.macros
         })
-    })
+    }, &mut place_macros_one)
 }
 
 /// Depth-first lookup by id. ⚠️ Ids are unique across the tree, so the first match is the only one.

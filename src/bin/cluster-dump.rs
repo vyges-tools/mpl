@@ -379,6 +379,10 @@ fn report_placement(
             };
             Some((p::build_parent_problem(parent, outline, &ctx), parent.id))
         },
+        // ℹ️ The `--place` smoke path does not assemble macro-cluster inputs; `--placement-trace`
+        // is the mode the macro summaries are read from.
+        &mut |_| None,
+        10,
     );
 
     for v in &visits {
@@ -386,7 +390,9 @@ fn report_placement(
             p::ParentOutcome::Placed { run, macros } => {
                 format!("placed, run {} of {}, {} macros", run.index, utilizations.len(), macros.len())
             }
-            p::ParentOutcome::MacroCluster => "macro cluster".to_string(),
+            p::ParentOutcome::MacroCluster { macros } => {
+                format!("macro cluster, {} macros placed", macros.len())
+            }
             p::ParentOutcome::FixedMacroCluster => "fixed macro cluster".to_string(),
             p::ParentOutcome::Leaf => "leaf".to_string(),
             p::ParentOutcome::NoValidSolution(e) => format!("NO VALID SOLUTION (MPL-{})", e.code),
