@@ -4314,6 +4314,7 @@ pub fn anneal_one_run(
         normalization: crate::anneal::Normalization::default(),
         probabilities,
         action: None,
+        cost_history: Vec::new(),
     };
 
     let mut rng = crate::rng::Mt19937::new(seed);

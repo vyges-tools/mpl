@@ -994,6 +994,15 @@ pub struct Search {
     pub probabilities: ActionProbabilities,
     /// The action the last `perturb` chose. ⚠️ Restoring reads this, so it must survive the call.
     pub action: Option<Action>,
+    /// `(temperature, pre_cost)` once per STEP, as `writeCostFile` emits them.
+    ///
+    /// 🔑 **The trajectory, not the endpoint.** Two runs can finish at the same cost by different
+    /// routes, and the floorplan only shows where a walk ended; this shows where it went. It is
+    /// the instrument for any divergence that survives once the inputs match.
+    ///
+    /// ⚠️ **The temperature recorded is the NEXT step's** — upstream decays it and *then* pushes,
+    /// so entry `i` pairs the cost of step `i` with the temperature step `i+1` will use.
+    pub cost_history: Vec<(f32, f32)>,
 }
 
 /// What `saveState` copies.
@@ -1464,6 +1473,8 @@ impl Search {
             }
             temperature *= t_factor;
             step += 1;
+            // ⚠️ AFTER the decay, matching upstream's own order — see `cost_history`.
+            self.cost_history.push((temperature, pre_cost));
         }
 
         let (width, height) = pack_floorplan(&mut self.macros, &self.sp);
@@ -1660,6 +1671,7 @@ fn new_search(
         normalization: Normalization::default(),
         probabilities,
         action: None,
+        cost_history: Vec::new(),
     };
     // Upstream `findFixedMacros`, which walks the positive sequence.
     state.fixed_bboxes = state

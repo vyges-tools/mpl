@@ -48,6 +48,7 @@ fn search(macros: Vec<SoftMacro>, outline: (i32, i32)) -> Search {
         normalization: Normalization::default(),
         probabilities: ActionProbabilities::normalized(0.2, 0.2, 0.2, 0.2, 0.2),
         action: None,
+        cost_history: Vec::new(),
     };
     // The macros are already where the fixture put them; record the packing they imply.
     s.width = s.macros.iter().map(|m| m.x + m.width).max().unwrap_or(0);

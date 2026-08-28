@@ -33,6 +33,7 @@ fn main() {
             "--placement-trace" => {}
             "--floorplan" => {}
             "--nets" => {}
+            "--cost" => {}
             "--use-full-halo" => use_full_halo = true,
             "--base-halo" => {
                 let Some(spec) = it.next() else { usage("--base-halo needs l,b,r,t in microns") };
@@ -67,7 +68,8 @@ fn main() {
     let place = std::env::args().any(|a| a == "--place");
     let summaries = std::env::args().any(|a| a == "--placement-trace")
         || std::env::args().any(|a| a == "--floorplan")
-        || std::env::args().any(|a| a == "--nets");
+        || std::env::args().any(|a| a == "--nets")
+        || std::env::args().any(|a| a == "--cost");
     let db = match vyges_opendb::Db::open(&path) {
         Ok(d) => d,
         Err(e) => { eprintln!("cannot read {path}: {e}"); std::process::exit(2); }
@@ -473,6 +475,7 @@ fn print_placement_summaries(
 
     let floorplan_mode = std::env::args().any(|a| a == "--floorplan");
     let nets_mode = std::env::args().any(|a| a == "--nets");
+    let cost_mode = std::env::args().any(|a| a == "--cost");
     let mut emit = |parent: &vyges_mpl::cluster::Cluster| {
         let ctx = p::ParentContext {
             connections_of: &|id| connections.of(id),
@@ -539,6 +542,13 @@ fn print_placement_summaries(
                 continue;
             };
             let _ = index;
+            if cost_mode {
+                // `writeCostFile`: temperature and cost, once per step.
+                for (t, c) in &search.cost_history {
+                    println!("{t}  {c}");
+                }
+                return;
+            }
             let valid = search.is_valid(!search.fixed_bboxes.is_empty());
             let kinds: Vec<Option<p::AreaKind>> =
                 problem.reshape.iter().map(|r| r.kind).collect();

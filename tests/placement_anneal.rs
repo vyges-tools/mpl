@@ -218,6 +218,7 @@ fn the_alignment_thresholds_come_from_the_notch_pass() {
         normalization: Normalization::default(),
         probabilities: ActionProbabilities::normalized(0.2, 0.2, 0.2, 0.2, 0.2),
         action: None,
+        cost_history: Vec::new(),
     };
     assert_eq!(
         Enhancements::notch_thresholds(&base),
@@ -253,6 +254,7 @@ fn the_seam_reports_only_the_sequence_pair() {
         normalization: Normalization::default(),
         probabilities: ActionProbabilities::normalized(0.2, 0.2, 0.2, 0.2, 0.2),
         action: None,
+        cost_history: Vec::new(),
     };
     assert_eq!(Enhancements::order(&s).len(), 3, "not 5");
     assert_eq!(Enhancements::macros(&s).len(), 5, "but all five are there to be indexed");
