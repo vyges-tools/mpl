@@ -449,15 +449,25 @@ fn print_placement_summaries(
     let blockages = p::find_offset_intersections(&raw_hard, outline);
     let soft = p::find_offset_intersections(&raw_soft, outline);
 
-    // The die-edge stretches an unconstrained IO pin may land on, as the placer wants them.
+    // The die-edge stretches an unconstrained IO pin may land on.
+    //
+    // ⛔ **REBASED onto the outline, and the constraint regions are NOT.** That asymmetry is
+    // upstream's: `setAvailableRegionsForUnconstrainedPins` subtracts the outline's corner from
+    // every region it is handed, while `io_cluster_to_constraint_` is assigned straight from the
+    // tree and keeps DIE coordinates. Both are then compared against an outline-relative pin, so
+    // the constrained branch measures across two coordinate systems on purpose.
+    //
+    // ⚠️ Leaving these absolute makes every unconstrained-IO distance wrong by the outline's
+    // corner — on `halos3` that is the whole difference between our wirelength and the
+    // reference's, on identical geometry.
     let available: Vec<p::Region> = shaping
         .available_regions
         .iter()
         .map(|r| p::Region {
-            x0: r.line.x_min as i32,
-            y0: r.line.y_min as i32,
-            x1: r.line.x_max as i32,
-            y1: r.line.y_max as i32,
+            x0: r.line.x_min as i32 - outline.0,
+            y0: r.line.y_min as i32 - outline.1,
+            x1: r.line.x_max as i32 - outline.0,
+            y1: r.line.y_max as i32 - outline.1,
             boundary: r.boundary,
         })
         .collect();

@@ -4469,7 +4469,19 @@ pub struct ParentContext<'a> {
     pub terminals: &'a [(String, crate::anneal::SoftMacro)],
     pub root: Root,
     pub die_margin: i64,
+    /// ⛔ **OUTLINE-RELATIVE — the caller must rebase these**, unlike `constraint_region_of`
+    /// below, which stays absolute. See that field for why the two differ.
     pub available_regions: &'a [Region],
+    /// ⛔ **ABSOLUTE die coordinates — do NOT rebase these onto the outline.**
+    ///
+    /// 🔑 **The two region inputs are in DIFFERENT coordinate systems, and that is upstream's,
+    /// not ours.** `setAvailableRegionsForUnconstrainedPins` subtracts the outline's corner from
+    /// every region it is handed, so `available_regions` arrives outline-relative; but
+    /// `io_cluster_to_constraint_` is assigned straight off the tree and keeps die coordinates.
+    /// Both are then measured against an outline-relative pin, so the constrained branch compares
+    /// across two systems deliberately. Rebasing this one to "fix" the inconsistency is a
+    /// different program.
+    ///
     /// ⚠️ Keyed by CLUSTER id, like `fence_of` and `guide_of` beside it — the translation to the
     /// assembled macro index happens below, where the assembly is known. A caller cannot predict
     /// that index: it depends on the blockage count and on where the IO clusters were deferred to.
