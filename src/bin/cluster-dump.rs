@@ -43,6 +43,7 @@ fn main() {
             "--shaping" => want_shaping = true,
             "--place" => {}
             "--placement-trace" => {}
+            "--push" => {}
             "--floorplan" => {}
             "--nets" => {}
             "--cost" => {}
@@ -88,7 +89,7 @@ fn main() {
         usage(
             "usage: cluster-dump [--report|--shaping] [--use-full-halo] \
              [--base-halo l,b,r,t] [--macro-halo NAME=l,b,r,t] \
-             [--macro-guide NAME=lx,ly,ux,uy] <design.odb>   (all values in microns)",
+             [--macro-guide NAME=lx,ly,ux,uy] [--push] <design.odb>   (all values in microns)",
         )
     };
 
@@ -96,7 +97,8 @@ fn main() {
     let summaries = std::env::args().any(|a| a == "--placement-trace")
         || std::env::args().any(|a| a == "--floorplan")
         || std::env::args().any(|a| a == "--nets")
-        || std::env::args().any(|a| a == "--cost");
+        || std::env::args().any(|a| a == "--cost")
+        || std::env::args().any(|a| a == "--push");
     let db = match vyges_opendb::Db::open(&path) {
         Ok(d) => d,
         Err(e) => { eprintln!("cannot read {path}: {e}"); std::process::exit(2); }
@@ -565,6 +567,10 @@ fn print_placement_summaries(
     let floorplan_mode = std::env::args().any(|a| a == "--floorplan");
     let nets_mode = std::env::args().any(|a| a == "--nets");
     let cost_mode = std::env::args().any(|a| a == "--cost");
+    // ⛔ **The push runs AFTER the whole placement walk and prints its own channel**, so every
+    // summary this file would otherwise emit is suppressed — the `boundary_push` log carries no
+    // penalty table, and a table printed alongside it would be diffed as a difference.
+    let push_mode = std::env::args().any(|a| a == "--push");
     // Returns the winning run's macros and their names, so the caller can do the write-back that
     // `updateChildrenShapesAndLocations` does on the tree.
     let mut emit = |parent: &vyges_mpl::cluster::Cluster|
@@ -663,7 +669,7 @@ fn print_placement_summaries(
                     );
                 }
             }
-            if !floorplan_mode {
+            if !floorplan_mode && !push_mode {
                 println!("Cluster Placement Summary");
                 print!(
                     "{}",
@@ -689,8 +695,27 @@ fn print_placement_summaries(
     // held beside the tree rather than on it; the values and the order are upstream's.
     let mut placed: std::collections::HashMap<i32, (i32, i32, i32, i32)> =
         std::collections::HashMap::new();
+    // ⛔ **The soft macro's AREA, kept beside its box.** `designHasSingleCentralizedMacroArray`
+    // reads it rather than the cluster's own area, and upstream says why: only the abstraction
+    // records that fine shaping shrank a standard-cell cluster away. It is carried on the macro,
+    // not `width * height` — the resize paths set it from an interval corner.
+    let mut placed_area: std::collections::HashMap<i32, i64> = std::collections::HashMap::new();
 
     // ⚠️ Only clusters the driver would have PLACED — the same guards, so the set matches.
+    // Every hard macro's ABSOLUTE haloed corner. ⚠️ Seeded from the database, which is right for
+    // the macros macro placement never moves — a FIXED macro cluster is refused at `placeMacros`'
+    // first line and keeps the position it was read with.
+    let mut macro_location: std::collections::HashMap<usize, (i32, i32)> = design
+        .instances
+        .iter()
+        .enumerate()
+        .filter(|(i, _)| h.macro_bboxes.get(*i).is_some())
+        .map(|(i, _)| {
+            let b = h.macro_bboxes[i];
+            (i, (b.x_min as i32, b.y_min as i32))
+        })
+        .collect();
+
     let mut stack = vec![root];
     while let Some(c) = stack.pop() {
         let action = p::placement_action(p::area_kind_of(c), c.is_fixed_macro, c.children.is_empty());
@@ -724,6 +749,7 @@ fn print_placement_summaries(
                                     child.id,
                                     (x, y, x + m.width, y + m.height),
                                 );
+                                placed_area.insert(child.id, m.area);
                             }
                         }
                     }
@@ -733,17 +759,122 @@ fn print_placement_summaries(
                 }
             }
             p::PlacementAction::PlaceMacros => {
-                emit_macro_summary(
+                let located = emit_macro_summary(
                     // ⛔ **The MACRO core rebases onto ITS OWN outline**, not the root's. Passing
                     // the cluster path's already-rebased list would offset every unconstrained-IO
                     // distance by the difference between the two corners.
                     c, &placed, design, h, dbu, weights, probabilities, root, geometry,
                     &available_abs, nets, &assoc,
-                    pin_cluster_of, has_io_pads,
+                    pin_cluster_of, has_io_pads, push_mode,
                 );
+                for (inst, location) in located {
+                    macro_location.insert(inst, location);
+                }
             }
             _ => {}
         }
+    }
+
+    if push_mode {
+        print_boundary_push(root, &placed, &placed_area, &macro_location, design, h, &raw_soft);
+    }
+}
+
+/// Upstream `run()`'s post-placement push, driven from the placed tree.
+///
+/// ⛔ **The macro clusters come from `fetchMacroClusters`, not from the placement walk.** It
+/// descends only through MIXED clusters, so a macro cluster reachable any other way is not pushed —
+/// and the flat obstacle list it builds is in that same traversal order.
+///
+/// ⚠️ **The IO blockages are the ABSOLUTE ones**, as `createPinAccessBlockages` left them. The
+/// outline-relative copies the placement problems carry would put every blockage a corner away
+/// from the macros being tested against it.
+fn print_boundary_push(
+    root: &vyges_mpl::cluster::Cluster,
+    placed: &std::collections::HashMap<i32, (i32, i32, i32, i32)>,
+    placed_area: &std::collections::HashMap<i32, i64>,
+    macro_location: &std::collections::HashMap<usize, (i32, i32)>,
+    design: &vyges_mpl::design::Design,
+    h: &vyges_mpl::engine::ShapingHandoff,
+    io_blockages: &[(i32, i32, i32, i32)],
+) {
+    use vyges_mpl::placement as p;
+
+    let by_id = |id: usize| -> Option<&vyges_mpl::cluster::Cluster> { sibling_of(root, id as i32) };
+    // ⛔ **Upstream's `ClusterType`, not our `AreaKind`.** An IO cluster's type is `Mixed` — the
+    // three `setAs*` IO setters never touch it — and a FIXED macro cluster's is `HardMacro`, so
+    // both are gathered here while `AreaKind` would treat each as a kind of its own and drop them.
+    let ids = p::fetch_macro_clusters(
+        root.id as usize,
+        &|id| by_id(id).map_or(vyges_mpl::cluster::ClusterType::StdCell, |c| c.cluster_type),
+        &|id| by_id(id).map_or(Vec::new(), |c| c.children.iter().map(|k| k.id as usize).collect()),
+    );
+
+    // The flat obstacle list, in `fetchMacroClusters` order — and the clusters' indices into it.
+    let mut macros: Vec<p::PushMacro> = Vec::new();
+    let mut clusters: Vec<p::PushCluster> = Vec::new();
+    for id in ids {
+        let Some(c) = by_id(id) else { continue };
+        let Some(&bbox) = placed.get(&c.id) else { continue };
+        let mut indices = Vec::new();
+        for &inst in &c.leaf_macros {
+            let (width, height) = h.macro_dims[inst];
+            indices.push(macros.len());
+            macros.push(p::PushMacro {
+                name: design.instances[inst].name.clone(),
+                cluster_id: c.id,
+                location: macro_location.get(&inst).copied().unwrap_or((0, 0)),
+                width: width as i32,
+                height: height as i32,
+            });
+        }
+        clusters.push(p::PushCluster {
+            id: c.id,
+            name: c.name.clone(),
+            is_fixed_macro: c.is_fixed_macro,
+            bbox,
+            macros: indices,
+        });
+    }
+
+    // ⛔ **The SOFT MACRO's area as CLUSTER PLACEMENT left it**, not the cluster's own and not the
+    // one on the tree — `Cluster::soft_macro` is populated here only for IO clusters and fixed
+    // macros, and neither is a kind this guard reads an area for. A standard-cell cluster fine
+    // shaping shrank away reports zero through the placement result and nothing at all through the
+    // tree, and reading the tree declined the push on every design with standard cells.
+    let root_children: Vec<(vyges_mpl::cluster::ClusterType, i64)> = root
+        .children
+        .iter()
+        .map(|c| {
+            (c.cluster_type, p::soft_macro_area(placed_area.get(&c.id).copied().unwrap_or(0)))
+        })
+        .collect();
+
+    let core = (
+        design.core_area.x_min as i32,
+        design.core_area.y_min as i32,
+        design.core_area.x_max as i32,
+        design.core_area.y_max as i32,
+    );
+    // ⚠️ On stderr, so it never reaches a harness diffing stdout. An empty trace has three possible
+    // causes — either guard, or an empty cluster list — and they are indistinguishable in the
+    // output itself.
+    eprintln!(
+        "[diag] push root={:?} children={:?} clusters={} decision={:?}",
+        root.cluster_type,
+        root_children,
+        clusters.len(),
+        p::push_decision(root.cluster_type, &root_children)
+    );
+    for line in p::run_boundary_push(
+        root.cluster_type,
+        &root_children,
+        &clusters,
+        &mut macros,
+        core,
+        io_blockages,
+    ) {
+        println!("{line}");
     }
 }
 
@@ -763,6 +894,15 @@ fn sibling_of(
 /// ⛔ **The outline is the box CLUSTER placement gave this cluster**, not its shaping box — which
 /// is why the caller must have written back before descending.
 #[allow(clippy::too_many_arguments)]
+/// Runs `placeMacros` on one macro cluster.
+///
+/// 🔑 **Returns each macro's ABSOLUTE haloed corner** — `placeMacros`' closing loop shifts every
+/// hard macro by the outline's corner, and those are the positions the boundary push then reads
+/// and moves. Discarding them leaves the pusher measuring against the macros' pre-placement
+/// coordinates, which is a different design.
+///
+/// ⚠️ **Empty on every early return.** A cluster that never reached the search keeps whatever the
+/// database gave it, which is what upstream's `HardMacro` also holds in that case.
 fn emit_macro_summary(
     cluster: &vyges_mpl::cluster::Cluster,
     placed: &std::collections::HashMap<i32, (i32, i32, i32, i32)>,
@@ -778,12 +918,13 @@ fn emit_macro_summary(
     assoc: &[Option<i32>],
     pin_cluster_of: &dyn Fn(usize) -> Option<i32>,
     has_io_pads: bool,
-) {
+    push_mode: bool,
+) -> Vec<(usize, (i32, i32))> {
     use vyges_mpl::placement as p;
-    let Some(&(x0, y0, x1, y1)) = placed.get(&cluster.id) else { return };
+    let Some(&(x0, y0, x1, y1)) = placed.get(&cluster.id) else { return Vec::new() };
     let outline = (x1 - x0, y1 - y0);
     if outline.0 <= 0 || outline.1 <= 0 {
-        return;
+        return Vec::new();
     }
 
     // The cluster's hard macros, in its OWN coordinates — `createTempMacroClusters`' view.
@@ -803,7 +944,7 @@ fn emit_macro_summary(
         masters.push(design.instances[inst].master_id);
     }
     if macros.is_empty() {
-        return;
+        return Vec::new();
     }
     masters.sort_unstable();
     masters.dedup();
@@ -984,22 +1125,35 @@ fn emit_macro_summary(
     // hyperparameters are the command defaults.
     let params = vyges_mpl::anneal::SaParameters::default();
     let Some(search) = p::place_macros(&problem, weights, probabilities, &params, 10, 0) else {
-        return;
+        return Vec::new();
     };
-    println!("Macro Placement Summary");
-    print!(
-        "{}",
-        p::macro_placement_summary(
-            cluster.id,
-            (x0, y0, x1, y1),
-            &search.penalties,
-            &search.weights,
-            &search.normalization,
-            search.area_penalty(),
-            search.norm_cost(),
-            dbu,
-        )
-    );
+    if !push_mode {
+        println!("Macro Placement Summary");
+        print!(
+            "{}",
+            p::macro_placement_summary(
+                cluster.id,
+                (x0, y0, x1, y1),
+                &search.penalties,
+                &search.weights,
+                &search.normalization,
+                search.area_penalty(),
+                search.norm_cost(),
+                dbu,
+            )
+        );
+    }
+
+    // ⛔ **`placeMacros`' closing loop, and it runs whether or not a run was selected.** The shift
+    // is by the CLUSTER's outline corner — the box cluster placement gave it — because everything
+    // inside a macro problem is outline-relative.
+    // ⚠️ Only the first `n` entries are the cluster's own macros; the rest are fixed terminals.
+    cluster
+        .leaf_macros
+        .iter()
+        .enumerate()
+        .filter_map(|(k, &inst)| search.macros.get(k).map(|m| (inst, (m.x + x0, m.y + y0))))
+        .collect()
 }
 
 /// `micronsToDbu`: multiply by the tech's units per micron and **round**, not truncate.

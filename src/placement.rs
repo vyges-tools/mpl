@@ -2843,17 +2843,18 @@ pub fn build_bundled_nets_for_macros(
 /// answer.
 pub fn fetch_macro_clusters(
     root: usize,
-    kind_of: &dyn Fn(usize) -> AreaKind,
+    type_of: &dyn Fn(usize) -> crate::cluster::ClusterType,
     children_of: &dyn Fn(usize) -> Vec<usize>,
 ) -> Vec<usize> {
+    use crate::cluster::ClusterType;
     let mut out = Vec::new();
     for child in children_of(root) {
-        match kind_of(child) {
-            AreaKind::HardMacroCluster => out.push(child),
-            AreaKind::MixedCluster => {
-                out.extend(fetch_macro_clusters(child, kind_of, children_of));
+        match type_of(child) {
+            ClusterType::HardMacro => out.push(child),
+            ClusterType::Mixed => {
+                out.extend(fetch_macro_clusters(child, type_of, children_of));
             }
-            _ => {}
+            ClusterType::StdCell => {}
         }
     }
     out
@@ -2873,6 +2874,19 @@ pub fn fetch_macro_clusters(
 ///
 /// ⚠️ **Any MIXED cluster fails it immediately**, before anything is counted.
 ///
+/// ⛔ **AN IO CLUSTER IS A MIXED CLUSTER, so it fails this outright.** `setAsIOBundle`,
+/// `setAsIOPadCluster` and `setAsClusterOfUnplacedIOPins` set their own flags and a soft macro and
+/// **never touch `type_`**, which defaults to `MixedCluster` — so `isIOCluster()` and
+/// `getClusterType()` are answering different questions and only the second one is asked here.
+/// ⚠️ This is why the guard is far rarer than it reads: any design with a single unplaced IO pin,
+/// one IO pad or one IO bundle has a Mixed child of the root and is always pushed. Treating an IO
+/// cluster as its own kind and skipping it silently declined the push on 27 of 34 designs.
+///
+/// ⛔ **A FIXED macro cluster is a HardMacroCluster and IS COUNTED.** `setAsFixedMacro` likewise
+/// only sets a flag; `clusterMacros` types both the movable and the fixed macro clusters
+/// `HardMacroCluster` a few lines apart. So a design with one movable and one fixed macro cluster
+/// has a count of two and fails the guard.
+///
 /// ⚠️ **The count test is INSIDE the loop**, so a second macro cluster fails it at once rather
 /// than after the whole scan — which matters only if a later child would also have failed it, but
 /// it is the reference's shape.
@@ -2880,26 +2894,38 @@ pub fn fetch_macro_clusters(
 /// ℹ️ **A root with no children returns TRUE**, vacuously — zero arrays counts as "a single
 /// centralized macro array" and the push is skipped. Nothing reaches it: a design with no children
 /// under the root has already been refused.
-pub fn has_single_centralized_macro_array(children: &[(AreaKind, i64)]) -> bool {
+pub fn has_single_centralized_macro_array(children: &[(crate::cluster::ClusterType, i64)]) -> bool {
+    use crate::cluster::ClusterType;
     let mut macro_cluster_count = 0;
-    for &(kind, soft_macro_area) in children {
-        match kind {
-            AreaKind::MixedCluster => return false,
-            AreaKind::HardMacroCluster => macro_cluster_count += 1,
-            AreaKind::StdCellCluster => {
+    for &(cluster_type, soft_macro_area) in children {
+        match cluster_type {
+            ClusterType::Mixed => return false,
+            ClusterType::HardMacro => macro_cluster_count += 1,
+            ClusterType::StdCell => {
                 if soft_macro_area != 0 {
                     return false;
                 }
             }
-            // ⚠️ Upstream's `switch` covers only the three cluster types; anything else — an IO
-            // cluster, a fixed macro — falls through it without a case and is simply ignored.
-            _ => {}
         }
         if macro_cluster_count > 1 {
             return false;
         }
     }
     true
+}
+
+/// Upstream `SoftMacro::getArea`.
+///
+/// ⛔ **`area_ > 1 ? area_ : 0`, not `area_`.** A one-DBU² area reports as zero, which is what
+/// `singleArraySingleStdCellCluster`'s shrunk standard-cell cluster relies on — and the only
+/// reader that cares is `designHasSingleCentralizedMacroArray`, where the difference is whether the
+/// whole boundary push runs.
+pub fn soft_macro_area(area: i64) -> i64 {
+    if area > 1 {
+        area
+    } else {
+        0
+    }
 }
 
 /// Why the boundary push declined to run.
@@ -2913,10 +2939,10 @@ pub enum NoPush {
 
 /// Upstream `Pusher::pushMacrosToCoreBoundaries`' two opening guards.
 pub fn push_decision(
-    root_kind: AreaKind,
-    root_children: &[(AreaKind, i64)],
+    root_type: crate::cluster::ClusterType,
+    root_children: &[(crate::cluster::ClusterType, i64)],
 ) -> Result<(), NoPush> {
-    if root_kind == AreaKind::HardMacroCluster {
+    if root_type == crate::cluster::ClusterType::HardMacro {
         return Err(NoPush::DesignIsAllMacros);
     }
     if has_single_centralized_macro_array(root_children) {
@@ -3010,6 +3036,11 @@ pub struct PushAttempt {
     /// overlap test, so its log says "Moved X" for attempts that were undone — scoring against
     /// that channel means scoring ATTEMPTS, not commits.
     pub committed: bool,
+    /// What blocked it, when one did. ⚠️ Carried rather than recomputed: the reference names the
+    /// obstacle in the same trace line that reports the revert, and `overlapsWithHardMacro` is the
+    /// only thing that knows WHICH macro — asking a second time would be a second traversal of a
+    /// list that earlier pushes mutate.
+    pub obstacle: Option<PushObstacle>,
 }
 
 /// Upstream `Pusher::pushMacroClusterToCoreBoundaries`.
@@ -3028,7 +3059,7 @@ pub struct PushAttempt {
 pub fn push_macro_cluster(
     mut cluster_box: (i32, i32, i32, i32),
     boundaries: &[(crate::halo::Boundary, i32)],
-    overlaps: &dyn Fn((i32, i32, i32, i32)) -> bool,
+    obstacle_for: &dyn Fn((i32, i32, i32, i32)) -> Option<PushObstacle>,
 ) -> ((i32, i32, i32, i32), Vec<PushAttempt>) {
     let mut attempts = Vec::new();
     for &(boundary, distance) in boundaries {
@@ -3036,12 +3067,15 @@ pub fn push_macro_cluster(
             continue;
         }
         let moved = move_towards_boundary(cluster_box, boundary, distance);
-        if overlaps(moved) {
+        match obstacle_for(moved) {
             // ⚠️ Upstream moves the box back by the same distance rather than restoring a copy.
-            attempts.push(PushAttempt { boundary, distance, committed: false });
-        } else {
-            cluster_box = moved;
-            attempts.push(PushAttempt { boundary, distance, committed: true });
+            Some(obstacle) => {
+                attempts.push(PushAttempt { boundary, distance, committed: false, obstacle: Some(obstacle) })
+            }
+            None => {
+                cluster_box = moved;
+                attempts.push(PushAttempt { boundary, distance, committed: true, obstacle: None });
+            }
         }
     }
     (cluster_box, attempts)
@@ -3078,7 +3112,7 @@ pub fn move_hard_macro(
 }
 
 /// What stopped a push.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum PushObstacle {
     /// ⚠️ Carries the macro's index in the pusher's flat list — the reference names it in the trace.
     HardMacro(usize),
@@ -3117,6 +3151,156 @@ pub fn push_obstacle(
         }
     }
     None
+}
+
+/// One macro cluster, as `Pusher` sees it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PushCluster {
+    pub id: i32,
+    pub name: String,
+    /// ⚠️ Fixed clusters are still GATHERED — `fetchMacroClusters` adds their macros to the flat
+    /// obstacle list before the push loop ever tests this flag. So a fixed cluster obstructs other
+    /// pushes while never being pushed itself.
+    pub is_fixed_macro: bool,
+    /// `Cluster::getBBox()` — the SOFT MACRO's box.
+    ///
+    /// ⛔ **This is CLUSTER placement's box, not macro placement's.** `placeMacros` writes the
+    /// hard macros and never touches the cluster's soft macro, so the distances the pusher
+    /// measures come from the level above. Recomputing the box from the placed macros is a
+    /// different number on any cluster the macro search did not fill edge to edge.
+    pub bbox: (i32, i32, i32, i32),
+    /// Indices into the flat macro list, in `getHardMacros()` order.
+    ///
+    /// ⚠️ **`front()` is the one that sets the push threshold** — upstream says why at the site:
+    /// only macros of the same size are grouped, so any of them would do. The order still has to
+    /// be the reference's for a cluster where that assumption does not hold.
+    pub macros: Vec<usize>,
+}
+
+/// One hard macro, as `Pusher` sees it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PushMacro {
+    pub name: String,
+    /// The id of the cluster it belongs to — what `overlapsWithHardMacro` skips on.
+    pub cluster_id: i32,
+    /// The HALOED lower-left corner, absolute. ⚠️ `HardMacro`'s default coordinates include the
+    /// halo; the real ones are a separate accessor and are not what the pusher moves.
+    pub location: (i32, i32),
+    pub width: i32,
+    pub height: i32,
+}
+
+impl PushMacro {
+    fn bbox(&self) -> (i32, i32, i32, i32) {
+        (
+            self.location.0,
+            self.location.1,
+            self.location.0 + self.width,
+            self.location.1 + self.height,
+        )
+    }
+}
+
+/// Upstream `Rect`'s stream formatter, which the IO-blockage revert line interpolates.
+///
+/// ⚠️ **Spaces inside the parentheses**, and two of them between the pairs' brackets — the exact
+/// shape is `( xMin yMin ) ( xMax yMax )`. This is a trace format, so it is transcribed from a
+/// captured line rather than guessed.
+fn format_rect(r: (i32, i32, i32, i32)) -> String {
+    format!("( {} {} ) ( {} {} )", r.0, r.1, r.2, r.3)
+}
+
+const PUSH_DEBUG: &str = "[DEBUG MPL-boundary_push] ";
+
+/// Upstream `Pusher::pushMacrosToCoreBoundaries`, composed — the trace it prints and the macro
+/// positions it leaves behind.
+///
+/// 🔑 **The trace is the oracle**, so this returns the lines rather than a summary. Two of them are
+/// `logger_->report` rather than `debugPrint` and therefore carry **no** `[DEBUG …]` prefix: the
+/// `Distance to Close Boundaries:` header and its rows. Prefixing them would be a different log.
+///
+/// ⛔ **The header prints even when the map is EMPTY.** It sits inside the `debugCheck` block,
+/// above the loop over the map, and `pushMacroClusterToCoreBoundaries` returns on an empty map
+/// only afterwards — so a cluster too far from every boundary still prints its name and the
+/// header, and nothing else. `centralization1` is that case, and a version that skipped the header
+/// would match every other design in the suite.
+///
+/// ⛔ **`Moved …` is printed BEFORE the overlap test**, so it appears for reverted pushes too.
+///
+/// ⚠️ **`macros` is mutated in place and the obstacle list is read from it**, which is upstream's
+/// aliasing: `hard_macros_` holds raw pointers, so a committed push is visible to every later
+/// cluster's overlap test. Snapshotting the list up front would make the result order-independent
+/// — and wrong.
+pub fn run_boundary_push(
+    root_type: crate::cluster::ClusterType,
+    root_children: &[(crate::cluster::ClusterType, i64)],
+    clusters: &[PushCluster],
+    macros: &mut [PushMacro],
+    core: (i32, i32, i32, i32),
+    io_blockages: &[(i32, i32, i32, i32)],
+) -> Vec<String> {
+    let mut out = Vec::new();
+    if push_decision(root_type, root_children).is_err() {
+        return out;
+    }
+
+    for cluster in clusters {
+        if cluster.is_fixed_macro {
+            continue;
+        }
+        // ⚠️ Upstream dereferences `getHardMacros().front()` unconditionally; a macro cluster
+        // without macros cannot exist. We decline rather than panic, and record nothing — the
+        // trace would then be short, which the gate reports as a difference.
+        let Some(&first) = cluster.macros.first() else { continue };
+
+        out.push(format!("{PUSH_DEBUG}Macro Cluster {}", cluster.name));
+
+        let distances = distance_to_close_boundaries(
+            cluster.bbox,
+            core,
+            macros[first].width,
+            macros[first].height,
+        );
+        out.push("Distance to Close Boundaries:".to_string());
+        for (boundary, distance) in &distances {
+            out.push(format!("{} {}", boundary.name(), distance));
+        }
+
+        let flat: Vec<(i32, (i32, i32, i32, i32))> =
+            macros.iter().map(|m| (m.cluster_id, m.bbox())).collect();
+        let (_, attempts) = push_macro_cluster(cluster.bbox, &distances, &|b| {
+            push_obstacle(b, cluster.id, &flat, io_blockages)
+        });
+
+        for attempt in attempts {
+            out.push(format!(
+                "{PUSH_DEBUG}Moved {} in the direction of {}.",
+                cluster.name,
+                attempt.boundary.name()
+            ));
+            match attempt.obstacle {
+                Some(PushObstacle::HardMacro(index)) => out.push(format!(
+                    "{PUSH_DEBUG}\tFound overlap with HardMacro {}. Push will be reverted.",
+                    macros[index].name
+                )),
+                Some(PushObstacle::IoBlockage(index)) => out.push(format!(
+                    "{PUSH_DEBUG}\tFound overlap with IO blockage {}. Push will be reverted.",
+                    format_rect(io_blockages[index])
+                )),
+                None => {
+                    for &index in &cluster.macros {
+                        macros[index].location = move_hard_macro(
+                            macros[index].location,
+                            attempt.boundary,
+                            attempt.distance,
+                        );
+                    }
+                }
+            }
+        }
+    }
+
+    out
 }
 
 // ---------------------------------------------------------------- orientation correction

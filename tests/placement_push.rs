@@ -1,23 +1,31 @@
 // SPDX-License-Identifier: Apache-2.0
 //! Whether the boundary push runs at all, and which macro clusters it considers.
 
+use vyges_mpl::cluster::ClusterType;
 use vyges_mpl::placement::{
-    fetch_macro_clusters, has_single_centralized_macro_array, push_decision, AreaKind, NoPush,
+    fetch_macro_clusters, has_single_centralized_macro_array, push_decision, soft_macro_area,
+    NoPush,
 };
 
-/// A small tree: id -> (kind, children).
-fn tree() -> Vec<(AreaKind, Vec<usize>)> {
+/// ⛔ **The pusher reads `Cluster::getClusterType()`, which is NOT the same question as
+/// `isIOCluster()` or `isFixedMacro()`.** Those are separate flags set by `setAs*` methods that
+/// never touch `type_`; an IO cluster is therefore `Mixed` (the member's default) and a fixed macro
+/// cluster is `HardMacro` (typed alongside the movable ones in `clusterMacros`). Every fixture here
+/// is in that vocabulary.
+///
+/// A small tree: id -> (type, children).
+fn tree() -> Vec<(ClusterType, Vec<usize>)> {
     vec![
         // 0: root, mixed
-        (AreaKind::MixedCluster, vec![1, 2, 3]),
+        (ClusterType::Mixed, vec![1, 2, 3]),
         // 1: a macro cluster
-        (AreaKind::HardMacroCluster, vec![]),
+        (ClusterType::HardMacro, vec![]),
         // 2: a mixed cluster holding another macro cluster
-        (AreaKind::MixedCluster, vec![4]),
+        (ClusterType::Mixed, vec![4]),
         // 3: a std cell cluster hiding a macro cluster
-        (AreaKind::StdCellCluster, vec![5]),
-        (AreaKind::HardMacroCluster, vec![]),
-        (AreaKind::HardMacroCluster, vec![]),
+        (ClusterType::StdCell, vec![5]),
+        (ClusterType::HardMacro, vec![]),
+        (ClusterType::HardMacro, vec![]),
     ]
 }
 
@@ -25,9 +33,9 @@ fn tree() -> Vec<(AreaKind, Vec<usize>)> {
 #[test]
 fn macro_clusters_are_fetched_depth_first_through_mixed_clusters() {
     let t = tree();
-    let kind_of = |i: usize| t[i].0;
+    let type_of = |i: usize| t[i].0;
     let children_of = |i: usize| t[i].1.clone();
-    assert_eq!(fetch_macro_clusters(0, &kind_of, &children_of), vec![1, 4]);
+    assert_eq!(fetch_macro_clusters(0, &type_of, &children_of), vec![1, 4]);
 }
 
 /// ⚠️ **A standard-cell cluster is NOT descended into**, so a macro cluster underneath one is
@@ -35,9 +43,9 @@ fn macro_clusters_are_fetched_depth_first_through_mixed_clusters() {
 #[test]
 fn a_macro_cluster_under_a_std_cell_cluster_is_never_fetched() {
     let t = tree();
-    let kind_of = |i: usize| t[i].0;
+    let type_of = |i: usize| t[i].0;
     let children_of = |i: usize| t[i].1.clone();
-    let got = fetch_macro_clusters(0, &kind_of, &children_of);
+    let got = fetch_macro_clusters(0, &type_of, &children_of);
     assert!(!got.contains(&5), "cluster 5 is under a std cell cluster: {got:?}");
 }
 
@@ -47,7 +55,7 @@ fn a_macro_cluster_under_a_std_cell_cluster_is_never_fetched() {
 /// standard-cell cluster shrunk to nothing. The push then declines — the array is already placed.
 #[test]
 fn one_array_beside_a_shrunk_cell_cluster_is_centralized() {
-    let children = [(AreaKind::HardMacroCluster, 40_000i64), (AreaKind::StdCellCluster, 0)];
+    let children = [(ClusterType::HardMacro, 40_000i64), (ClusterType::StdCell, 0)];
     assert!(has_single_centralized_macro_array(&children));
 }
 
@@ -56,21 +64,21 @@ fn one_array_beside_a_shrunk_cell_cluster_is_centralized() {
 /// step rather than a general "is there one array" question.
 #[test]
 fn a_cell_cluster_that_was_not_shrunk_fails_the_test() {
-    let children = [(AreaKind::HardMacroCluster, 40_000i64), (AreaKind::StdCellCluster, 1)];
+    let children = [(ClusterType::HardMacro, 40_000i64), (ClusterType::StdCell, 1)];
     assert!(!has_single_centralized_macro_array(&children), "one square unit is enough to fail it");
 }
 
 /// ⚠️ **Any MIXED cluster fails it immediately.**
 #[test]
 fn a_mixed_cluster_fails_it_at_once() {
-    let children = [(AreaKind::MixedCluster, 0i64), (AreaKind::HardMacroCluster, 1)];
+    let children = [(ClusterType::Mixed, 0i64), (ClusterType::HardMacro, 1)];
     assert!(!has_single_centralized_macro_array(&children));
 }
 
 /// ⚠️ Two macro clusters is not a single array.
 #[test]
 fn two_macro_clusters_fail_it() {
-    let children = [(AreaKind::HardMacroCluster, 1i64), (AreaKind::HardMacroCluster, 1)];
+    let children = [(ClusterType::HardMacro, 1i64), (ClusterType::HardMacro, 1)];
     assert!(!has_single_centralized_macro_array(&children));
 }
 
@@ -79,24 +87,47 @@ fn two_macro_clusters_fail_it() {
 #[test]
 fn the_second_macro_cluster_fails_it_before_later_children_are_seen() {
     let children = [
-        (AreaKind::HardMacroCluster, 1i64),
-        (AreaKind::HardMacroCluster, 1),
-        (AreaKind::StdCellCluster, 999),
+        (ClusterType::HardMacro, 1i64),
+        (ClusterType::HardMacro, 1),
+        (ClusterType::StdCell, 999),
     ];
     assert!(!has_single_centralized_macro_array(&children));
 }
 
-/// ⚠️ **IO clusters and fixed macros fall through the reference's `switch` without a case** and are
-/// simply ignored.
+/// ⛔ **AN IO CLUSTER IS A `Mixed` CLUSTER AND FAILS THE GUARD OUTRIGHT.** `setAsIOBundle`,
+/// `setAsIOPadCluster` and `setAsClusterOfUnplacedIOPins` set a flag and a soft macro and leave
+/// `type_` at its `MixedCluster` default, so the reference's `switch` takes its Mixed case and
+/// returns false.
+///
+/// ⚠️ This is why the guard almost never fires in practice: one unplaced IO pin, one IO pad or one
+/// IO bundle is enough. Reading `isIOCluster()` here and skipping the child declined the push on
+/// **27 of 34** designs while every earlier gate stayed green.
 #[test]
-fn io_clusters_and_fixed_macros_are_ignored() {
+fn an_io_cluster_fails_the_guard_because_its_type_is_mixed() {
     let children = [
-        (AreaKind::IoCluster, 0i64),
-        (AreaKind::FixedMacro, 999),
-        (AreaKind::HardMacroCluster, 1),
-        (AreaKind::StdCellCluster, 0),
+        (ClusterType::Mixed, 0i64),
+        (ClusterType::HardMacro, 1),
+        (ClusterType::StdCell, 0),
     ];
-    assert!(has_single_centralized_macro_array(&children), "neither one counts against it");
+    assert!(!has_single_centralized_macro_array(&children), "the IO cluster is a Mixed child");
+}
+
+/// ⛔ **A FIXED macro cluster is a `HardMacro` and IS COUNTED.** `setAsFixedMacro` only sets a
+/// flag; `clusterMacros` types the fixed macro clusters `HardMacroCluster` a few lines after the
+/// movable ones. So one movable plus one fixed macro cluster is a count of two.
+#[test]
+fn a_fixed_macro_cluster_counts_towards_the_two() {
+    let children = [(ClusterType::HardMacro, 999i64), (ClusterType::HardMacro, 1)];
+    assert!(!has_single_centralized_macro_array(&children), "fixed or not, it is the second");
+}
+
+/// ⛔ **`SoftMacro::getArea` reports `0` for an area of `1`** — `area_ > 1 ? area_ : 0`. The guard
+/// reads the accessor, so a one-unit cluster is "shrunk away" as far as it is concerned.
+#[test]
+fn a_one_unit_soft_macro_reports_as_zero() {
+    assert_eq!(soft_macro_area(1), 0);
+    assert_eq!(soft_macro_area(0), 0);
+    assert_eq!(soft_macro_area(2), 2, "above the threshold it is reported as it stands");
 }
 
 /// ℹ️ A root with no children passes vacuously — zero arrays counts as one.
@@ -111,7 +142,7 @@ fn an_empty_root_passes_vacuously() {
 #[test]
 fn an_all_macro_design_is_not_pushed() {
     assert_eq!(
-        push_decision(AreaKind::HardMacroCluster, &[]),
+        push_decision(ClusterType::HardMacro, &[]),
         Err(NoPush::DesignIsAllMacros)
     );
 }
@@ -119,9 +150,9 @@ fn an_all_macro_design_is_not_pushed() {
 /// ⚠️ The all-macros test comes FIRST, so it wins even when the array test would also have fired.
 #[test]
 fn the_all_macro_guard_is_checked_first() {
-    let children = [(AreaKind::HardMacroCluster, 1i64), (AreaKind::StdCellCluster, 0)];
+    let children = [(ClusterType::HardMacro, 1i64), (ClusterType::StdCell, 0)];
     assert_eq!(
-        push_decision(AreaKind::HardMacroCluster, &children),
+        push_decision(ClusterType::HardMacro, &children),
         Err(NoPush::DesignIsAllMacros),
         "not SingleCentralizedMacroArray"
     );
@@ -131,11 +162,11 @@ fn the_all_macro_guard_is_checked_first() {
 #[test]
 fn an_ordinary_design_is_pushed() {
     let children = [
-        (AreaKind::HardMacroCluster, 1i64),
-        (AreaKind::HardMacroCluster, 1),
-        (AreaKind::StdCellCluster, 999),
+        (ClusterType::HardMacro, 1i64),
+        (ClusterType::HardMacro, 1),
+        (ClusterType::StdCell, 999),
     ];
-    assert_eq!(push_decision(AreaKind::MixedCluster, &children), Ok(()));
+    assert_eq!(push_decision(ClusterType::Mixed, &children), Ok(()));
 }
 
 // ---------------------------------------------------------------- the push itself
@@ -235,7 +266,7 @@ fn the_two_pushes_compose() {
     let (moved, attempts) = push_macro_cluster(
         (50, 30, 250, 230),
         &[(Boundary::B, 30), (Boundary::L, 50)],
-        &|_| false,
+        &|_| None,
     );
     assert_eq!(moved, (0, 0, 200, 200), "into the corner");
     assert!(attempts.iter().all(|a| a.committed));
@@ -249,18 +280,26 @@ fn the_two_pushes_compose() {
 #[test]
 fn a_reverted_push_does_not_block_the_next() {
     // Anything moved DOWN overlaps; moving left does not. The bottom push is tried first.
-    let overlaps = |b: (i32, i32, i32, i32)| b.1 < 30;
+    let obstacle_for = |b: (i32, i32, i32, i32)| {
+        if b.1 < 30 { Some(PushObstacle::HardMacro(0)) } else { None }
+    };
     let (moved, attempts) = push_macro_cluster(
         (50, 30, 250, 230),
         &[(Boundary::B, 30), (Boundary::L, 50)],
-        &overlaps,
+        &obstacle_for,
     );
     assert_eq!(moved, (0, 30, 200, 230), "the LEFT push still happened after the bottom failed");
     assert_eq!(
         attempts,
         vec![
-            PushAttempt { boundary: Boundary::B, distance: 30, committed: false },
-            PushAttempt { boundary: Boundary::L, distance: 50, committed: true },
+            PushAttempt {
+                boundary: Boundary::B,
+                distance: 30,
+                committed: false,
+                // ⚠️ The obstacle is CARRIED, because the reference names it in the revert line.
+                obstacle: Some(PushObstacle::HardMacro(0)),
+            },
+            PushAttempt { boundary: Boundary::L, distance: 50, committed: true, obstacle: None },
         ]
     );
 }
@@ -272,7 +311,7 @@ fn a_zero_distance_is_skipped_entirely() {
     let (moved, attempts) = push_macro_cluster(
         (0, 30, 200, 230),
         &[(Boundary::B, 30), (Boundary::L, 0)],
-        &|_| false,
+        &|_| None,
     );
     assert_eq!(moved, (0, 0, 200, 200));
     assert_eq!(attempts.len(), 1, "only the bottom push was attempted");
@@ -285,7 +324,9 @@ fn a_zero_distance_is_skipped_entirely() {
 #[test]
 fn a_reverted_push_is_still_an_attempt() {
     let (_, attempts) =
-        push_macro_cluster((50, 50, 250, 250), &[(Boundary::L, 50)], &|_| true);
+        push_macro_cluster((50, 50, 250, 250), &[(Boundary::L, 50)], &|_| {
+            Some(PushObstacle::IoBlockage(0))
+        });
     assert_eq!(attempts.len(), 1, "recorded even though it was undone");
     assert!(!attempts[0].committed);
 }
@@ -373,9 +414,9 @@ fn a_cluster_is_pushed_around_an_obstacle() {
 
     // Another cluster's macro sits directly below.
     let macros = [(9i32, (60, 0, 240, 25))];
-    let overlaps = |b: (i32, i32, i32, i32)| push_obstacle(b, 7, &macros, &[]).is_some();
+    let obstacle_for = |b: (i32, i32, i32, i32)| push_obstacle(b, 7, &macros, &[]);
 
-    let (moved, attempts) = push_macro_cluster(cluster_box, &boundaries, &overlaps);
+    let (moved, attempts) = push_macro_cluster(cluster_box, &boundaries, &obstacle_for);
     assert_eq!(moved, (0, 30, 200, 230), "left only");
     assert!(!attempts[0].committed, "the downward push hit the obstacle");
     assert!(attempts[1].committed);
