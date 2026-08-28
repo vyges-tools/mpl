@@ -48,6 +48,7 @@ fn search(macros: Vec<SoftMacro>, outline: (i32, i32)) -> Search {
         normalization: Normalization::default(),
         probabilities: ActionProbabilities::normalized(0.2, 0.2, 0.2, 0.2, 0.2),
         action: None,
+        hard_probabilities: None,
         cost_history: Vec::new(),
     };
     // The macros are already where the fixture put them; record the packing they imply.
@@ -197,4 +198,46 @@ fn the_placement_context_survives_being_scored() {
     s.cal_penalty();
     assert!(s.placement.is_some(), "still there");
     assert_eq!(s.penalties.boundary, first, "and still scoring");
+}
+
+/// ⛔ **The hard core computes FOUR penalties and not the fixed-macro one.**
+/// `SACoreHardMacro::calPenalty` calls outline, wirelength, guidance and fence — that is the whole
+/// list. The soft core's four extra terms are its own members and are never touched here, and
+/// neither is `calFixedMacrosPenalty`, which the soft core calls unconditionally.
+///
+/// ⚠️ So a hard run leaves all five at the zero they were constructed with. Computing them anyway
+/// would be harmless-looking and would change `norm_cost`, since the cost divides by factors that
+/// were measured over those same samples.
+#[test]
+fn a_hard_macro_run_does_not_compute_the_soft_penalties() {
+    let macros = vec![macro_cluster(0, 0, 400, 400), macro_cluster(0, 450, 400, 400)];
+    let mut s = search(macros, (1000, 1000));
+    let mut w = SoftWeights::placement_defaults();
+    w.notch = 50.0;
+    w.boundary = 50.0;
+    let mut ins = inputs(2, w);
+    ins.weights = w;
+    s.placement = Some(Box::new(ins));
+    s.weights = w;
+    // ⚠️ A fixed macro present, so the soft core WOULD score a fixed-macro penalty.
+    s.fixed_bboxes = vec![(0, 0, 400, 400)];
+
+    s.hard_probabilities = Some(vyges_mpl::placement::HardActionProbabilities {
+        pos_swap: 0.25,
+        neg_swap: 0.25,
+        double_swap: 0.25,
+        exchange: 0.25,
+    });
+    s.cal_penalty();
+
+    assert_eq!(s.penalties.boundary, 0.0, "not a member of the hard core");
+    assert_eq!(s.penalties.notch, 0.0, "nor is this");
+    assert_eq!(s.penalties.soft_blockage, 0.0);
+    assert_eq!(s.penalties.fixed_macros, 0.0, "calPenalty does not call it here");
+
+    // ⚠️ The control: the SAME state as a soft run scores them, or the assertions above would
+    // hold for a fixture that simply has nothing to score.
+    s.hard_probabilities = None;
+    s.cal_penalty();
+    assert_ne!(s.penalties.fixed_macros, 0.0, "the soft core does compute it");
 }

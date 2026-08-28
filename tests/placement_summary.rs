@@ -137,3 +137,40 @@ fn the_cost_column_is_recomputed_and_can_diverge_from_the_total() {
     assert!(got.contains("inf"), "the column prints an infinity: \n{got}");
     assert!(got.contains("  Total Cost                                             0.0000 \n"));
 }
+
+/// ⛔ **The MACRO summary has FIVE rows, not nine.** `SACoreHardMacro` derives from the base core
+/// only: boundary, soft blockage and notch are `SACoreSoftMacro`'s own members, so the hard core
+/// has no such terms rather than weighting them zero.
+///
+/// 🔑 The expected text is the reference's own, copied from `hmplogs/fixed_macros1.log` — the
+/// header, the rules, the column alignment and the two trailing spaces are all upstream's.
+#[test]
+fn the_macro_summary_is_the_references_five_row_table() {
+    use vyges_mpl::placement::macro_placement_summary;
+    let got = macro_placement_summary(
+        2,
+        (0, 0, 200_000, 200_280),
+        &Penalties::default(),
+        &SoftWeights::placement_defaults(),
+        &Normalization::default(),
+        1.0,
+        0.1,
+        2000,
+    );
+    let want = "\
+Id: 2
+Outline: (  0.00     0.00  ) ( 100.00   100.14 )
+
+  Penalty Type  |  Weight  |  Value  |  Norm. Factor  |  Cost
+---------------------------------------------------------------
+           Area |   0.1000 |  1.0000 |         1.0000 |  0.1000 
+        Outline | 100.0000 |  0.0000 |         1.0000 |  0.0000 
+    Wire Length | 100.0000 |  0.0000 |         1.0000 |  0.0000 
+       Guidance |  10.0000 |  0.0000 |         1.0000 |  0.0000 
+          Fence |  10.0000 |  0.0000 |         1.0000 |  0.0000 
+---------------------------------------------------------------
+  Total Cost                                             0.1000 
+
+";
+    assert_eq!(got, want);
+}

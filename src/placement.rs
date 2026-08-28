@@ -4340,6 +4340,8 @@ pub fn anneal_one_run(
         normalization: crate::anneal::Normalization::default(),
         probabilities,
         action: None,
+        // Cluster placement is the SOFT core; the hard one is `place_macros`'s.
+        hard_probabilities: None,
         cost_history: Vec::new(),
     };
 
@@ -4862,4 +4864,171 @@ fn find_cluster(root: &crate::cluster::Cluster, id: i32) -> Option<&crate::clust
         return Some(root);
     }
     root.children.iter().find_map(|c| find_cluster(c, id))
+}
+
+/// Upstream `SACoreHardMacro::printResults`, via `printPlacementResult`.
+///
+/// ⛔ **FIVE rows, not nine.** Boundary, soft blockage and notch are `SACoreSoftMacro`'s own
+/// members; the hard core does not weight them at zero, it has no such members. Printing them as
+/// zeros would be a different table.
+///
+/// ⚠️ The Area row's divisor is the literal `1.0`, as in the cluster summary — `norm_area_penalty_`
+/// is measured but never used in the report.
+pub fn macro_placement_summary(
+    cluster_id: i32,
+    outline: (i32, i32, i32, i32),
+    penalties: &crate::anneal::Penalties,
+    weights: &crate::anneal::SoftWeights,
+    norms: &crate::anneal::Normalization,
+    area_penalty: f32,
+    total_cost: f32,
+    dbu_per_micron: i32,
+) -> String {
+    let um = |v: i32| v as f64 / dbu_per_micron as f64;
+    let mut out = String::new();
+    out.push_str(&format!("Id: {cluster_id}\n"));
+    out.push_str(&format!(
+        "Outline: ({:^8.2} {:^8.2}) ({:^8.2} {:^8.2})\n",
+        um(outline.0),
+        um(outline.1),
+        um(outline.2),
+        um(outline.3)
+    ));
+    out.push_str("\n  Penalty Type  |  Weight  |  Value  |  Norm. Factor  |  Cost\n");
+    out.push_str("---------------------------------------------------------------\n");
+    let mut row = |name: &str, weight: f32, value: f32, factor: f32| {
+        out.push_str(&format!(
+            "{:>15} | {:>8.4} | {:>7.4} | {:>14.4} | {:>7.4} \n",
+            name,
+            weight,
+            value,
+            factor,
+            weight * value / factor
+        ));
+    };
+    row("Area", weights.area, area_penalty, 1.0);
+    row("Outline", weights.outline, penalties.outline, norms.outline);
+    row("Wire Length", weights.wirelength, penalties.wirelength, norms.wirelength);
+    row("Guidance", weights.guidance, penalties.guidance, norms.guidance);
+    row("Fence", weights.fence, penalties.fence, norms.fence);
+    out.push_str("---------------------------------------------------------------\n");
+    // ⚠️ `reportTotalCost` is the BASE class's, so both cores print this line identically —
+    // including the trailing blank line the logger's own `\n` adds.
+    out.push_str(&format!("  Total Cost  {total_cost:>49.4} \n\n"));
+    out
+}
+
+// ---------------------------------------------------------------- placeMacros
+
+/// Everything one macro cluster's hard-macro run needs.
+#[derive(Debug, Clone)]
+pub struct MacroProblem {
+    /// The temp macro clusters' boxes, in the CLUSTER's outline coordinates.
+    pub macros: Vec<crate::anneal::SoftMacro>,
+    /// ⚠️ The hard macros only — the fixed terminals appended after are outside the pair.
+    pub number_of_sequence_pair_macros: usize,
+    pub inputs: PlacementInputs,
+    pub outline: (i32, i32),
+    pub dbu_per_micron: i32,
+    pub is_macro_array: bool,
+    pub array_has_empty_space: bool,
+    /// `computeArraySequencePair`'s grid, for a macro array. `None` gives the identity.
+    pub initial_sequence_pair: Option<crate::anneal::SequencePair>,
+    /// Distinct masters among the hard macros — it scales the exchange probability.
+    pub master_count: usize,
+}
+
+/// Upstream `HierRTLMP::placeMacros`' run loop, for ONE macro cluster.
+///
+/// 🔑 **The hard core is not the soft one with terms switched off.** Four actions and no resize,
+/// four penalties and not even the fixed-macro one, and [`hard_norm_cost`] for the cost.
+///
+/// ⛔ **The per-run weights shape the SEARCH ONLY.** Each run makes the outline weight harsher and
+/// the wirelength weight softer, but every run's weights are RESET to the caller's before the
+/// costs are compared — so the comparison is on equal terms and a late run is not penalised for
+/// having been driven differently.
+///
+/// ⛔ **Selection is the LOWEST cost among valid runs**, unlike cluster placement, which takes the
+/// FIRST valid utilization and stops. Getting these two the same way round is a silent difference:
+/// both pick "a valid one", and only a design where the first valid is not the cheapest shows it.
+///
+/// ⚠️ Returns `None` when no run is valid — upstream raises MPL-10 there.
+pub fn place_macros(
+    problem: &MacroProblem,
+    base_weights: crate::anneal::SoftWeights,
+    base_probabilities: crate::anneal::ActionProbabilities,
+    params: &crate::anneal::SaParameters,
+    num_runs: i32,
+    random_seed: u32,
+) -> Option<crate::anneal::Search> {
+    let probabilities = macro_placement_probabilities(
+        base_probabilities.pos_swap,
+        base_probabilities.neg_swap,
+        base_probabilities.double_swap,
+        base_probabilities.exchange,
+        problem.master_count,
+        problem.number_of_sequence_pair_macros.max(1),
+    );
+    let setup = macro_array_setup(
+        probabilities,
+        problem.is_macro_array,
+        problem.array_has_empty_space,
+    );
+    let perturbations = macro_perturbations_per_step(
+        params.num_perturb_per_step,
+        problem.number_of_sequence_pair_macros as i32,
+        problem.is_macro_array,
+    );
+
+    let mut runs: Vec<crate::anneal::Search> = Vec::new();
+    let mut costs: Vec<(bool, f32)> = Vec::new();
+
+    for run_id in 0..num_runs {
+        let mut run_params = *params;
+        run_params.num_perturb_per_step = perturbations;
+        run_params.invalid_states_allowed = setup.invalid_states_allowed;
+
+        let mut search = crate::anneal::Search {
+            sp: crate::anneal::init_sequence_pair_with(
+                problem.macros.len(),
+                problem.number_of_sequence_pair_macros,
+                problem.initial_sequence_pair.clone(),
+            ),
+            macros: problem.macros.clone(),
+            // ⚠️ A hard macro has ONE shape, so there are no curves to resize within.
+            curves: vec![crate::anneal::ShapeCurve::default(); problem.macros.len()],
+            width: 0,
+            height: 0,
+            penalties: crate::anneal::Penalties::default(),
+            placement: Some(Box::new(problem.inputs.clone())),
+            outline_width: problem.outline.0,
+            outline_height: problem.outline.1,
+            dbu_per_micron: problem.dbu_per_micron,
+            fixed_bboxes: Vec::new(),
+            weights: macro_run_weights(base_weights, run_id),
+            normalization: crate::anneal::Normalization::default(),
+            probabilities: base_probabilities,
+            action: None,
+            hard_probabilities: Some(setup.probabilities),
+            cost_history: Vec::new(),
+        };
+        let (w, h) = crate::anneal::pack_floorplan(&mut search.macros, &search.sp);
+        search.width = w;
+        search.height = h;
+        search.cal_penalty();
+
+        let mut rng = crate::rng::Mt19937::new(macro_run_seed(random_seed, run_id));
+        let t = search.initialize(&mut rng, &run_params);
+        // ℹ️ `SACoreHardMacro::run` is `fastSA` alone — the two enhancements belong to the soft core.
+        let fixed_present = !search.fixed_bboxes.is_empty();
+        search.fast_sa(&mut rng, &run_params, t, fixed_present);
+
+        // ⛔ Reset before scoring, so every run is compared on the caller's weights.
+        search.weights = base_weights;
+        costs.push((search.is_valid(fixed_present), search.norm_cost()));
+        runs.push(search);
+    }
+
+    let best = best_macro_run(&costs)?;
+    Some(runs.swap_remove(best))
 }

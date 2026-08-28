@@ -1008,6 +1008,7 @@ fn search_with(n: usize) -> Search {
         normalization: Normalization::default(),
         probabilities: ActionProbabilities::normalized(0.2, 0.2, 0.2, 0.2, 0.2),
         action: None,
+        hard_probabilities: None,
         cost_history: Vec::new(),
     };
     let (w, h) = pack_floorplan(&mut s.macros, &s.sp);

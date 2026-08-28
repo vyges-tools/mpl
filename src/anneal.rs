@@ -1014,6 +1014,14 @@ pub struct Search {
     pub probabilities: ActionProbabilities,
     /// The action the last `perturb` chose. ⚠️ Restoring reads this, so it must survive the call.
     pub action: Option<Action>,
+    /// Set for a HARD-macro run, and the presence of it IS the mode switch.
+    ///
+    /// ⛔ **`SACoreHardMacro` is a different core, not the soft one with terms zeroed.** It has
+    /// FOUR actions and no resize, it computes only outline, wirelength, guidance and fence — not
+    /// even the fixed-macro penalty — and its cost is [`crate::placement::hard_norm_cost`].
+    /// Boundary, notch, soft blockage and fixed macros are `SACoreSoftMacro`'s own members and do
+    /// not exist here at all.
+    pub hard_probabilities: Option<crate::placement::HardActionProbabilities>,
     /// `(temperature, pre_cost)` once per STEP, as `writeCostFile` emits them.
     ///
     /// 🔑 **The trajectory, not the endpoint.** Two runs can finish at the same cost by different
@@ -1070,6 +1078,20 @@ impl Search {
         self.penalties.outline =
             outline_penalty(self.width, self.height, self.outline_width, self.outline_height);
 
+        // ⛔ `SACoreHardMacro::calPenalty` calls FOUR functions: outline, wirelength, guidance,
+        // fence. It does NOT call the fixed-macro penalty, and the four soft-only terms are not
+        // its members at all — so they stay at the zero they were built with.
+        if self.hard_probabilities.is_some() {
+            if let Some(inputs) = self.placement.take() {
+                let outline = (self.outline_width, self.outline_height);
+                self.penalties.wirelength = inputs.wirelength(&self.macros, outline);
+                self.penalties.guidance = inputs.guidance(&self.macros, self.dbu_per_micron);
+                self.penalties.fence = inputs.fence(&self.macros, outline);
+                self.placement = Some(inputs);
+            }
+            return;
+        }
+
         if let Some(inputs) = self.placement.take() {
             let outline = (self.outline_width, self.outline_height);
 
@@ -1096,11 +1118,11 @@ impl Search {
 
     /// Upstream `SACoreSoftMacro::calNormCost`.
     pub fn norm_cost(&self) -> f32 {
-        norm_cost(
-            &Penalties { area: self.area_penalty(), ..self.penalties },
-            &self.weights,
-            &self.normalization,
-        )
+        let p = Penalties { area: self.area_penalty(), ..self.penalties };
+        if self.hard_probabilities.is_some() {
+            return crate::placement::hard_norm_cost(&p, &self.weights, &self.normalization);
+        }
+        norm_cost(&p, &self.weights, &self.normalization)
     }
 
     /// Upstream `resultFitsInOutline`.
@@ -1167,7 +1189,14 @@ impl Search {
     ///
     /// ⛔ **An empty macro list returns before the draw**, leaving the generator untouched.
     pub fn perturb(&mut self, rng: &mut Mt19937) {
-        let Some(action) = choose_action(rng, &self.probabilities, self.macros.len()) else {
+        // ⛔ A hard-macro run draws the SAME single word and dispatches on FOUR actions — there is
+        // no resize, because a hard macro has one shape. Exchange is the `else`, so it absorbs
+        // whatever slack the normalisation left, exactly as the soft core's resize does.
+        let Some(action) = (match &self.hard_probabilities {
+            Some(hard) if !self.macros.is_empty() => Some(hard.action_for(canonical_f32(rng))),
+            Some(_) => None,
+            None => choose_action(rng, &self.probabilities, self.macros.len()),
+        }) else {
             return;
         };
         self.action = Some(action);
@@ -1691,6 +1720,7 @@ fn new_search(
         normalization: Normalization::default(),
         probabilities,
         action: None,
+        hard_probabilities: None,
         cost_history: Vec::new(),
     };
     // Upstream `findFixedMacros`, which walks the positive sequence.

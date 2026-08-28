@@ -2440,6 +2440,30 @@ pub const MUTATIONS: &[Mutation] = &[
         want: r#"an_io_pin_cluster_takes_its_constraint_region_or_the_whole_die"#,
     },
     Mutation {
+        name: r#"hard-core-computes-the-fixed-macro-penalty"#,
+        file: r#"src/anneal.rs"#,
+        find: r#"                self.placement = Some(inputs);
+            }
+            return;
+        }"#,
+        replace: r#"                self.placement = Some(inputs);
+            }
+        }"#,
+        want: r#"a_hard_macro_run_does_not_compute_the_soft_penalties"#,
+    },
+    Mutation {
+        name: r#"macro-summary-prints-the-soft-rows"#,
+        file: r#"src/placement.rs"#,
+        find: r#"    row("Fence", weights.fence, penalties.fence, norms.fence);
+    out.push_str("---------------------------------------------------------------\n");
+    // ⚠️ `reportTotalCost` is the BASE class's"#,
+        replace: r#"    row("Fence", weights.fence, penalties.fence, norms.fence);
+    row("Notch", weights.notch, penalties.notch, norms.notch);
+    out.push_str("---------------------------------------------------------------\n");
+    // ⚠️ `reportTotalCost` is the BASE class's"#,
+        want: r#"the_macro_summary_is_the_references_five_row_table"#,
+    },
+    Mutation {
         name: r#"fixed-macros-from-children-not-the-sequence"#,
         file: r#"src/placement.rs"#,
         find: r#"        fixed_bboxes: assembly
