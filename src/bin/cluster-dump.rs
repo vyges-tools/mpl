@@ -32,6 +32,7 @@ fn main() {
             "--place" => {}
             "--placement-trace" => {}
             "--floorplan" => {}
+            "--nets" => {}
             "--use-full-halo" => use_full_halo = true,
             "--base-halo" => {
                 let Some(spec) = it.next() else { usage("--base-halo needs l,b,r,t in microns") };
@@ -65,7 +66,8 @@ fn main() {
 
     let place = std::env::args().any(|a| a == "--place");
     let summaries = std::env::args().any(|a| a == "--placement-trace")
-        || std::env::args().any(|a| a == "--floorplan");
+        || std::env::args().any(|a| a == "--floorplan")
+        || std::env::args().any(|a| a == "--nets");
     let db = match vyges_opendb::Db::open(&path) {
         Ok(d) => d,
         Err(e) => { eprintln!("cannot read {path}: {e}"); std::process::exit(2); }
@@ -167,6 +169,7 @@ fn print_coarse_shaping_trace(
     use vyges_mpl::cluster::ClusterType;
     // Taken before `r` is dismantled below: a net reaches an IO cluster only through this.
     let pin_cluster = std::mem::take(&mut r.pin_cluster);
+    let pad_assoc = std::mem::take(&mut r.pad_assoc);
     let Some(h) = r.shaping else {
         eprintln!("no shaping inputs: the run produced none");
         std::process::exit(3);
@@ -242,6 +245,7 @@ fn print_coarse_shaping_trace(
             &|i| pin_cluster.get(i).copied().flatten(),
             h.has_io_pads,
             guide_regions,
+            &pad_assoc,
         );
     } else {
         report_placement(&root, &h, &shaping, dbu);
@@ -357,12 +361,21 @@ fn print_placement_summaries(
     pin_cluster_of: &dyn Fn(usize) -> Option<i32>,
     has_io_pads: bool,
     guide_regions: &[(usize, (i32, i32, i32, i32))],
+    pad_assoc: &[(usize, vyges_mpl::cluster::ClusterId)],
 ) {
     use vyges_mpl::placement as p;
 
     // 🔑 **Rebuilt from the association as it stands**, which is what `rebuildConnections` does
     // inside `placeChildren` — not a map built once for the whole design.
-    let assoc = vyges_mpl::tree::associate_instances(root, design);
+    let mut assoc = vyges_mpl::tree::associate_instances(root, design);
+    // ⛔ Re-applied after the walk, exactly as `split_mixed_leaves` does: an IO pad's cluster holds
+    // no leaf instances, so the walk leaves the pad unassociated and every net reaching it is
+    // dropped for want of a second endpoint.
+    for &(inst, id) in pad_assoc {
+        if let Some(slot) = assoc.get_mut(inst) {
+            *slot = Some(id);
+        }
+    }
 
     // 🔑 **A cluster inherits the UNION of its macros' guides.** Upstream merges over
     // `cluster->getHardMacros()`; the association is the same set, read the other way round.
@@ -459,6 +472,7 @@ fn print_placement_summaries(
     }
 
     let floorplan_mode = std::env::args().any(|a| a == "--floorplan");
+    let nets_mode = std::env::args().any(|a| a == "--nets");
     let mut emit = |parent: &vyges_mpl::cluster::Cluster| {
         let ctx = p::ParentContext {
             connections_of: &|id| connections.of(id),
@@ -493,6 +507,17 @@ fn print_placement_summaries(
             problem.inputs.nets.len(),
             problem.inputs.attributes.iter().filter(|a| a.num_macro > 0).count()
         );
+        if nets_mode {
+            // `writeNetFile`: source, target, weight — written BEFORE the anneal, so it is the
+            // earliest artifact this stage produces and the one that explains a wirelength
+            // difference without the placement in the way.
+            let name = |i: usize| problem.names.get(i).map(String::as_str).unwrap_or("");
+            for n in &problem.inputs.nets {
+                println!("{}   {}   {}", name(n.source), name(n.target), n.weight);
+            }
+            return;
+        }
+
         // ⚠️ The same two steps `run_hierarchical_macro_placement` applies around its own call:
         // the CLUSTER perturbation rule, and the dead-space fill on the winning solution. Without
         // them this path anneals a different walk and reports geometry the reference has already

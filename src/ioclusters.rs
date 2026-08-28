@@ -299,7 +299,15 @@ pub fn create_io_pad_clusters(
     let mut next_id = first_id;
     for &p in pads {
         let mut c = Cluster::new(next_id, design.instances[p].name.clone());
-        c.is_io_pad_cluster = true;
+        // ⛔ The pad's own instance bbox, UNHALOED — `pad->getBBox()->getBox()`, not the
+        // `HardMacro` box a fixed macro uses. `setAsIOPadCluster` builds the soft macro as well as
+        // setting the flag; with only the flag the pad is a `0x0` box at the origin.
+        let b = design.instances[p].bbox;
+        c.set_as_io_pad_cluster(
+            (b.x_min as i32, b.y_min as i32),
+            (b.x_max - b.x_min) as i32,
+            (b.y_max - b.y_min) as i32,
+        );
         pin_clusters.push(c);
         next_id += 1;
     }

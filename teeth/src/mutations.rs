@@ -2398,6 +2398,18 @@ pub const MUTATIONS: &[Mutation] = &[
         want: r#"growing_a_cluster_recomputes_its_area"#,
     },
     Mutation {
+        name: r#"io-pad-cluster-has-no-soft-macro"#,
+        file: r#"src/ioclusters.rs"#,
+        find: r#"        c.set_as_io_pad_cluster(
+            (b.x_min as i32, b.y_min as i32),
+            (b.x_max - b.x_min) as i32,
+            (b.y_max - b.y_min) as i32,
+        );"#,
+        replace: r#"        c.is_io_pad_cluster = true;
+        let _ = &b;"#,
+        want: r#"an_io_pad_cluster_takes_the_pads_own_bbox"#,
+    },
+    Mutation {
         name: r#"io-pin-cluster-has-no-soft-macro"#,
         file: r#"src/ioclusters.rs"#,
         find: r#"        c.set_as_cluster_of_unplaced_io_pins(

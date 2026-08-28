@@ -52,6 +52,13 @@ pub struct Clustering {
     /// ⚠️ Empty for a refused or vacuous run, and for the no-standard-cell path — those never
     /// reach the assignment.
     pub pin_cluster: Vec<Option<crate::cluster::ClusterId>>,
+    /// Which cluster each IO PAD instance belongs to.
+    ///
+    /// ⛔ **A pad's cluster holds no leaf instances, so walking the tree cannot find it.** Upstream
+    /// writes the pad into the association map when it creates the cluster. Any later stage that
+    /// rebuilds the association by walking — as `rebuildConnections` does — has to re-apply this,
+    /// or every net reaching a pad loses its second endpoint and is dropped.
+    pub pad_assoc: Vec<(usize, crate::cluster::ClusterId)>,
 }
 
 /// Everything `runCoarseShaping` reads that the clustering stage has already worked out.
@@ -245,6 +252,7 @@ pub fn run_clustering(input: &DesignInputs, opts: &ClusterOptions) -> Clustering
     let unfixed = crate::design::unfixed_macros(design);
     if unfixed.is_empty() {
         return Clustering {
+            pad_assoc: Vec::new(),
             pin_cluster: Vec::new(),
             root: Cluster::new(0, "root"),
             status: Status::Vacuous,
@@ -336,6 +344,7 @@ pub fn run_clustering(input: &DesignInputs, opts: &ClusterOptions) -> Clustering
             root.children.push(c);
         }
         return Clustering {
+            pad_assoc: Vec::new(),
             pin_cluster: bterm_to_cluster,
             root,
             status: Status::Applied,
@@ -395,8 +404,10 @@ pub fn run_clustering(input: &DesignInputs, opts: &ClusterOptions) -> Clustering
     // ⚠️ Read back from the context rather than kept aside before the split, so that any change
     // the split made to the assignment travels with it.
     let pin_cluster = ctx.bterm_to_cluster;
+    let pad_assoc = ctx.seed_assoc;
     Clustering {
         pin_cluster,
+        pad_assoc,
         root,
         status: Status::Applied,
         refusal: None,
@@ -533,6 +544,7 @@ fn shaping_handoff(
 
 fn refuse(r: Refusal) -> Clustering {
     Clustering {
+        pad_assoc: Vec::new(),
         pin_cluster: Vec::new(),
         root: Cluster::new(0, "root"),
         status: Status::Refused,

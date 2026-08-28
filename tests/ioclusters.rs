@@ -366,3 +366,36 @@ fn an_io_pin_cluster_takes_its_constraint_region_or_the_whole_die() {
     // ⚠️ The control: the two must DIFFER, or the assertions above would hold for either shape.
     assert_ne!((sm.width, sm.height), (fsm.width, fsm.height));
 }
+
+/// ⛔ **An IO PAD cluster's soft macro is the pad instance's OWN bbox** — `pad->getBBox()`, the
+/// placed instance box, and NOT the haloed `HardMacro` box a fixed macro uses. The two coexist in
+/// this engine and picking the wrong one is invisible in the hierarchy dump.
+///
+/// ⚠️ `setAsIOPadCluster` builds the soft macro as well as setting the flag; with the flag alone
+/// the pad is a `0x0` box at the origin and every net reaching it measures to the wrong place.
+#[test]
+fn an_io_pad_cluster_takes_the_pads_own_bbox() {
+    use vyges_mpl::design::{Design, Instance, MasterKind};
+    let pad = Instance {
+        name: "PAD_1".into(),
+        is_block: false,
+        is_fixed: true,
+        bbox: Rect { x_min: 300000, y_min: 100000, x_max: 580000, y_max: 150000 },
+        master: MasterKind { is_pad: true, ..Default::default() },
+        is_ignorable_macro: false,
+    };
+    let design = Design {
+        instances: vec![pad],
+        modules: Vec::new(),
+        top: 0,
+        core_area: die(),
+        die_area: die(),
+    };
+
+    let r = vyges_mpl::ioclusters::create_io_pad_clusters(&[0], &design, 5);
+    let c = &r.pin_clusters[0];
+    assert!(c.is_io_pad_cluster);
+    let sm = c.soft_macro.expect("a pad cluster carries one");
+    assert_eq!((sm.x, sm.y), (300000, 100000));
+    assert_eq!((sm.width, sm.height), (280000, 50000), "the pad's own extent");
+}

@@ -61,8 +61,31 @@ if not cases:
     print(f"ERROR: no reference floorplans in {fp_dir} -- run run_hmp_fp.sh")
     raise SystemExit(2)
 
+def compare(case, artifact, flag, label):
+    """One stage dump, ours against upstream's. Returns 'match', 'differ' or None if absent."""
+    ref_path = os.path.join(fp_dir, case, artifact)
+    if not os.path.exists(ref_path):
+        return None
+    odb = os.path.join(odb_dir, case + ".odb")
+    if not os.path.exists(odb):
+        return "no-odb"
+    want = io.open(ref_path, encoding="utf-8").read().split()
+    r = subprocess.run(["./target/debug/cluster-dump", "--shaping", flag]
+                       + flags(case) + [odb], capture_output=True, text=True)
+    return "match" if r.stdout.split() == want else "differ"
+
+
+nets_ok = nets_differ = 0
 ok = differ = macro_path = refused = 0
 for case in cases:
+    # 🔑 The BUNDLED NETS are written before the anneal, so they are the earliest artifact this
+    # stage produces — a wirelength difference is explained here or it is not an input problem.
+    n = compare(case, "root.net.txt", "--nets", "nets")
+    if n == "match":
+        nets_ok += 1
+    elif n == "differ":
+        nets_differ += 1
+        print(f"  {case:32} NETS DIFFER")
     ref_path = os.path.join(fp_dir, case, "root.fp.txt")
     if not os.path.exists(ref_path):
         print(f"  {case:32} macro-path (no floorplan written)"); macro_path += 1; continue
@@ -87,5 +110,6 @@ for case in cases:
         first = f"{len(got)} clusters, upstream has {len(want)}"
     print(f"  {case:32} DIFFERS  {first}")
 
-print(f"\n{ok} match, {differ} differ, {macro_path} macro-path, {refused} refused, of {len(cases)}")
+print(f"\nfloorplan: {ok} match, {differ} differ, {macro_path} macro-path, {refused} refused, of {len(cases)}")
+print(f"nets:      {nets_ok} match, {nets_differ} differ")
 raise SystemExit(1 if differ or refused else 0)
