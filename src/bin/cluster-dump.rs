@@ -178,6 +178,7 @@ fn main() {
         };
         print_coarse_shaping_trace(
             r, &blockages, dbu, place, summaries, &design, &nets, &guide_regions, overrides,
+            &geometry,
         );
         return;
     }
@@ -202,6 +203,7 @@ fn print_coarse_shaping_trace(
     nets: &[vyges_mpl::netlist::DbNet],
     guide_regions: &[(usize, (i32, i32, i32, i32))],
     overrides: Overrides,
+    geometry: &[Option<vyges_mpl::read::MacroGeometry>],
 ) {
     use vyges_mpl::cluster::ClusterType;
     // Taken before `r` is dismantled below: a net reaches an IO cluster only through this.
@@ -284,6 +286,7 @@ fn print_coarse_shaping_trace(
             guide_regions,
             &pad_assoc,
             overrides,
+            geometry,
         );
     } else {
         report_placement(&root, &h, &shaping, dbu, overrides);
@@ -420,6 +423,7 @@ fn print_placement_summaries(
     guide_regions: &[(usize, (i32, i32, i32, i32))],
     pad_assoc: &[(usize, vyges_mpl::cluster::ClusterId)],
     overrides: Overrides,
+    geometry: &[Option<vyges_mpl::read::MacroGeometry>],
 ) {
     use vyges_mpl::placement as p;
 
@@ -511,17 +515,25 @@ fn print_placement_summaries(
     // ⚠️ Leaving these absolute makes every unconstrained-IO distance wrong by the outline's
     // corner — on `halos3` that is the whole difference between our wirelength and the
     // reference's, on identical geometry.
-    let available: Vec<p::Region> = shaping
+    // Absolute, as coarse shaping found them. Each CORE rebases them onto its OWN outline.
+    let available_abs: Vec<p::Region> = shaping
         .available_regions
         .iter()
         .map(|r| p::Region {
-            x0: r.line.x_min as i32 - outline.0,
-            y0: r.line.y_min as i32 - outline.1,
-            x1: r.line.x_max as i32 - outline.0,
-            y1: r.line.y_max as i32 - outline.1,
+            x0: r.line.x_min as i32,
+            y0: r.line.y_min as i32,
+            x1: r.line.x_max as i32,
+            y1: r.line.y_max as i32,
             boundary: r.boundary,
         })
         .collect();
+    let rebase = |regions: &[p::Region], (ox, oy): (i32, i32)| -> Vec<p::Region> {
+        regions
+            .iter()
+            .map(|r| p::Region { x0: r.x0 - ox, y0: r.y0 - oy, x1: r.x1 - ox, y1: r.y1 - oy, ..*r })
+            .collect()
+    };
+    let available: Vec<p::Region> = rebase(&available_abs, (outline.0, outline.1));
 
     // 🔑 **A CONSTRAINED IO cluster measures against its OWN region, not the available ones.**
     // Both paths were stubbed, and the constrained one is the commoner of the two: every
@@ -722,8 +734,11 @@ fn print_placement_summaries(
             }
             p::PlacementAction::PlaceMacros => {
                 emit_macro_summary(
-                    c, &placed, design, h, dbu, weights, probabilities, root, &available, nets,
-                    &assoc,
+                    // ⛔ **The MACRO core rebases onto ITS OWN outline**, not the root's. Passing
+                    // the cluster path's already-rebased list would offset every unconstrained-IO
+                    // distance by the difference between the two corners.
+                    c, &placed, design, h, dbu, weights, probabilities, root, geometry,
+                    &available_abs, nets, &assoc,
                     pin_cluster_of, has_io_pads,
                 );
             }
@@ -757,6 +772,7 @@ fn emit_macro_summary(
     weights: vyges_mpl::anneal::SoftWeights,
     probabilities: vyges_mpl::anneal::ActionProbabilities,
     root: &vyges_mpl::cluster::Cluster,
+    geometry: &[Option<vyges_mpl::read::MacroGeometry>],
     available: &[vyges_mpl::placement::Region],
     nets_in: &[vyges_mpl::netlist::DbNet],
     assoc: &[Option<i32>],
@@ -875,6 +891,29 @@ fn emit_macro_summary(
     // half-perimeter one, so a terminal left with default attributes scores zero however correct
     // the net is.
     let mut attributes = vec![p::MacroAttributes::default(); total];
+    // ⛔ **`HardMacro::getPinX` is `x_ + pin_x_`, not the macro's centre.** `pin_x_` is the centre
+    // of the master's SIGNAL pin bounding box plus HALF THE TOTAL halo — note it is
+    // `(left + right) / 2`, not `left`, which is upstream's own expression and not an alignment
+    // of the pin onto the haloed box. The two coincide only when the pins sit in the middle.
+    for (k, &inst) in cluster.leaf_macros.iter().enumerate() {
+        let Some(g) = geometry[inst].as_ref() else { continue };
+        let mut lo = (i64::MAX, i64::MAX);
+        let mut hi = (i64::MIN, i64::MIN);
+        for pin in &g.pins {
+            lo = (lo.0.min(pin.x_min), lo.1.min(pin.y_min));
+            hi = (hi.0.max(pin.x_max), hi.1.max(pin.y_max));
+        }
+        if lo.0 > hi.0 {
+            continue;
+        }
+        // `(left + right)` is the haloed width less the master's, which is what we can recover.
+        let halo_x = h.macro_dims[inst].0 - g.master_width;
+        let halo_y = h.macro_dims[inst].1 - g.master_height;
+        attributes[k].pin_offset = Some((
+            ((lo.0 + hi.0) / 2 + halo_x / 2) as i32,
+            ((lo.1 + hi.1) / 2 + halo_y / 2) as i32,
+        ));
+    }
     let mut constraint_regions: Vec<(usize, p::Region)> = Vec::new();
     for id in &terminal_ids {
         let Some(&index) = macro_of.get(id) else { continue };
@@ -903,7 +942,16 @@ fn emit_macro_summary(
             attributes,
             nets,
             constraint_regions,
-            available_regions: available.to_vec(),
+            available_regions: available
+                .iter()
+                .map(|r| p::Region {
+                    x0: r.x0 - x0,
+                    y0: r.y0 - y0,
+                    x1: r.x1 - x0,
+                    y1: r.y1 - y0,
+                    ..*r
+                })
+                .collect(),
             die_margin: 2 * ((design.die_area.x_max - design.die_area.x_min)
                 + (design.die_area.y_max - design.die_area.y_min)),
             root: p::Root { x: x0, y: y0, width: outline.0, height: outline.1 },

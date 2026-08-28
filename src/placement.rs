@@ -175,11 +175,22 @@ pub struct WirelengthMacro {
     /// ⚠️ Only the net's TARGET is ever tested for this — the model is asymmetric.
     pub is_cluster_of_unplaced_io_pins: bool,
     pub is_unconstrained_io_cluster: bool,
+    /// The HARD macro's pin offset, when this is one.
+    ///
+    /// ⛔ **The two cores read different pins.** `SoftMacro::getPinX` is the macro's CENTRE;
+    /// `HardMacro::getPinX` is `x_ + pin_x_`, where `pin_x_` is the centre of the master's SIGNAL
+    /// pin bounding box plus half the total halo. They coincide only when the pins happen to sit
+    /// in the middle, so using the centre in a macro run measures from the wrong point.
+    pub pin_offset: Option<(i32, i32)>,
 }
 
 impl WirelengthMacro {
     pub fn pin(&self) -> (i32, i32) {
-        (pin_center(self.x, self.width), pin_center(self.y, self.height))
+        match self.pin_offset {
+            // `HardMacro::getPinX` — the offset is already master-relative and halo-adjusted.
+            Some((dx, dy)) => (self.x + dx, self.y + dy),
+            None => (pin_center(self.x, self.width), pin_center(self.y, self.height)),
+        }
     }
 }
 
@@ -1836,6 +1847,8 @@ pub struct MacroAttributes {
     pub cluster_area: i64,
     pub is_cluster_of_unplaced_io_pins: bool,
     pub is_unconstrained_io_cluster: bool,
+    /// Set only in a MACRO run — see [`WirelengthMacro::pin_offset`].
+    pub pin_offset: Option<(i32, i32)>,
 }
 
 /// Everything the six placement-only cost terms read that the annealer's own state does not hold.
@@ -1876,6 +1889,7 @@ impl PlacementInputs {
                 height: m.height,
                 is_cluster_of_unplaced_io_pins: a.is_cluster_of_unplaced_io_pins,
                 is_unconstrained_io_cluster: a.is_unconstrained_io_cluster,
+                pin_offset: a.pin_offset,
             })
             .collect()
     }
@@ -4778,6 +4792,8 @@ fn attributes_for(
         cluster_area: child.area(),
         is_cluster_of_unplaced_io_pins: child.is_cluster_of_unplaced_io_pins,
         is_unconstrained_io_cluster: child.is_cluster_of_unconstrained_io_pins,
+        // ℹ️ Cluster placement is the SOFT core: the pin is the macro's centre.
+        pin_offset: None,
     }
 }
 

@@ -16,6 +16,7 @@ fn macro_at(x: i32, y: i32, width: i32, height: i32) -> WirelengthMacro {
         height,
         is_cluster_of_unplaced_io_pins: false,
         is_unconstrained_io_cluster: false,
+        pin_offset: None,
     }
 }
 
