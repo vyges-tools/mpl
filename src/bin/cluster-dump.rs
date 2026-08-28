@@ -24,6 +24,11 @@ fn main() {
     // ⛔ `set_macro_guidance_region` is ENGINE state, like the halo commands — a prepared `.odb`
     // cannot carry it, so the case's `.tcl` has to be translated onto this command line.
     let mut macro_guides: Vec<(String, [f64; 4])> = Vec::new();
+    let mut w_boundary: Option<f32> = None;
+    let mut w_notch: Option<f32> = None;
+    let mut w_guidance: Option<f32> = None;
+    // Upstream's `-target_util` default.
+    let mut target_util: f32 = 0.25;
     // ⚠️ Zero means "not supplied" — the same sentinel `setBaseThresholds` reads.
     let mut sup = vyges_mpl::thresholds::Thresholds {
         max_macro: 0,
@@ -56,6 +61,14 @@ fn main() {
             // ⛔ `rtl_macro_placer`'s threshold options are ENGINE state like the halos: a
             // prepared `.odb` cannot carry them, and supplying them keeps `max_level` at 2 where
             // the derivation would otherwise drop it to 1 — which changes the soft-blockage weight.
+            // ⛔ `rtl_macro_placer`'s WEIGHT and utilization options are engine state too. The
+            // suite sets `-boundary_weight`, `-notch_weight`, `-guidance_weight` and
+            // `-target_util`; an untranslated one leaves a term live that the case turned OFF, or
+            // ramps the utilization from the wrong base.
+            "--boundary-weight" => w_boundary = Some(next_f32(&mut it, "--boundary-weight")),
+            "--notch-weight" => w_notch = Some(next_f32(&mut it, "--notch-weight")),
+            "--guidance-weight" => w_guidance = Some(next_f32(&mut it, "--guidance-weight")),
+            "--target-util" => target_util = next_f32(&mut it, "--target-util"),
             "--max-num-inst" => sup.max_std_cell = next_i32(&mut it, "--max-num-inst"),
             "--min-num-inst" => sup.min_std_cell = next_i32(&mut it, "--min-num-inst"),
             "--max-num-macro" => sup.max_macro = next_i32(&mut it, "--max-num-macro"),
@@ -157,8 +170,14 @@ fn main() {
         return;
     }
     if want_shaping {
+        let overrides = Overrides {
+            boundary: w_boundary,
+            notch: w_notch,
+            guidance: w_guidance,
+            target_util,
+        };
         print_coarse_shaping_trace(
-            r, &blockages, dbu, place, summaries, &design, &nets, &guide_regions,
+            r, &blockages, dbu, place, summaries, &design, &nets, &guide_regions, overrides,
         );
         return;
     }
@@ -182,6 +201,7 @@ fn print_coarse_shaping_trace(
     design: &vyges_mpl::design::Design,
     nets: &[vyges_mpl::netlist::DbNet],
     guide_regions: &[(usize, (i32, i32, i32, i32))],
+    overrides: Overrides,
 ) {
     use vyges_mpl::cluster::ClusterType;
     // Taken before `r` is dismantled below: a net reaches an IO cluster only through this.
@@ -263,9 +283,10 @@ fn print_coarse_shaping_trace(
             h.has_io_pads,
             guide_regions,
             &pad_assoc,
+            overrides,
         );
     } else {
-        report_placement(&root, &h, &shaping, dbu);
+        report_placement(&root, &h, &shaping, dbu, overrides);
     }
 }
 
@@ -277,6 +298,7 @@ fn report_placement(
     h: &vyges_mpl::engine::ShapingHandoff,
     shaping: &vyges_mpl::shaping::CoarseShaping,
     dbu: i32,
+    overrides: Overrides,
 ) {
     use vyges_mpl::placement as p;
 
@@ -297,11 +319,11 @@ fn report_placement(
     // keep the command default of 10 rather than being raised to 50.
     let (weights, tiny, probabilities) = p::placement_setup(
         h.max_level,
-        vyges_mpl::anneal::SoftWeights::placement_defaults(),
+        overrides.weights(),
         0,
         h.has_std_cells,
     );
-    let utilizations = p::utilization_list(0.25, 10);
+    let utilizations = p::utilization_list(overrides.target_util, 10);
 
     // ⛔ **Both lists are CLIPPED to the outline and rebased onto it.** `placeChildren` opens with
     // `findOffsetIntersections` on each, and everything inside a placement problem is
@@ -390,6 +412,7 @@ fn print_placement_summaries(
     has_io_pads: bool,
     guide_regions: &[(usize, (i32, i32, i32, i32))],
     pad_assoc: &[(usize, vyges_mpl::cluster::ClusterId)],
+    overrides: Overrides,
 ) {
     use vyges_mpl::placement as p;
 
@@ -446,11 +469,11 @@ fn print_placement_summaries(
     // keep the command default of 10 rather than being raised to 50.
     let (weights, tiny, probabilities) = p::placement_setup(
         h.max_level,
-        vyges_mpl::anneal::SoftWeights::placement_defaults(),
+        overrides.weights(),
         0,
         h.has_std_cells,
     );
-    let utilizations = p::utilization_list(0.25, 10);
+    let utilizations = p::utilization_list(overrides.target_util, 10);
     // ⛔ **Both lists are CLIPPED to the outline and rebased onto it.** `placeChildren` opens with
     // `findOffsetIntersections` on each, and everything inside a placement problem is
     // outline-relative. Passing them raw leaves a blockage in DIE coordinates: on `guides1` the
@@ -659,6 +682,38 @@ fn print_placement_summaries(
 fn region_to_dbu(r: [f64; 4], dbu: i32) -> (i32, i32, i32, i32) {
     let d = |v: f64| ((v as f32) as f64 * dbu as f64).round() as i32;
     (d(r[0]), d(r[1]), d(r[2]), d(r[3]))
+}
+
+/// The `rtl_macro_placer` options that are ENGINE state and cannot ride on a prepared `.odb`.
+#[derive(Debug, Clone, Copy)]
+struct Overrides {
+    boundary: Option<f32>,
+    notch: Option<f32>,
+    guidance: Option<f32>,
+    target_util: f32,
+}
+
+impl Overrides {
+    fn weights(&self) -> vyges_mpl::anneal::SoftWeights {
+        let mut w = vyges_mpl::anneal::SoftWeights::placement_defaults();
+        if let Some(v) = self.boundary {
+            w.boundary = v;
+        }
+        if let Some(v) = self.notch {
+            w.notch = v;
+        }
+        if let Some(v) = self.guidance {
+            w.guidance = v;
+        }
+        w
+    }
+}
+
+fn next_f32(it: &mut std::slice::Iter<'_, String>, flag: &str) -> f32 {
+    match it.next().and_then(|v| v.parse().ok()) {
+        Some(v) => v,
+        None => usage(&format!("{flag} needs a number")),
+    }
 }
 
 fn next_i32(it: &mut std::slice::Iter<'_, String>, flag: &str) -> i32 {

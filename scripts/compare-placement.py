@@ -31,6 +31,14 @@ GUIDE = re.compile(r"set_macro_guidance_region\s+-macro_name\s+(\S+)\s+-region\s
 # ⛔ `rtl_macro_placer`'s own threshold options are engine state too. Supplying them keeps the
 # tree's `max_level` at 2, and `adjustSoftBlockageWeight` fires only at 1 -- so an untranslated
 # threshold silently changes the soft-blockage WEIGHT, not just the clustering.
+# ⚠️ The WEIGHT and utilization options too: an untranslated `-boundary_weight 0.0` leaves a term
+# live that the case turned OFF, and `-target_util` ramps the utilization list from a different base.
+NUMERIC = {
+    "-boundary_weight": "--boundary-weight",
+    "-notch_weight": "--notch-weight",
+    "-guidance_weight": "--guidance-weight",
+    "-target_util": "--target-util",
+}
 THRESH = {
     "-max_num_inst": "--max-num-inst",
     "-min_num_inst": "--min-num-inst",
@@ -61,6 +69,10 @@ def flags(case):
         out += ["--macro-guide", f"{name}={','.join(vals.split())}"]
     for tcl_opt, flag in THRESH.items():
         m = re.search(re.escape(tcl_opt) + r"\s+(\d+)", text)
+        if m:
+            out += [flag, m.group(1)]
+    for tcl_opt, flag in NUMERIC.items():
+        m = re.search(re.escape(tcl_opt) + r"\s+([0-9.]+)", text)
         if m:
             out += [flag, m.group(1)]
     return out
