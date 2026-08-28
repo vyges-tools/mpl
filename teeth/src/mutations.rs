@@ -2433,6 +2433,15 @@ pub const MUTATIONS: &[Mutation] = &[
         want: r#"an_io_pin_cluster_takes_its_constraint_region_or_the_whole_die"#,
     },
     Mutation {
+        name: r#"notch-grid-skips-fixed-macros"#,
+        file: r#"src/placement.rs"#,
+        find: r#"            Some(AreaKind::HardMacroCluster)
+                | Some(AreaKind::MixedCluster)
+                | Some(AreaKind::FixedMacro)"#,
+        replace: r#"            Some(AreaKind::HardMacroCluster) | Some(AreaKind::MixedCluster)"#,
+        want: r#"a_fixed_macro_obstructs_the_notch_grid"#,
+    },
+    Mutation {
         name: r#"fixed-macro-does-not-obstruct"#,
         file: r#"src/placement.rs"#,
         find: r#"                // it does so through `fixed`, not through this flag.

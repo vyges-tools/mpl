@@ -7,7 +7,7 @@ use vyges_mpl::placement::{
 };
 
 fn nm(x: i32, y: i32, w: i32, h: i32, kind: AreaKind) -> NotchMacro {
-    NotchMacro { x, y, width: w, height: h, kind }
+    NotchMacro { x, y, width: w, height: h, kind: Some(kind) }
 }
 
 fn hard(x: i32, y: i32, w: i32, h: i32) -> NotchMacro {
@@ -25,25 +25,25 @@ fn the_grid_is_cut_at_every_macro_edge() {
     assert_eq!(ys, vec![0, 300, 400, 1000]);
 }
 
-/// ⛔ **A standard-cell cluster, a blockage, an IO cluster and a FIXED MACRO all obstruct
-/// nothing.** The fixed macro is the surprising one: its soft macro has no cluster behind it, so
-/// upstream's two predicates both come back false.
+/// ⛔ **A standard-cell cluster, a blockage and an IO cluster obstruct nothing — but a FIXED MACRO
+/// does.** This list used to include the fixed macro, on a misreading of which constructor builds
+/// its soft macro.
+///
+/// ℹ️ The three that remain have genuinely no cluster behind them, or a cluster whose type is
+/// neither hard-macro nor mixed, so upstream's two predicates both answer false.
 #[test]
-fn only_macro_and_mixed_clusters_cut_the_grid() {
+fn only_macro_mixed_and_fixed_clusters_cut_the_grid() {
     let outline = (1000, 1000);
     let bare = notch_grid(&[], outline);
-    for kind in [
-        AreaKind::StdCellCluster,
-        AreaKind::Blockage,
-        AreaKind::IoCluster,
-        AreaKind::FixedMacro,
-    ] {
+    for kind in [AreaKind::StdCellCluster, AreaKind::Blockage, AreaKind::IoCluster] {
         let macros = [nm(200, 300, 100, 100, kind)];
         assert_eq!(notch_grid(&macros, outline), bare, "{kind:?} should not cut the grid");
     }
-    // A mixed cluster does.
-    let mixed = [nm(200, 300, 100, 100, AreaKind::MixedCluster)];
-    assert_ne!(notch_grid(&mixed, outline), bare);
+    // A mixed cluster does, and so does a FIXED macro.
+    for kind in [AreaKind::MixedCluster, AreaKind::HardMacroCluster, AreaKind::FixedMacro] {
+        let cuts = [nm(200, 300, 100, 100, kind)];
+        assert_ne!(notch_grid(&cuts, outline), bare, "{kind:?} cuts the grid");
+    }
 }
 
 /// ⚠️ **Near-coincident lines are coalesced at a hundredth of the outline's extent**, and it is
@@ -208,19 +208,37 @@ fn an_empty_outline_is_not_a_notch() {
     assert_eq!(notch_penalty(&[], (1000, 1000), (1000, 1000), true, 50.0), 0.0);
 }
 
-/// ⛔ **A fixed macro obstructs nothing, so the space beside it is scanned as if it were empty.**
-/// A gap that a hard-macro cluster would have made into a notch is invisible when the same
-/// geometry is fixed.
+/// ⛔ **CORRECTED — a fixed macro obstructs exactly like a hard-macro cluster.** This test asserted
+/// the opposite, on the belief that the soft macro built for a fixed macro has no cluster behind
+/// it. It does: the constructor ends with `cluster_ = hard_macro->getCluster()`, whose type is
+/// `HardMacroCluster`.
+///
+/// ⚠️ The wrong belief was written in FIVE places — the handoff, the rule's own doc comment and
+/// three tests — so the gate stayed green while every design with a fixed macro scored no notch at
+/// all. A test that encodes a misreading defends it.
 #[test]
-fn a_fixed_macro_does_not_create_a_notch() {
+fn a_fixed_macro_creates_a_notch_like_any_macro_cluster() {
     let as_cluster = [hard(0, 0, 1000, 400), hard(0, 450, 1000, 550)];
-    assert!(notch_penalty(&as_cluster, (1000, 1000), (1000, 1000), true, 50.0) > 0.0);
+    let cluster_penalty = notch_penalty(&as_cluster, (1000, 1000), (1000, 1000), true, 50.0);
+    assert!(cluster_penalty > 0.0);
 
     let as_fixed = [
         nm(0, 0, 1000, 400, AreaKind::FixedMacro),
         nm(0, 450, 1000, 550, AreaKind::FixedMacro),
     ];
-    assert_eq!(notch_penalty(&as_fixed, (1000, 1000), (1000, 1000), true, 50.0), 0.0);
+    assert_eq!(
+        notch_penalty(&as_fixed, (1000, 1000), (1000, 1000), true, 50.0),
+        cluster_penalty,
+        "the same geometry scores the same whether the macros are fixed or not"
+    );
+
+    // ⚠️ The control: a STANDARD-CELL cluster genuinely does not obstruct, so the same geometry
+    // scores zero — which is what the fixed case used to be confused with.
+    let as_std = [
+        nm(0, 0, 1000, 400, AreaKind::StdCellCluster),
+        nm(0, 450, 1000, 550, AreaKind::StdCellCluster),
+    ];
+    assert_eq!(notch_penalty(&as_std, (1000, 1000), (1000, 1000), true, 50.0), 0.0);
 }
 
 /// ⚠️ **Notches accumulate**, one term per region found.
@@ -267,4 +285,35 @@ fn the_notch_term_is_dark_without_weight() {
     assert_eq!(notch_penalty(&macros, (1000, 1000), (1000, 1000), true, 0.0), 0.0);
     // Even an invalid floorplan, which otherwise short-circuits to a full-outline notch.
     assert_eq!(notch_penalty(&macros, (1000, 1000), (2000, 2000), false, 0.0), 0.0);
+}
+
+/// ⛔ **A FIXED macro obstructs the notch grid.** Upstream tests
+/// `isMacroCluster() || isMixedCluster()` on the soft macro, and the constructor used for a fixed
+/// macro sets `cluster_` to a `HardMacroCluster` — so both the coordinate lists and the occupancy
+/// grid see it.
+///
+/// ⚠️ **The same wrong claim was written in two places** — this rule's own comment and the
+/// programme handoff — and fixing the `is_macro_cluster` flag on the soft macro did not fix this
+/// path, because the notch view keys off `AreaKind`. With the fixed macro excluded the space
+/// beside it was scanned as empty and the term read ZERO on every design carrying one.
+#[test]
+fn a_fixed_macro_obstructs_the_notch_grid() {
+    let outline = (1000, 1000);
+    // A narrow horizontal gap between a macro cluster below and a FIXED macro above. The gap is
+    // 50 units tall against a threshold of 100, so it is a notch — but only if the fixed macro
+    // counts as the thing bounding it from above.
+    let macros = [
+        nm(0, 0, 400, 400, AreaKind::HardMacroCluster),
+        nm(0, 450, 400, 400, AreaKind::FixedMacro),
+    ];
+    let with_fixed = notch_penalty(&macros, outline, (400, 850), true, 50.0);
+    assert!(with_fixed > 0.0, "the gap between them is a notch");
+
+    // ⚠️ The control: call the same geometry with the upper macro made a STANDARD-CELL cluster,
+    // which genuinely does not obstruct. It must score differently, or the assertion above would
+    // hold whatever the rule.
+    let mut as_std = macros;
+    as_std[1].kind = Some(AreaKind::StdCellCluster);
+    let without = notch_penalty(&as_std, outline, (400, 850), true, 50.0);
+    assert_ne!(with_fixed, without, "a std-cell cluster does NOT obstruct");
 }

@@ -594,20 +594,38 @@ pub struct NotchMacro {
     pub y: i32,
     pub width: i32,
     pub height: i32,
-    pub kind: AreaKind,
+    /// ⚠️ **`None` means NO CLUSTER behind the soft macro** — a fixed terminal, or a blockage
+    /// proxy. Upstream reads `cluster_ == nullptr` and both `isMacroCluster` and `isMixedCluster`
+    /// answer false, so it obstructs nothing.
+    ///
+    /// ⛔ This used to be a bare `AreaKind` with `None` folded onto `FixedMacro`, which was safe
+    /// only while a fixed macro obstructed nothing. It does obstruct, so the fold silently turned
+    /// every cluster-less macro into an obstruction. A fallback is only ever as correct as the
+    /// case it is folded onto.
+    pub kind: Option<AreaKind>,
 }
 
 impl NotchMacro {
-    /// ⛔ **Only a hard-macro cluster or a mixed cluster obstructs.** A standard-cell cluster does
-    /// not, and neither does a blockage or an IO cluster.
+    /// ⛔ **Only a hard-macro cluster, a mixed cluster or a FIXED macro obstructs.** A
+    /// standard-cell cluster does not, and neither does a blockage or an IO cluster.
     ///
-    /// ⛔ **Nor does a FIXED macro** — and that one is easy to miss. Upstream tests
-    /// `isMacroCluster() || isMixedCluster()`, both of which return false when the soft macro has
-    /// no cluster behind it, and the constructor that builds a soft macro from a fixed hard macro
-    /// never sets one. So the space beside a fixed macro can be declared a notch, and the fixed
-    /// macro itself sits inside one.
+    /// ⛔ **CORRECTED 2026-08-27 — a FIXED macro DOES obstruct.** The comment here used to say the
+    /// opposite, on the grounds that the soft macro built from a fixed hard macro "never sets"
+    /// `cluster_`. It does: `SoftMacro(logger, hard_macro, outline)` ends with
+    /// `cluster_ = hard_macro->getCluster()`, and that cluster is a `HardMacroCluster`, so
+    /// `isMacroCluster()` holds. With it excluded the space beside a fixed macro was scanned as
+    /// empty and the notch term read zero on every design with one.
+    ///
+    /// ⚠️ The same wrong claim was written in two places — here and in the handoff — and fixing
+    /// the `is_macro_cluster` flag on the soft macro did NOT fix this path, because the notch view
+    /// keys off `AreaKind` instead. A belief that is recorded twice has to be corrected twice.
     fn obstructs(&self) -> bool {
-        matches!(self.kind, AreaKind::HardMacroCluster | AreaKind::MixedCluster)
+        matches!(
+            self.kind,
+            Some(AreaKind::HardMacroCluster)
+                | Some(AreaKind::MixedCluster)
+                | Some(AreaKind::FixedMacro)
+        )
     }
 }
 
@@ -1956,7 +1974,7 @@ impl PlacementInputs {
                 y: m.y,
                 width: m.width,
                 height: m.height,
-                kind: a.kind.unwrap_or(AreaKind::FixedMacro),
+                kind: a.kind,
             })
             .collect();
         notch_penalty(&view, outline, packing, valid, self.weights.notch)
