@@ -3409,6 +3409,27 @@ impl DbOrient {
     }
 }
 
+/// The DEF spelling of an orientation, as `write_def` emits it into a `COMPONENTS` row.
+///
+/// ⛔ **The inverse of [`DbOrient::from_def`], and a THIRD vocabulary alongside the database's.**
+/// `R180` is written `S`, `MY` is written `FN`. Scoring a `.defok` against the database spelling
+/// compares `S` with `R180` and reports every macro as differing.
+///
+/// ⚠️ `FW` is `MXR90` and `FE` is `MYR90` — the pairing is not the one the letters suggest, and it
+/// is the same pairing `from_def` reads.
+pub fn def_orientation_name(orient: DbOrient) -> &'static str {
+    match orient {
+        DbOrient::R0 => "N",
+        DbOrient::R90 => "W",
+        DbOrient::R180 => "S",
+        DbOrient::R270 => "E",
+        DbOrient::MY => "FN",
+        DbOrient::MXR90 => "FW",
+        DbOrient::MX => "FS",
+        DbOrient::MYR90 => "FE",
+    }
+}
+
 /// Upstream `dbTransform::apply(Point&)` — an orientation about the ORIGIN, then a translation.
 ///
 /// ⛔ **The rotation is about the master's origin, not about the instance's centre or its box.** The
@@ -5892,4 +5913,165 @@ impl DbOrient {
             _ => return None,
         })
     }
+}
+
+// ---------------------------------------------------------------- driving the snapper
+
+/// What one macro's snap needs, assembled from the database.
+///
+/// ⚠️ Boxes are in MASTER coordinates; the pass transforms them by the macro's own orientation and
+/// origin. Upstream re-reads `dbITerm::getBBox()` after every trial move instead, which is the same
+/// arithmetic against a database it is mutating as it goes.
+pub struct SnapInput<'a> {
+    pub candidates: &'a [SnapCandidateGeometry],
+    pub master: (i32, i32),
+    pub orient: DbOrient,
+    pub manufacturing_grid: i32,
+    /// Track positions for a layer, in the pass's own axis.
+    pub positions: &'a dyn Fn(usize) -> Vec<i32>,
+}
+
+/// One (terminal, MPin) pair's geometry, as the snap needs it.
+#[derive(Debug, Clone)]
+pub struct SnapCandidateGeometry {
+    pub iterm: usize,
+    pub is_signal: bool,
+    pub layer: usize,
+    pub layer_number: i32,
+    pub layer_is_vertical: bool,
+    pub has_track_grid: bool,
+    /// The TERMINAL's box in master coordinates — `mterm->getBBox()`.
+    pub mterm_box: (i32, i32, i32, i32),
+    /// Every box of the TERMINAL, master coordinates.
+    pub term_boxes: Vec<(i32, i32, i32, i32)>,
+}
+
+/// The snapper's orientation vocabulary, narrowed from the database's eight to the five
+/// [`crate::halo::Orient`] carries.
+///
+/// ⛔ **Lossy, and safely so — because `getPinOffset` only ever tests THREE names.** It negates for
+/// `MY`/`R180` on the vertical pass and `MX`/`R180` on the horizontal one; every other orientation,
+/// including all four rotated ones, takes the offset unnegated. So collapsing the rotations into
+/// `Other` reproduces upstream exactly rather than approximating it.
+///
+/// ⚠️ **That is a statement about `getPinOffset` alone.** Any future reader of this conversion that
+/// distinguishes more than those three is wrong, and the collapse will hide it.
+fn snap_orient(orient: DbOrient) -> crate::halo::Orient {
+    use crate::halo::Orient;
+    match orient {
+        DbOrient::R0 => Orient::R0,
+        DbOrient::R180 => Orient::R180,
+        DbOrient::MX => Orient::Mx,
+        DbOrient::MY => Orient::My,
+        DbOrient::R90 | DbOrient::R270 | DbOrient::MXR90 | DbOrient::MYR90 => Orient::Other,
+    }
+}
+
+/// Upstream `Snapper::snap`, for one axis.
+///
+/// ⛔ **The whole macro is positioned by ONE pin** — the lowest layer's lowest-centred one. Every
+/// other pin only votes, through [`search_extra_patterns`], on which track that pin lands on.
+///
+/// ⛔ **With no usable layer the track grid is never consulted**: the origin is aligned to the
+/// MANUFACTURING GRID alone and the pass returns. That is the branch `macros_without_pins1` takes,
+/// and it is why that design is already exact without any of this.
+///
+/// ⚠️ **The search MOVES the macro on every attempt and re-snaps at the end**, so the origin during
+/// the search is not the answer — only the final `snapPinToPosition` is.
+pub fn snap_axis(input: &SnapInput, origin: (i32, i32), axis: SnapAxis) -> Result<i32, MissingTrackGrid> {
+    let vertical = axis == SnapAxis::Vertical;
+    let current = if vertical { origin.0 } else { origin.1 };
+
+    // The transformed centre of a terminal, at a hypothetical origin.
+    let center_at = |g: &SnapCandidateGeometry, at: (i32, i32)| -> i32 {
+        let offset = instance_offset(at, input.master, input.orient);
+        match iterm_bbox(&g.term_boxes, input.orient, offset) {
+            Some(b) if vertical => (b.0 + b.2) / 2,
+            Some(b) => (b.1 + b.3) / 2,
+            None => 0,
+        }
+    };
+
+    let candidates: Vec<SnapPinCandidate> = input
+        .candidates
+        .iter()
+        .map(|g| SnapPinCandidate {
+            iterm: g.iterm,
+            is_signal: g.is_signal,
+            layer: g.layer,
+            layer_number: g.layer_number,
+            layer_is_vertical: g.layer_is_vertical,
+            has_track_grid: g.has_track_grid,
+            center: center_at(g, origin),
+        })
+        .collect();
+
+    let layers = snap_layer_data(&candidates, axis)?;
+    if layers.is_empty() {
+        return Ok(align_with_manufacturing_grid(current, input.manufacturing_grid));
+    }
+
+    let positions = (input.positions)(layers[0].layer);
+    if positions.is_empty() {
+        return Ok(align_with_manufacturing_grid(current, input.manufacturing_grid));
+    }
+
+    // ⛔ `layers[0].pins[0]` — the lowest LAYER's lowest-CENTRED terminal.
+    let snap_iterm = layers[0].pins[0];
+    let geom = input
+        .candidates
+        .iter()
+        .find(|g| g.iterm == snap_iterm)
+        .expect("the snap terminal came from these candidates");
+
+    // ⚠️ The pin's half-extent is taken from the PLACED box and its offset from the MASTER
+    // terminal's — the two-box mix `pin_offset` documents.
+    let placed = iterm_bbox(
+        &geom.term_boxes,
+        input.orient,
+        instance_offset(origin, input.master, input.orient),
+    );
+    let pin_extent = match placed {
+        Some(b) if vertical => b.2 - b.0,
+        Some(b) => b.3 - b.1,
+        None => 0,
+    };
+    let mterm_min = if vertical { geom.mterm_box.0 } else { geom.mterm_box.1 };
+    let offset = pin_offset(pin_extent, mterm_min, snap_orient(input.orient), axis);
+
+    let Some(start) = starting_position_index(&positions, current + offset) else {
+        return Ok(align_with_manufacturing_grid(current, input.manufacturing_grid));
+    };
+
+    let total_pins: usize = layers.iter().map(|l| l.pins.len()).sum();
+    let mut aligned_for = |index: usize| -> usize {
+        let trial = snap_origin_to_position(positions[index], offset, input.manufacturing_grid);
+        let at = if vertical { (trial, origin.1) } else { (origin.0, trial) };
+        layers
+            .iter()
+            .map(|l| {
+                let centers: Vec<i32> = l
+                    .pins
+                    .iter()
+                    .filter_map(|&t| input.candidates.iter().find(|g| g.iterm == t))
+                    .map(|g| center_at(g, at))
+                    .collect();
+                aligned_pins_on_layer(&centers, &(input.positions)(l.layer))
+            })
+            .sum()
+    };
+
+    let search = search_extra_patterns(start, positions.len(), total_pins, &mut aligned_for);
+    Ok(snap_origin_to_position(positions[search.best_index], offset, input.manufacturing_grid))
+}
+
+/// Upstream `Snapper::snapMacro`: the vertical pass, then the horizontal one.
+///
+/// ⛔ **The passes are SEQUENTIAL, not independent.** The horizontal pass reads the origin the
+/// vertical one left, so a macro whose X moved is judged at its new X. Running them from the same
+/// starting origin differs wherever the first pass moves anything.
+pub fn snap_macro(input: &SnapInput, origin: (i32, i32)) -> Result<(i32, i32), MissingTrackGrid> {
+    let x = snap_axis(input, origin, SnapAxis::Vertical)?;
+    let y = snap_axis(input, (x, origin.1), SnapAxis::Horizontal)?;
+    Ok((x, y))
 }

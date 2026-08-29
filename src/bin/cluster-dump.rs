@@ -45,6 +45,7 @@ fn main() {
             "--placement-trace" => {}
             "--push" => {}
             "--flip" => {}
+            "--commit" => {}
             "--floorplan" => {}
             "--nets" => {}
             "--cost" => {}
@@ -100,7 +101,8 @@ fn main() {
         || std::env::args().any(|a| a == "--nets")
         || std::env::args().any(|a| a == "--cost")
         || std::env::args().any(|a| a == "--push")
-        || std::env::args().any(|a| a == "--flip");
+        || std::env::args().any(|a| a == "--flip")
+        || std::env::args().any(|a| a == "--commit");
     let db = match vyges_opendb::Db::open(&path) {
         Ok(d) => d,
         Err(e) => { eprintln!("cannot read {path}: {e}"); std::process::exit(2); }
@@ -182,6 +184,13 @@ fn main() {
         };
         let (term_boxes, master_of) = vyges_mpl::read::read_term_boxes(&db, &design);
         let inst_placement = vyges_mpl::read::read_instance_placements(&db, &design);
+        let grids = vyges_mpl::read::read_track_grids(&db);
+        let snap_macros = vyges_mpl::read::read_snap_macros(&db, &design, &grids);
+        let snap = SnapInputs {
+            macros: &snap_macros,
+            grids: &grids,
+            manufacturing_grid: db.manufacturing_grid().unwrap_or(None).unwrap_or(0),
+        };
         let flip = FlipInputs {
             pins: &pins,
             term_boxes: &term_boxes,
@@ -190,7 +199,7 @@ fn main() {
         };
         print_coarse_shaping_trace(
             r, &blockages, dbu, place, summaries, &design, &nets, &guide_regions, overrides,
-            &geometry, &flip,
+            &geometry, &flip, &snap,
         );
         return;
     }
@@ -223,6 +232,14 @@ pub struct FlipInputs<'a> {
     pub inst_placement: &'a [(vyges_mpl::placement::DbOrient, (i32, i32))],
 }
 
+/// What the SNAP needs, and nothing else does.
+pub struct SnapInputs<'a> {
+    pub macros: &'a [Option<vyges_mpl::read::SnapMacro>],
+    pub grids: &'a std::collections::HashMap<usize, (Vec<i32>, Vec<i32>)>,
+    /// ⚠️ Zero when the technology declares none; `align_with_manufacturing_grid` divides by it.
+    pub manufacturing_grid: i32,
+}
+
 fn print_coarse_shaping_trace(
     mut r: vyges_mpl::engine::Clustering,
     blockages: &[vyges_mpl::design::Rect],
@@ -235,6 +252,7 @@ fn print_coarse_shaping_trace(
     overrides: Overrides,
     geometry: &[Option<vyges_mpl::read::MacroGeometry>],
     flip: &FlipInputs,
+    snap: &SnapInputs,
 ) {
     use vyges_mpl::cluster::ClusterType;
     // Taken before `r` is dismantled below: a net reaches an IO cluster only through this.
@@ -319,6 +337,7 @@ fn print_coarse_shaping_trace(
             overrides,
             geometry,
             flip,
+            snap,
         );
     } else {
         report_placement(&root, &h, &shaping, dbu, overrides);
@@ -457,6 +476,7 @@ fn print_placement_summaries(
     overrides: Overrides,
     geometry: &[Option<vyges_mpl::read::MacroGeometry>],
     flip: &FlipInputs,
+    snap: &SnapInputs,
 ) {
     use vyges_mpl::placement as p;
 
@@ -606,7 +626,11 @@ fn print_placement_summaries(
     // orders `pushMacrosToCoreBoundaries` then `updateMacrosOnDb` then the orientation pass, so a
     // macro the push moved is flipped at its new coordinate. Scoring the flip against pre-push
     // positions differs on exactly the designs the push moved, which is the ones that matter.
-    let flip_mode = std::env::args().any(|a| a == "--flip");
+    // ⛔ **`--commit` IMPLIES the flip**, because the state it dumps is the state the orientation
+    // pass leaves. Running it without the flip would dump `updateMacrosOnDb`'s first write, which
+    // upstream immediately overwrites for every macro that flips.
+    let commit_mode = std::env::args().any(|a| a == "--commit");
+    let flip_mode = commit_mode || std::env::args().any(|a| a == "--flip");
     // Returns the winning run's macros and their names, so the caller can do the write-back that
     // `updateChildrenShapesAndLocations` does on the tree.
     let mut emit = |parent: &vyges_mpl::cluster::Cluster|
@@ -823,7 +847,7 @@ fn print_placement_summaries(
     if push_mode || flip_mode {
         print_boundary_push(
             root, &placed, &placed_area, &macro_location, design, h, &raw_soft, flip_mode,
-            nets, flip, &available_abs,
+            nets, flip, &available_abs, commit_mode, snap,
         );
     }
 }
@@ -849,6 +873,8 @@ fn print_boundary_push(
     nets: &[vyges_mpl::netlist::DbNet],
     flip: &FlipInputs,
     available: &[vyges_mpl::placement::Region],
+    commit_mode: bool,
+    snap: &SnapInputs,
 ) {
     use vyges_mpl::placement as p;
 
@@ -1244,16 +1270,127 @@ fn print_boundary_push(
             // A group of one, which is exactly what the single-macro overload computes.
             let mut single = |m: usize, is_vertical: bool| wirelength_of(&[m], is_vertical);
             for line in p::run_orientation_single(&flip_macros, &unfixed, &mut single) {
-                println!("{line}");
+                // ⚠️ Suppressed under `--commit` for the same reason as the by-cluster arm: the
+                // trace and the commit dump share stdout, and a leaked trace line breaks the
+                // commit parser rather than being ignored by it.
+                if !commit_mode {
+                    println!("{line}");
+                }
             }
         }
         p::OrientationStrategy::ByCluster => {
             for line in
                 p::run_orientation_by_cluster(&flip_clusters, &flip_macros, &mut wirelength_of)
             {
-                println!("{line}");
+                if !commit_mode {
+                    println!("{line}");
+                }
             }
         }
+    }
+
+    if !commit_mode {
+        return;
+    }
+
+    // ---------------------------------------------------------------- the commit
+    //
+    // ⛔ **What `updateMacrosOnDb` LEAVES, not what it writes once.** Upstream calls it BEFORE the
+    // orientation pass, and then every `flipRealMacro` writes the instance again — orientation,
+    // then `getRealLocation()`. So the database state this stage ends in is the same formula
+    // either way: the macro's real corner under its FINAL orientation.
+    //
+    // ⚠️ **`getRealX`/`getRealY`, so the halo comes OFF** — and off a DIFFERENT SIDE once mirrored,
+    // which is why the corner is recomputed from the final orientation rather than carried.
+    //
+    // ⚠️ **A FIXED instance is skipped entirely** — not written, not locked. It keeps its DEF
+    // position, so it is absent from this dump rather than present and unchanged.
+    //
+    // ℹ️ Emitted sorted by name so the diff is stable; upstream's own order is `inst_to_hard`'s,
+    // which is pointer order and unreproducible. Position is what this scores, not sequence.
+    let mut rows: Vec<String> = Vec::new();
+    for (&inst, &k) in &index_of {
+        let Some(commit) =
+            p::commit_macro(design.instances[inst].is_fixed, p::real_origin(
+                flip_macros[k].location,
+                halo_of[k],
+                orient[k],
+            ))
+        else {
+            continue;
+        };
+
+        // ⛔ **`commitMacroPlacementToDb` SNAPS before the DEF records anything.** The golden
+        // positions are post-snap, so a commit dump without this is short by the snap on every
+        // design that has a track grid — measured on 2026-08-29 as 57 of 58 macros off in Y and
+        // one off in X by 5.
+        //
+        // ⚠️ **`setLocation` positions the bounding box; the snapper moves the ORIGIN.** The two
+        // differ for a mirrored master, so the location is converted to an origin, snapped, and
+        // converted back rather than snapped in place.
+        let at = commit.location;
+        let mut placed = at;
+        if let Some(sm) = snap.macros.get(inst).and_then(|m| m.as_ref()) {
+            let candidates: Vec<p::SnapCandidateGeometry> = sm
+                .pins
+                .iter()
+                .map(|q| p::SnapCandidateGeometry {
+                    iterm: q.iterm,
+                    is_signal: q.is_signal,
+                    layer: q.layer,
+                    layer_number: q.layer_number,
+                    layer_is_vertical: q.layer_is_vertical,
+                    has_track_grid: q.has_track_grid,
+                    mterm_box: q.mterm_box,
+                    term_boxes: q.term_boxes.clone(),
+                })
+                .collect();
+            let positions = |layer: usize| -> Vec<i32> {
+                match snap.grids.get(&layer) {
+                    // ⚠️ A VERTICAL layer's tracks are the X list; a horizontal layer's the Y.
+                    Some((x, y)) => {
+                        if sm.pins.iter().any(|q| q.layer == layer && q.layer_is_vertical) {
+                            x.clone()
+                        } else {
+                            y.clone()
+                        }
+                    }
+                    None => Vec::new(),
+                }
+            };
+            let input = p::SnapInput {
+                candidates: &candidates,
+                master: sm.master,
+                orient: orient[k],
+                manufacturing_grid: snap.manufacturing_grid,
+                positions: &positions,
+            };
+            let origin = p::instance_offset(at, sm.master, orient[k]);
+            match p::snap_macro(&input, origin) {
+                Ok(o) => {
+                    // Back to the bounding-box corner the DEF records.
+                    let t = p::transform_rect((0, 0, sm.master.0, sm.master.1), orient[k], o);
+                    placed = (t.0, t.1);
+                }
+                Err(e) => {
+                    // ⚠️ Upstream errors MPL-39 here rather than snapping; say so and keep the
+                    // unsnapped position, so the gate attributes it rather than reading a pass.
+                    eprintln!("[diag] {} MPL-39 no track grid for layer {:?}", design.instances[inst].name, e);
+                }
+            }
+        }
+
+        rows.push(format!(
+            "{} {} {} {}",
+            design.instances[inst].name,
+            placed.0,
+            placed.1,
+            p::def_orientation_name(orient[k]),
+        ));
+    }
+    rows.sort();
+    for r in rows {
+        println!("{r}");
     }
 }
 

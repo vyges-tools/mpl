@@ -50,6 +50,23 @@
 use crate::Mutation;
 
 pub const MUTATIONS: &[Mutation] = &[
+    // ---------------------------------------------------------------- the DEF orientation names
+    Mutation {
+        // ⛔ The database spelling where the DEF's belongs — every macro would read as differing.
+        name: r#"def-orientation-uses-the-db-spelling"#,
+        file: r#"src/placement.rs"#,
+        find: r#"        DbOrient::R180 => "S","#,
+        replace: r#"        DbOrient::R180 => "R180","#,
+        want: r#"the_def_orientation_name_round_trips_with_from_def"#,
+    },
+    Mutation {
+        // ⚠️ The FW/FE pairing swapped — the letters suggest the wrong partner.
+        name: r#"def-orientation-fw-fe-swapped"#,
+        file: r#"src/placement.rs"#,
+        find: r#"        DbOrient::MXR90 => "FW","#,
+        replace: r#"        DbOrient::MXR90 => "FE","#,
+        want: r#"the_def_orientation_name_round_trips_with_from_def"#,
+    },
     // ---------------------------------------------------------------- the module walk
     Mutation {
         // ⛔ Children before own instances — the order the database sees the writes in.

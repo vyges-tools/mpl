@@ -432,6 +432,36 @@ fn the_database_orientation_names_are_not_the_def_ones() {
     assert_eq!(DbOrient::from_db("nonsense"), None);
 }
 
+/// ⛔ **A THIRD vocabulary: what `write_def` puts in a `COMPONENTS` row**, which is what the
+/// `.defok` goldens are scored against. `R180` is written `S`. Comparing a golden's `S` against the
+/// database spelling `R180` reports every macro as differing.
+///
+/// 🔑 Round-trips with [`DbOrient::from_def`] on all eight, which is the property the commit gate
+/// depends on.
+#[test]
+fn the_def_orientation_name_round_trips_with_from_def() {
+    use vyges_mpl::placement::def_orientation_name;
+    for o in [
+        DbOrient::R0,
+        DbOrient::R90,
+        DbOrient::R180,
+        DbOrient::R270,
+        DbOrient::MY,
+        DbOrient::MYR90,
+        DbOrient::MX,
+        DbOrient::MXR90,
+    ] {
+        assert_eq!(DbOrient::from_def(def_orientation_name(o)), Some(o), "{o:?}");
+    }
+    // The two the goldens actually carry, spelled out so a silent table edit is caught.
+    assert_eq!(def_orientation_name(DbOrient::R0), "N");
+    assert_eq!(def_orientation_name(DbOrient::R180), "S", "io_pads1.defok records MACRO_1 as S");
+    assert_eq!(def_orientation_name(DbOrient::MY), "FN");
+    assert_eq!(def_orientation_name(DbOrient::MX), "FS");
+    // ⚠️ Not the database spelling — crossing them is the bug this exists to prevent.
+    assert_ne!(def_orientation_name(DbOrient::R180), "R180");
+}
+
 // ---------------------------------------------------------------- flipping the database orientation
 
 use vyges_mpl::placement::{flip_db_orientation, real_origin};

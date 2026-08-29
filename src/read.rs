@@ -406,3 +406,109 @@ pub fn read_instance_placements(
         })
         .collect()
 }
+
+/// Everything one macro's snap needs, read once.
+///
+/// ⛔ **Per MASTER TERMINAL, and a terminal appears once per MPIN.** `computeLayerDataList` walks
+/// `iterm->getMTerm()->getMPins()` and pushes the TERMINAL into the grid's list for each one, with
+/// no de-duplication — so a terminal with two master pins on one layer is present twice and counts
+/// twice toward `total_pins`. Collapsing them here would change the search's target.
+#[derive(Debug, Clone)]
+pub struct SnapMacro {
+    /// One entry per (terminal, MPin): the terminal's index, and its MPin's first-box layer.
+    pub pins: Vec<SnapPin>,
+    /// The master's own dimensions, for the transform.
+    pub master: (i32, i32),
+}
+
+/// One (terminal, MPin) pair, as the snapper sees it.
+#[derive(Debug, Clone)]
+pub struct SnapPin {
+    /// Index into [`SnapMacro::terminals`]-parallel data; upstream's `dbITerm*`.
+    pub iterm: usize,
+    pub is_signal: bool,
+    pub layer: usize,
+    pub layer_number: i32,
+    pub layer_is_vertical: bool,
+    pub has_track_grid: bool,
+    /// ⛔ The TERMINAL's untransformed box, not the MPin's — `getPinOffset` reads
+    /// `mterm->getBBox()`, the union over every MPin of the terminal.
+    pub mterm_box: (i32, i32, i32, i32),
+    /// Every box of the TERMINAL, in master coordinates, for the transformed centre and extent.
+    pub term_boxes: Vec<(i32, i32, i32, i32)>,
+}
+
+/// The track positions of every layer that has a grid, keyed by layer number.
+///
+/// ⚠️ **X and Y are separate lists**, and the pass picks one: a vertical pass reads `getGridX`, a
+/// horizontal pass `getGridY`. Reading the wrong one snaps against a grid at right angles to the
+/// layer.
+pub fn read_track_grids(db: &Db) -> std::collections::HashMap<usize, (Vec<i32>, Vec<i32>)> {
+    let mut out = std::collections::HashMap::new();
+    for (name, _) in db.layers_with_direction().unwrap_or_default() {
+        if let Ok((x, y)) = db.track_grid(&name) {
+            if !x.is_empty() || !y.is_empty() {
+                out.insert(db.layer_get_number(&name) as usize, (x, y));
+            }
+        }
+    }
+    out
+}
+
+/// Read every macro's snapping inputs.
+///
+/// ⚠️ **The layer of a pin is its FIRST geometry box's**, matching `getPinLayer`'s
+/// `*pin->getGeometry().begin()` — not the lowest layer and not the widest.
+pub fn read_snap_macros(
+    db: &Db,
+    design: &Design,
+    grids: &std::collections::HashMap<usize, (Vec<i32>, Vec<i32>)>,
+) -> Vec<Option<SnapMacro>> {
+    let layers = layer_table(db);
+    let mut out = vec![None; design.instances.len()];
+    for (i, inst) in design.instances.iter().enumerate() {
+        if !inst.is_block {
+            continue;
+        }
+        let master = db.inst_get_master(&inst.name);
+        let mut pins = Vec::new();
+        for (t, term) in db.master_get_m_terms(&master).into_iter().enumerate() {
+            let is_signal = db.mterm_get_sig_type(&master, &term) == "SIGNAL";
+            // The terminal's own box and every box it owns, in MASTER coordinates.
+            let mut term_boxes: Vec<(i32, i32, i32, i32)> = Vec::new();
+            for p in 0..db.num_mterm_get_m_pins(&master, &term) {
+                for (_, x0, y0, x1, y1) in db.mpin_boxes(&master, &term, p).unwrap_or_default() {
+                    term_boxes.push((x0, y0, x1, y1));
+                }
+            }
+            let mterm_box = (
+                db.mterm_get_b_box_x_min(&master, &term),
+                db.mterm_get_b_box_y_min(&master, &term),
+                db.mterm_get_b_box_x_max(&master, &term),
+                db.mterm_get_b_box_y_max(&master, &term),
+            );
+            for p in 0..db.num_mterm_get_m_pins(&master, &term) {
+                let boxes = db.mpin_boxes(&master, &term, p).unwrap_or_default();
+                let Some(&(first, ..)) = boxes.first() else { continue };
+                let layer = first as usize;
+                let is_vertical =
+                    matches!(layers.get(&(first as i64)), Some((_, crate::halo::LayerDir::Vertical)));
+                pins.push(SnapPin {
+                    iterm: t,
+                    is_signal,
+                    layer,
+                    layer_number: first as i32,
+                    layer_is_vertical: is_vertical,
+                    has_track_grid: grids.contains_key(&layer),
+                    mterm_box,
+                    term_boxes: term_boxes.clone(),
+                });
+            }
+        }
+        out[i] = Some(SnapMacro {
+            pins,
+            master: (db.master_get_width(&master) as i32, db.master_get_height(&master) as i32),
+        });
+    }
+    out
+}
