@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 # SPDX-License-Identifier: Apache-2.0
-"""Diff the macro positions `updateMacrosOnDb` leaves against the `.defok` COMPONENTS.
+"""Diff what `mpl` WRITES into the DEF against the `.defok` goldens, section by section.
 
 🔑 **The FIRST oracle in this engine that is not a debug trace.** Eight trace gates are exhausted at
 0 differ; nothing left to build emits a `set_debug_level` channel. The golden DEFs score what the
@@ -54,6 +54,13 @@ THRESH = {
 # every macro as "not in the DEF" until this was relaxed.
 COMPONENT = re.compile(
     r"^\s*-\s+(\S+)\s+(\S+)\s+\+\s+(?:FIXED|PLACED)\s+\(\s*(-?\d+)\s+(-?\d+)\s*\)\s+([A-Z]+)\b"
+)
+# `- PLACEMENT + SOFT + COMPONENT MACRO_1 RECT ( x0 y0 ) ( x1 y1 ) ;` — the halo keep-out that
+# `commitMacroPlacementToDb` casts. ⚠️ Named by the COMPONENT it belongs to, which is what makes it
+# attributable to a macro rather than just a rectangle.
+BLOCKAGE = re.compile(
+    r"^\s*-\s+PLACEMENT\s+\+\s+SOFT\s+\+\s+COMPONENT\s+(\S+)\s+RECT\s+"
+    r"\(\s*(-?\d+)\s+(-?\d+)\s*\)\s+\(\s*(-?\d+)\s+(-?\d+)\s*\)"
 )
 
 
@@ -112,6 +119,8 @@ for case in cases:
         continue
 
     got = {}
+    got_cells = {}
+    got_blockages = set()
     bad_line = None
     for line in p.stdout.split("\n"):
         if not line.strip():
@@ -119,10 +128,15 @@ for case in cases:
         parts = line.split()
         # ⚠️ Refuse the case rather than crashing the sweep. A stray trace line on stdout used to
         # abort the whole run at the design that leaked it, losing every case after it.
-        if len(parts) != 4:
+        if parts[0] == "MACRO" and len(parts) == 5:
+            got[parts[1]] = (int(parts[2]), int(parts[3]), parts[4])
+        elif parts[0] == "CELL" and len(parts) == 5:
+            got_cells[parts[1]] = (int(parts[2]), int(parts[3]), parts[4])
+        elif parts[0] == "BLOCKAGE" and len(parts) == 6:
+            got_blockages.add((parts[1], int(parts[2]), int(parts[3]), int(parts[4]), int(parts[5])))
+        else:
             bad_line = line
             break
-        got[parts[0]] = (int(parts[1]), int(parts[2]), parts[3])
     if bad_line is not None:
         other += 1
         print(f"  {case:32} ⛔ unparseable dump line: {bad_line!r}")
@@ -133,17 +147,30 @@ for case in cases:
     # on the name is what gives this gate its denominator. A macro we FAIL to emit shows up as a
     # smaller denominator, not as a pass — which is why the count is printed beside every verdict.
     all_rows = {}
+    want_blockages = set()
     for line in io.open(golden, encoding="utf-8", errors="replace"):
         m = COMPONENT.match(line)
         if m:
             all_rows[m.group(1)] = (int(m.group(3)), int(m.group(4)), m.group(5))
+        b = BLOCKAGE.match(line)
+        if b:
+            want_blockages.add(
+                (b.group(1), int(b.group(2)), int(b.group(3)), int(b.group(4)), int(b.group(5)))
+            )
     want = {k: v for k, v in all_rows.items() if k in got}
+    want_cells = {k: v for k, v in all_rows.items() if k in got_cells}
 
     if not got:
         print(f"  {case:32} nothing committed (all macros fixed, or refused earlier)")
         refused += 1
         continue
 
+    # 🔑 Three independent scores, because they fail for different reasons and a single verdict
+    # would hide which. Cells come from `generateTemporaryStdCellsPlacement`, blockages from
+    # `commitMacroPlacementToDb`; a macro can be exact while either is wrong.
+    cell_bad = [n for n in got_cells if n in want_cells and got_cells[n][:2] != want_cells[n][:2]]
+    blk_missing = want_blockages - got_blockages
+    blk_extra = got_blockages - want_blockages
     bad_orient = [n for n in got if n in want and got[n][2] != want[n][2]]
     deltas = [
         (n, got[n][0] - want[n][0], got[n][1] - want[n][1])
@@ -152,11 +179,21 @@ for case in cases:
     ]
     absent = [n for n in got if n not in want]
 
-    if bad_orient or absent:
+    if bad_orient or absent or cell_bad or blk_missing or blk_extra:
         differ += 1
-        print(f"  {case:32} ⛔ DIFFER — {len(bad_orient)} orientation, {len(absent)} not in the DEF")
+        print(
+            f"  {case:32} ⛔ DIFFER — {len(bad_orient)} orientation, {len(absent)} not in the DEF, "
+            f"{len(cell_bad)}/{len(want_cells)} cells, "
+            f"{len(blk_missing)} blockages missing, {len(blk_extra)} extra"
+        )
         for n in (bad_orient + absent)[:2]:
-            print(f"      {n}: ours {got[n]}  golden {want.get(n)}")
+            print(f"      macro {n}: ours {got[n]}  golden {want.get(n)}")
+        for n in cell_bad[:2]:
+            print(f"      cell  {n}: ours {got_cells[n][:2]}  golden {want_cells[n][:2]}")
+        for b in list(blk_missing)[:2]:
+            print(f"      blockage MISSING {b}")
+        for b in list(blk_extra)[:2]:
+            print(f"      blockage EXTRA   {b}")
     elif deltas:
         orient_only += 1
         worst = max(abs(dx) for _, dx, _ in deltas), max(abs(dy) for _, _, dy in deltas)
@@ -167,7 +204,10 @@ for case in cases:
         )
     else:
         exact += 1
-        print(f"  {case:32} exact ({len(got)} macros)")
+        print(
+            f"  {case:32} exact ({len(got)} macros, {len(want_cells)} cells, "
+            f"{len(want_blockages)} blockages)"
+        )
 
 print(
     f"\ncommit: {exact} exact, {orient_only} orientation-exact but unsnapped, {differ} differ, "

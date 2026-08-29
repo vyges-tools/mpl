@@ -186,10 +186,20 @@ fn main() {
         let inst_placement = vyges_mpl::read::read_instance_placements(&db, &design);
         let grids = vyges_mpl::read::read_track_grids(&db);
         let snap_macros = vyges_mpl::read::read_snap_macros(&db, &design, &grids);
+        // ⚠️ A SOFT halo suppresses the blockage; NONE and HARD both cast one.
+        let halo_kind: Vec<vyges_mpl::placement::HaloKind> = geometry
+            .iter()
+            .map(|g| match g.as_ref().and_then(|g| g.inst_halo) {
+                Some((_, true)) => vyges_mpl::placement::HaloKind::Soft,
+                Some((_, false)) => vyges_mpl::placement::HaloKind::Hard,
+                None => vyges_mpl::placement::HaloKind::None,
+            })
+            .collect();
         let snap = SnapInputs {
             macros: &snap_macros,
             grids: &grids,
             manufacturing_grid: db.manufacturing_grid().unwrap_or(None).unwrap_or(0),
+            halo_kind: &halo_kind,
         };
         let flip = FlipInputs {
             pins: &pins,
@@ -238,6 +248,8 @@ pub struct SnapInputs<'a> {
     pub grids: &'a std::collections::HashMap<usize, (Vec<i32>, Vec<i32>)>,
     /// ⚠️ Zero when the technology declares none; `align_with_manufacturing_grid` divides by it.
     pub manufacturing_grid: i32,
+    /// Each instance's halo KIND — what decides whether the final commit casts a blockage.
+    pub halo_kind: &'a [vyges_mpl::placement::HaloKind],
 }
 
 fn print_coarse_shaping_trace(
@@ -1072,6 +1084,8 @@ fn print_boundary_push(
     // ⚠️ A COPY of the database placements: the temporary placement overwrites some of them, and
     // an instance no leaf places keeps what the database holds.
     let mut inst_placement: Vec<(p::DbOrient, (i32, i32))> = flip.inst_placement.to_vec();
+    // ⚠️ Kept so the commit dump can emit them: the DEF records these `PLACED` rows.
+    let mut temp_cells: Vec<(usize, (i32, i32))> = Vec::new();
     if let Some(&root_slot) = slot_of.get(&root.id) {
         for (inst, slot) in p::temporary_std_cell_placement(&place_clusters, root_slot) {
             // ⚠️ The SOFT MACRO's box as cluster placement left it — `placed` is absolute, so the
@@ -1096,6 +1110,7 @@ fn print_boundary_push(
                 _ => extent,
             };
             inst_placement[inst] = (orient, p::instance_offset(at, master, orient));
+            temp_cells.push((inst, at));
         }
     }
 
@@ -1381,11 +1396,87 @@ fn print_boundary_push(
         }
 
         rows.push(format!(
-            "{} {} {} {}",
+            "MACRO {} {} {} {}",
             design.instances[inst].name,
             placed.0,
             placed.1,
             p::def_orientation_name(orient[k]),
+        ));
+
+        // ⛔ **`commitMacroPlacementToDb` creates the blockage from the SNAPPED position**, via
+        // `setRealLocation(inst->getLocation())` followed by `getBBox()` — so the keep-out follows
+        // the macro after the snap, not before it. Computing it earlier puts every blockage a
+        // snap's distance off its macro.
+        //
+        // ⛔ **A SOFT halo gets NO blockage**, and the guard sits OUTSIDE the `isFixed` test — so a
+        // fixed macro is never snapped and never locked and still casts one. `final_commit` states
+        // both rules; this is its first caller.
+        let fc = p::final_commit(
+            design.instances[inst].is_fixed,
+            snap.halo_kind.get(inst).copied().unwrap_or(p::HaloKind::None),
+        );
+        // ⚠️ Reached only for MOVABLE macros; the fixed ones cast theirs in the loop below, because
+        // `commit_macro` returns `None` for them and this loop has already skipped.
+        if fc.blockage {
+            // `getBBox()` is `(x_, y_, x_ + width_, y_ + height_)` on the HALOED corner and dims,
+            // and `setRealX` puts the haloed corner back by taking the halo off the same side
+            // `real_origin` added it to.
+            let (hl, hb, hr, ht) = halo_of[k];
+            let haloed = p::haloed_corner(placed, (hl, hb, hr, ht), orient[k]);
+            let (w, ht_dim) = h.macro_dims[inst];
+            rows.push(format!(
+                "BLOCKAGE {} {} {} {} {}",
+                design.instances[inst].name,
+                haloed.0,
+                haloed.1,
+                haloed.0 + w as i32,
+                haloed.1 + ht_dim as i32,
+            ));
+        }
+    }
+
+    // ⛔ **A FIXED macro casts a blockage TOO, and this loop is the whole reason it does.**
+    // `commitMacroPlacementToDb`'s `isFixed` test guards ONLY the snap and the lock; the blockage
+    // block sits outside it. `final_commit` states that rule and the loop above still could not
+    // honour it — `commit_macro` returns `None` for a fixed instance, so that loop `continue`s
+    // before reaching the blockage. The four designs this fixed (`fixed_covers`, `fixed_macros1`,
+    // `fixed_macros2`, `macros_without_pins1`) each missed exactly one.
+    //
+    // ⚠️ **A fixed macro is never snapped**, so its keep-out is built from the position the DEF
+    // gave it — `getLocation()`, the bounding box's corner, which is what it still holds.
+    for (inst, i) in design.instances.iter().enumerate() {
+        if !i.is_block || !i.is_fixed {
+            continue;
+        }
+        let kind = snap.halo_kind.get(inst).copied().unwrap_or(p::HaloKind::None);
+        if !p::final_commit(true, kind).blockage {
+            continue;
+        }
+        let halo = h.macro_halos[inst];
+        let orient = flip.inst_placement.get(inst).map_or(p::DbOrient::R0, |q| q.0);
+        let haloed = p::haloed_corner(
+            (i.bbox.x_min as i32, i.bbox.y_min as i32),
+            (halo.left as i32, halo.bottom as i32, halo.right as i32, halo.top as i32),
+            orient,
+        );
+        let (w, ht_dim) = h.macro_dims[inst];
+        rows.push(format!(
+            "BLOCKAGE {} {} {} {} {}",
+            i.name,
+            haloed.0,
+            haloed.1,
+            haloed.0 + w as i32,
+            haloed.1 + ht_dim as i32,
+        ));
+    }
+
+    // ⚠️ **The temporary standard-cell placement reaches the DEF too.** `generateTemporaryStdCellsPlacement`
+    // writes `PLACED` positions that `write_def` records, so the goldens carry them and they are
+    // scoreable — the same positions the flip already measures wirelength from.
+    for (inst, at) in &temp_cells {
+        rows.push(format!(
+            "CELL {} {} {} N",
+            design.instances[*inst].name, at.0, at.1
         ));
     }
     rows.sort();
