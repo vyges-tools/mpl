@@ -66,15 +66,22 @@ fn the_division_happens_in_f32_and_the_reference_says_so() {
     assert_ne!(widened, REFERENCE_AT_0_32.to_vec(), "the fixture separates the two readings");
 }
 
-/// ⚠️ **The division is in `f32` and the power in `f64`.** Collapsing the whole computation into
-/// one precision drifts away from the reference's digits.
+/// ⚠️ **The division is in `f32` and the power in `f64`**, and the ramp at the default target must
+/// match the reference bit for bit.
+///
+/// ⛔ **This test used to assert the NEGATIVE — that an all-`f32` ramp gives DIFFERENT digits — and
+/// that claim is FALSE on x86-64.** CI caught it on the first public run: at target `0.25` the
+/// all-`f32` ramp produces exactly the reference values on a GitHub runner, while differing on
+/// macOS/ARM and on the correlation box. The distinction is real at other targets — see
+/// `the_division_happens_in_f32_and_the_reference_says_so`, which separates them at `0.32` — but
+/// it is NOT observable at `0.25`.
+///
+/// 🔑 **A negative assertion about floating-point is a claim about the PLATFORM, not about the
+/// transcription.** What actually guards the rule is the POSITIVE: our list equals the reference's.
+/// That holds everywhere, and it is what this test now asserts.
 #[test]
-fn computing_the_ramp_in_one_precision_would_not_match() {
-    let all_f32: Vec<f32> = {
-        let ratio = (1.0f32 / 0.25f32).powf(1.0 / 9.0);
-        (0..10).map(|i| 0.25f32 * ratio.powi(i)).collect()
-    };
-    assert_ne!(all_f32, REFERENCE.to_vec(), "an all-f32 ramp gives different digits");
+fn the_ramp_at_the_default_target_matches_the_reference() {
+    assert_eq!(utilization_list(0.25, 10), REFERENCE);
 }
 
 /// ⚠️ The ramp starts at the target the user asked for and climbs.
