@@ -255,8 +255,9 @@ pub fn wirelength_for_unplaced_io_pins(
 /// result is a dimensionless fraction rather than a distance, and comparable across outlines.
 ///
 /// ⛔ **`weight_sum` is summed over the CORE'S OWN net list, not over the `nets` argument.**
-/// Upstream writes `for (const auto& net : nets_)` for the sum and `for (const auto& net : nets)`
-/// for the length, one character apart. Its only caller passes `nets_`, so the two agree today;
+/// Upstream's two loops differ only in which collection they range over — the MEMBER net list for
+/// the sum, the ARGUMENT one for the length, distinguished by a single trailing underscore on the
+/// name. Its only caller passes the member, so the two agree today;
 /// they are kept as separate parameters here so the difference stays visible rather than being
 /// quietly unified.
 ///
@@ -2784,7 +2785,8 @@ pub fn init_temperature(costs: &[f32], init_prob: f32) -> f32 {
 // core stores `int`; this is that narrowing. The macro path we built samples through the soft
 // core's types, so nothing reaches it. ⚠️ A future hard-core path MUST use this rather than the
 // soft equivalent — the two round differently. Triaged 2026-08-29.
-/// Upstream's `std::vector<float> width_list` in the HARD core's `initialize`.
+/// Upstream's width list in the HARD core's `initialize`, declared with a floating-point element
+/// type.
 ///
 /// ⛔ **The soft core stores its widths as `int`; the hard core stores them as `float`.** The
 /// replay then assigns `width_ = width_list[i]`, narrowing back to `int` — so every sampled width

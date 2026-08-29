@@ -3060,10 +3060,10 @@ pub const MUTATIONS: &[Mutation] = &[
     Mutation {
         name: r#"norm-sweep-floor-is-not-applied"#,
         file: r#"src/anneal.rs"#,
-        find: r#"        let floor_at = |value: f32| if value <= 1e-4 { 1.0 } else { value };
-        let mean = |f: &dyn Fn(&Sample) -> f32| -> f32 {"#,
-        replace: r#"        let floor_at = |value: f32| value;
-        let mean = |f: &dyn Fn(&Sample) -> f32| -> f32 {"#,
+        // ⚠️ Re-pointed 2026-08-29 when the inline closure was replaced by a call to
+        // `placement::norm_floor`; the rule it guards is unchanged.
+        find: r#"        let floor_at = crate::placement::norm_floor;"#,
+        replace: r#"        let floor_at = |value: f32| value;"#,
         want: r#"a_shaping_sweep_leaves_the_six_placement_factors_at_exactly_one"#,
     },
     Mutation {
