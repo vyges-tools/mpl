@@ -322,3 +322,88 @@ fn a_std_cell_cluster_has_no_hard_macros() {
     let got = cluster_hard_macros(ClusterType::StdCell, &[4], &[0], &insts, &children, &|_| true);
     assert!(got.is_empty(), "not even its own leaf macros");
 }
+
+// ---------------------------------------------------------------- the database transform
+
+use vyges_mpl::placement::{iterm_avg_xy, iterm_bbox, transform_point, transform_rect, DbOrient};
+
+/// ⛔ **Rotation is about the ORIGIN, then the offset is added** — `dbInst::getTransform()` builds
+/// the transform from the instance's origin, so a rotated cell's geometry swings around (0, 0)
+/// before being translated, not around its own box.
+#[test]
+fn the_rotation_happens_about_the_origin_before_the_offset() {
+    // (10, 0) rotated 90° is (0, 10) — then translated by (100, 200).
+    assert_eq!(transform_point((10, 0), DbOrient::R90, (100, 200)), (100, 210));
+    // Rotating about the point's own position would leave it at (110, 200).
+}
+
+/// Every case of `dbTransform::apply(Point&)`, transcribed from `geom.h`'s rotations.
+#[test]
+fn every_orientation_matches_the_reference_mapping() {
+    let p = (3, 5);
+    let z = (0, 0);
+    assert_eq!(transform_point(p, DbOrient::R0, z), (3, 5));
+    assert_eq!(transform_point(p, DbOrient::R90, z), (-5, 3), "rotate90 is (x,y) -> (-y,x)");
+    assert_eq!(transform_point(p, DbOrient::R180, z), (-3, -5));
+    assert_eq!(transform_point(p, DbOrient::R270, z), (5, -3), "rotate270 is (x,y) -> (y,-x)");
+    assert_eq!(transform_point(p, DbOrient::MY, z), (-3, 5));
+    assert_eq!(transform_point(p, DbOrient::MX, z), (3, -5));
+    // ⛔ Mirror FIRST, then rotate. MYR90 negates x to (-3,5), then rotate90 gives (-5,-3).
+    assert_eq!(transform_point(p, DbOrient::MYR90, z), (-5, -3));
+    // MXR90 negates y to (3,-5), then rotate90 gives (5,3).
+    assert_eq!(transform_point(p, DbOrient::MXR90, z), (5, 3));
+}
+
+/// ⛔ **A mirrored box is RE-NORMALISED.** Both corners are transformed independently and
+/// `Rect::init` re-orders them, so the result is well-formed rather than inside out.
+#[test]
+fn a_mirrored_box_comes_back_well_formed() {
+    let r = (10, 20, 30, 40);
+    let got = transform_rect(r, DbOrient::MY, (0, 0));
+    assert_eq!(got, (-30, 20, -10, 40), "x mirrored and re-ordered, y untouched");
+    assert!(got.2 > got.0 && got.3 > got.1, "not inside out");
+}
+
+/// ⛔ **`getAvgXY` is NOT the centre of the bounding box.** Every box contributes both corners and
+/// the divisor is `2 x boxes`, so a terminal split across several boxes is weighted by box COUNT.
+///
+/// 🔑 Two small boxes at the ends and one box spanning them have the same bbox and different
+/// averages — which is the whole reason this is a separate accessor.
+#[test]
+fn the_average_weights_by_box_count_not_by_extent() {
+    // Two boxes: one tiny at x 0..2, one wide at x 10..30. Bounding box is 0..30, centre 15.
+    let boxes = [(0, 0, 2, 2), (10, 0, 30, 2)];
+    let avg = iterm_avg_xy(&boxes, DbOrient::R0, (0, 0)).unwrap();
+    assert_eq!(avg.0, 10, "(0+2+10+30)/4 = 10, not the bbox centre of 15");
+
+    let bbox = iterm_bbox(&boxes, DbOrient::R0, (0, 0)).unwrap();
+    assert_eq!(bbox, (0, 0, 30, 2));
+    assert_ne!(avg.0, (bbox.0 + bbox.2) / 2, "the two accessors genuinely disagree");
+}
+
+/// ⚠️ **The average truncates toward zero**, because upstream ends in `int(xx)` on a `double`.
+#[test]
+fn the_average_truncates_toward_zero() {
+    // Sum 0+1 = 1 over 2 -> 0.5 -> 0.
+    assert_eq!(iterm_avg_xy(&[(0, 0, 1, 1)], DbOrient::R0, (0, 0)).unwrap(), (0, 0));
+    // Negative: -1 + 0 = -1 over 2 -> -0.5 -> 0, NOT -1. Truncation, not flooring.
+    assert_eq!(iterm_avg_xy(&[(-1, -1, 0, 0)], DbOrient::R0, (0, 0)).unwrap(), (0, 0));
+}
+
+/// ⚠️ **A terminal with no geometry has no position at all** — upstream warns (ODB-34) and returns
+/// false, and the caller then merges NOTHING rather than merging the origin.
+#[test]
+fn a_terminal_without_geometry_has_no_position() {
+    assert_eq!(iterm_avg_xy(&[], DbOrient::R0, (100, 100)), None);
+    assert_eq!(iterm_bbox(&[], DbOrient::R0, (100, 100)), None);
+}
+
+/// ⚠️ The DEF spellings, where the "flipped" names describe the mirror axis rather than a facing.
+#[test]
+fn the_def_orientation_names_map_as_the_format_defines_them() {
+    assert_eq!(DbOrient::from_def("N"), Some(DbOrient::R0));
+    assert_eq!(DbOrient::from_def("W"), Some(DbOrient::R90), "io_pads1 places a pad at W");
+    assert_eq!(DbOrient::from_def("FS"), Some(DbOrient::MX));
+    assert_eq!(DbOrient::from_def("FN"), Some(DbOrient::MY));
+    assert_eq!(DbOrient::from_def("nonsense"), None);
+}

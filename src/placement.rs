@@ -3368,6 +3368,143 @@ pub fn orientation_groups(macros: &[(usize, (i32, i32))]) -> (Vec<Vec<usize>>, V
     (cols.into_values().collect(), rows.into_values().collect())
 }
 
+/// The database's EIGHT orientations — `odb::dbOrientType`.
+///
+/// ⛔ **NOT `halo::Orient`, which has five variants and folds every rotation into `Other`.** That
+/// enum is the halo logic's vocabulary and cannot express `R90`; using it for a geometric transform
+/// would silently place a rotated instance's pins wrong. The two are different questions about the
+/// same field, which is the confusion class recorded as D2 in the divergence register.
+///
+/// ⚠️ **A rotated instance IS present in the suite and IS read by this stage.** `io_pads1` places
+/// `PAD_1` at `W` (R90), and `calculateRealMacroWirelength` walks EVERY terminal on a macro's net —
+/// pads included — so folding rotations away would mis-position that pad on one of the fourteen
+/// designs this model exists to score. Measured, not assumed.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DbOrient {
+    R0,
+    R90,
+    R180,
+    R270,
+    MY,
+    MYR90,
+    MX,
+    MXR90,
+}
+
+impl DbOrient {
+    /// The DEF spelling. ⚠️ `FS` is `MX` and `FN` is `MY` — the "flipped" names describe the axis
+    /// the cell was mirrored ACROSS, not the direction it faces.
+    pub fn from_def(name: &str) -> Option<DbOrient> {
+        Some(match name {
+            "N" => DbOrient::R0,
+            "W" => DbOrient::R90,
+            "S" => DbOrient::R180,
+            "E" => DbOrient::R270,
+            "FN" => DbOrient::MY,
+            "FW" => DbOrient::MXR90,
+            "FS" => DbOrient::MX,
+            "FE" => DbOrient::MYR90,
+            _ => return None,
+        })
+    }
+}
+
+/// Upstream `dbTransform::apply(Point&)` — an orientation about the ORIGIN, then a translation.
+///
+/// ⛔ **The rotation is about the master's origin, not about the instance's centre or its box.** The
+/// offset is `dbInst::getTransform()`'s, which is `(inst->x_, inst->y_)` — the instance's ORIGIN,
+/// the same number `setLocation` writes. Rotating about anything else moves a flipped macro's pins
+/// somewhere the database does not put them.
+///
+/// ⚠️ **The mirror comes BEFORE the rotation** in the two combined orientations: `MYR90` negates X
+/// and then rotates, which is not the same as rotating and then negating.
+///
+/// Conventions transcribed from `geom.h`: `rotate90` is `(x, y) -> (-y, x)`, `rotate180` is
+/// `(-x, -y)`, `rotate270` is `(y, -x)`.
+pub fn transform_point(p: (i32, i32), orient: DbOrient, offset: (i32, i32)) -> (i32, i32) {
+    let (x, y) = p;
+    let (x, y) = match orient {
+        DbOrient::R0 => (x, y),
+        DbOrient::R90 => (-y, x),
+        DbOrient::R180 => (-x, -y),
+        DbOrient::R270 => (y, -x),
+        DbOrient::MY => (-x, y),
+        // ⚠️ Mirror FIRST, then rotate — `p.setX(-p.x())` precedes `p.rotate90()`.
+        DbOrient::MYR90 => (-y, -x),
+        DbOrient::MX => (x, -y),
+        DbOrient::MXR90 => (y, x),
+    };
+    (x + offset.0, y + offset.1)
+}
+
+/// Upstream `dbTransform::apply(Rect&)`.
+///
+/// ⛔ **Both CORNERS are transformed independently and the result is RE-NORMALISED.** `Rect::init`
+/// orders the coordinates, so a mirror that sends the lower-left above the upper-right still yields
+/// a well-formed box. Transforming the corners and keeping them in place would give a box with
+/// negative extent on every mirrored orientation.
+pub fn transform_rect(
+    r: (i32, i32, i32, i32),
+    orient: DbOrient,
+    offset: (i32, i32),
+) -> (i32, i32, i32, i32) {
+    let ll = transform_point((r.0, r.1), orient, offset);
+    let ur = transform_point((r.2, r.3), orient, offset);
+    (ll.0.min(ur.0), ll.1.min(ur.1), ll.0.max(ur.0), ll.1.max(ur.1))
+}
+
+/// Upstream `dbITerm::getAvgXY`.
+///
+/// ⛔ **It is NOT the centre of the pin's bounding box.** Every geometry box of every MPin
+/// contributes BOTH its min and its max to a running sum, and the divisor is `2 x boxes` — so a
+/// terminal whose geometry is split across several boxes is weighted by how many boxes it has, not
+/// by area or by extent. Two boxes far apart and one box spanning them give different answers.
+///
+/// ⚠️ **The average is accumulated in `double` and truncated to `int` at the end** — `int(xx)`,
+/// which truncates TOWARD ZERO rather than flooring. Negative coordinates round the other way.
+///
+/// ⚠️ **`None` when the terminal has no geometry at all**, which upstream reports as ODB-34 and
+/// treats as "no position" — the terminal then contributes nothing to the net's box rather than
+/// contributing the origin.
+pub fn iterm_avg_xy(
+    boxes: &[(i32, i32, i32, i32)],
+    orient: DbOrient,
+    offset: (i32, i32),
+) -> Option<(i32, i32)> {
+    if boxes.is_empty() {
+        return None;
+    }
+    let (mut xx, mut yy, mut nn) = (0.0f64, 0.0f64, 0i64);
+    for &b in boxes {
+        let r = transform_rect(b, orient, offset);
+        xx += r.0 as f64 + r.2 as f64;
+        yy += r.1 as f64 + r.3 as f64;
+        nn += 2;
+    }
+    Some(((xx / nn as f64) as i32, (yy / nn as f64) as i32))
+}
+
+/// The bounding box of a terminal's geometry, transformed — `dbITerm::getBBox()`.
+///
+/// ⚠️ **Distinct from [`iterm_avg_xy`], and the flip wirelength uses BOTH**: the average positions
+/// the terminal on its net, while this box's CENTRE is the point an unplaced IO pin measures its
+/// nearest region from. They coincide only for a single-box terminal.
+pub fn iterm_bbox(
+    boxes: &[(i32, i32, i32, i32)],
+    orient: DbOrient,
+    offset: (i32, i32),
+) -> Option<(i32, i32, i32, i32)> {
+    let mut merged: Option<(i32, i32, i32, i32)> = None;
+    for &b in boxes {
+        let r = transform_rect(b, orient, offset);
+        merged = Some(match merged {
+            None => r,
+            Some(m) => (m.0.min(r.0), m.1.min(r.1), m.2.max(r.2), m.3.max(r.3)),
+        });
+    }
+    merged
+}
+
 /// Upstream `ClusteringEngine::mapMacroInCluster2HardMacro`, which is what `getHardMacros()`
 /// returns for the rest of the run.
 ///

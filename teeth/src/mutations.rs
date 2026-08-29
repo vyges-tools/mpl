@@ -1571,6 +1571,84 @@ pub const MUTATIONS: &[Mutation] = &[
         }"#,
         want: r#"fences_and_guides_are_independent"#,
     },
+    // ---------------------------------------------------------------- the database transform
+    //
+    // ⚠️ Needed by the flip wirelength, which positions every terminal on a macro's net. A rotated
+    // instance IS present in the suite — `io_pads1` places a pad at `W` — so the rotation cases are
+    // live, not defensive.
+    Mutation {
+        name: r#"transform-offset-before-rotation"#,
+        file: r#"src/placement.rs"#,
+        find: r#"    (x + offset.0, y + offset.1)
+}"#,
+        replace: r#"    let _ = (x, y);
+    let (x, y) = (p.0 + offset.0, p.1 + offset.1);
+    (x, y)
+}"#,
+        want: r#"the_rotation_happens_about_the_origin_before_the_offset"#,
+    },
+    Mutation {
+        name: r#"transform-rotate90-wrong-sign"#,
+        file: r#"src/placement.rs"#,
+        find: r#"        DbOrient::R90 => (-y, x),"#,
+        replace: r#"        DbOrient::R90 => (y, -x),"#,
+        want: r#"every_orientation_matches_the_reference_mapping"#,
+    },
+    Mutation {
+        name: r#"transform-mirror-after-rotation"#,
+        file: r#"src/placement.rs"#,
+        find: r#"        DbOrient::MYR90 => (-y, -x),"#,
+        replace: r#"        DbOrient::MYR90 => (y, x),"#,
+        want: r#"every_orientation_matches_the_reference_mapping"#,
+    },
+    Mutation {
+        name: r#"transform-rect-not-renormalised"#,
+        file: r#"src/placement.rs"#,
+        find: r#"    (ll.0.min(ur.0), ll.1.min(ur.1), ll.0.max(ur.0), ll.1.max(ur.1))"#,
+        replace: r#"    (ll.0, ll.1, ur.0, ur.1)"#,
+        want: r#"a_mirrored_box_comes_back_well_formed"#,
+    },
+    // ⛔ **The OBVIOUS mutation here is EQUIVALENT and must not be written.** "Average the box
+    // CENTRES with weight one" is the same function as "average both corners with weight two" —
+    // `sum((min+max)/2)/n` and `sum(min+max)/2n` are identically equal. The real distinction the
+    // accessor draws is against the BOUNDING BOX's centre, which is a different number entirely.
+    // This mutation drops the max corner, which breaks that for real.
+    Mutation {
+        name: r#"avg-xy-counts-one-corner"#,
+        file: r#"src/placement.rs"#,
+        find: r#"        xx += r.0 as f64 + r.2 as f64;
+        yy += r.1 as f64 + r.3 as f64;
+        nn += 2;"#,
+        replace: r#"        xx += r.0 as f64;
+        yy += r.1 as f64;
+        nn += 1;"#,
+        want: r#"the_average_weights_by_box_count_not_by_extent"#,
+    },
+    Mutation {
+        name: r#"avg-xy-rounds-instead-of-truncating"#,
+        file: r#"src/placement.rs"#,
+        find: r#"    Some(((xx / nn as f64) as i32, (yy / nn as f64) as i32))"#,
+        replace: r#"    Some((((xx / nn as f64).round()) as i32, ((yy / nn as f64).round()) as i32))"#,
+        want: r#"the_average_truncates_toward_zero"#,
+    },
+    Mutation {
+        name: r#"avg-xy-empty-is-the-origin"#,
+        file: r#"src/placement.rs"#,
+        find: r#"    if boxes.is_empty() {
+        return None;
+    }"#,
+        replace: r#"    if boxes.is_empty() {
+        return Some(offset);
+    }"#,
+        want: r#"a_terminal_without_geometry_has_no_position"#,
+    },
+    Mutation {
+        name: r#"def-orient-fs-is-my"#,
+        file: r#"src/placement.rs"#,
+        find: r#"            "FS" => DbOrient::MX,"#,
+        replace: r#"            "FS" => DbOrient::MY,"#,
+        want: r#"the_def_orientation_names_map_as_the_format_defines_them"#,
+    },
     // ---------------------------------------------------------------- orientation improvement
     //
     // 🔑 Three of these pin rules that NO regression design can witness on its own: the line naming
