@@ -208,3 +208,53 @@ fn a_fence_outside_the_core_leaves_nothing_to_place_into() {
     // fence would place macros where the user explicitly excluded them.
     assert_eq!(floorplan_shape(&r(0, 0, 100, 100), Some(&r(500, 500, 600, 600))), None);
 }
+
+// ---------------------------------------------------------------- the master-type spellings
+
+use vyges_mpl::design::{master_type_is_core, master_type_is_pad_without_signal};
+
+/// ⛔ **`dbMasterType::getString` writes a SPACE between the words**, never an underscore. The
+/// underscore spelling is the C++ enumerator's name and appears in no string the database returns,
+/// so a predicate written against it is false for every master in existence.
+///
+/// ⚠️ The underscore assertions are the ones that matter: without them the test passes against the
+/// old code, which answered `false` to everything.
+#[test]
+fn the_master_type_strings_are_space_separated_not_underscored() {
+    assert!(master_type_is_pad_without_signal("PAD POWER"));
+    assert!(master_type_is_pad_without_signal("PAD SPACER"));
+    assert!(!master_type_is_pad_without_signal("PAD_POWER"), "the enumerator name, not the string");
+    assert!(!master_type_is_pad_without_signal("PAD_SPACER"), "the enumerator name, not the string");
+    // The pads `getIOPads` DOES keep.
+    assert!(!master_type_is_pad_without_signal("PAD"));
+    assert!(!master_type_is_pad_without_signal("PAD INPUT"));
+    assert!(!master_type_is_pad_without_signal("PAD AREAIO"));
+}
+
+/// `dbMasterType::isCore`'s switch, both arms — the seven it accepts and the families it does not.
+///
+/// 🔑 **`setModuleStdCellsLocation`'s filter.** `keep_clustering_data2`'s `mixed_module0` holds
+/// four buffers and two macros; without this the temporary placement would move all six.
+#[test]
+fn the_core_master_family_is_the_switchs_seven_members() {
+    for t in [
+        "CORE",
+        "CORE FEEDTHRU",
+        "CORE TIEHIGH",
+        "CORE TIELOW",
+        "CORE SPACER",
+        "CORE ANTENNACELL",
+        "CORE WELLTAP",
+    ] {
+        assert!(master_type_is_core(t), "{t} is in isCore's switch");
+    }
+    // ⚠️ Every one of these is also non-block, so `!is_block` would admit them.
+    for t in ["PAD", "PAD SPACER", "COVER", "COVER BUMP", "RING", "ENDCAP", "ENDCAP PRE", "NONE"] {
+        assert!(!master_type_is_core(t), "{t} is not");
+    }
+    // A macro: rejected, which is the whole point of the filter.
+    for t in ["BLOCK", "BLOCK BLACKBOX", "BLOCK SOFT"] {
+        assert!(!master_type_is_core(t), "{t} is a macro");
+    }
+    assert!(!master_type_is_core("CORE_FEEDTHRU"), "the enumerator name, not the string");
+}

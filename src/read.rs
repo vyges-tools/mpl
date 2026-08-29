@@ -57,12 +57,14 @@ pub fn read_design(db: &Db) -> Result<Design, String> {
             },
             master: MasterKind {
                 is_pad: db.master_is_pad(&master),
-                is_pad_without_signal: matches!(
-                    db.master_get_type(&master).unwrap_or_default().as_str(),
-                    "PAD_POWER" | "PAD_SPACER"
+                is_pad_without_signal: crate::design::master_type_is_pad_without_signal(
+                    &db.master_get_type(&master).unwrap_or_default(),
                 ),
                 is_cover: db.master_is_cover(&master),
                 is_end_cap: db.master_is_end_cap(&master),
+                is_core: crate::design::master_type_is_core(
+                    &db.master_get_type(&master).unwrap_or_default(),
+                ),
             },
             is_ignorable_macro: false,
             name,

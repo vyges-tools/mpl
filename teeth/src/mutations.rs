@@ -50,6 +50,33 @@
 use crate::Mutation;
 
 pub const MUTATIONS: &[Mutation] = &[
+    // ---------------------------------------------------------------- the master-type spellings
+    Mutation {
+        // ⛔ The spelling this was written with until 2026-08-29, and it matched nothing.
+        name: r#"pad-without-signal-underscored"#,
+        file: r#"src/design.rs"#,
+        find: r#"    matches!(master_type, "PAD POWER" | "PAD SPACER")"#,
+        replace: r#"    matches!(master_type, "PAD_POWER" | "PAD_SPACER")"#,
+        want: r#"the_master_type_strings_are_space_separated_not_underscored"#,
+    },
+    Mutation {
+        // ⚠️ The prefix test the enumeration exists to refuse. It admits every future
+        // `CORE`-prefixed type whether or not `isCore`'s switch accepts it.
+        name: r#"core-family-prefix-matched"#,
+        file: r#"src/design.rs"#,
+        find: r#"    matches!(
+        master_type,
+        "CORE"
+            | "CORE FEEDTHRU"
+            | "CORE TIEHIGH"
+            | "CORE TIELOW"
+            | "CORE SPACER"
+            | "CORE ANTENNACELL"
+            | "CORE WELLTAP"
+    )"#,
+        replace: r#"    master_type.starts_with("CORE")"#,
+        want: r#"the_core_master_family_is_the_switchs_seven_members"#,
+    },
     // ---------------------------------------------------------------- the boundary term
     Mutation {
         name: r#"boundary-left-side-absolute"#,

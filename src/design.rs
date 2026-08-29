@@ -54,6 +54,16 @@ pub struct MasterKind {
     /// `getIOPads` skips them. Treating them as IO pads would put a cluster in the tree for
     /// something the netlist never reaches.
     pub is_pad_without_signal: bool,
+    /// `dbMasterType::isCore` — the whole `CORE*` family, not the bare `CORE` type.
+    ///
+    /// 🔑 **The filter `setModuleStdCellsLocation` applies**, and it is what keeps a MACRO found
+    /// through a module out of the temporary standard-cell placement. `keep_clustering_data2`'s
+    /// `mixed_module0` holds four buffers and two macros; without this the walk would place all
+    /// six at the cluster's centre.
+    ///
+    /// ⚠️ **Not the negation of `is_block`.** A pad, a cover cell and an end-cap are all
+    /// non-block and non-core, so testing `!is_block` would place them too.
+    pub is_core: bool,
 }
 
 /// One placed or placeable instance.
@@ -229,6 +239,45 @@ pub fn floorplan_shape(core_area: &Rect, global_fence: Option<&Rect>) -> Option<
     } else {
         Some(shape)
     }
+}
+
+/// `dbMasterType::getString`'s two PAD types with no core signal connection, which `getIOPads`
+/// skips.
+///
+/// ⛔ **`getString` separates the words with a SPACE, not an underscore.** It writes `"PAD POWER"`;
+/// `"PAD_POWER"` is the C++ ENUMERATOR's name and reaches this string nowhere. Matching on the
+/// underscore compiles, runs, and is false for every master that has ever existed — which is
+/// exactly what this predicate did until 2026-08-29.
+///
+/// ⚠️ **Upstream compares the ENUM**, `master_type == odb::dbMasterType::PAD_SPACER`, so the
+/// mistake has no counterpart on that side and no type checker on ours can see it.
+///
+/// ℹ️ **Latent across the whole suite, measured:** `dummy_pads.lef` declares ten `PAD SPACER`
+/// masters and no design instantiates one, so no gate could ever have moved on this.
+pub fn master_type_is_pad_without_signal(master_type: &str) -> bool {
+    matches!(master_type, "PAD POWER" | "PAD SPACER")
+}
+
+/// `dbMasterType::isCore` — the whole `CORE` family, transcribed from its switch.
+///
+/// ⛔ **Enumerated, not prefix-matched.** A prefix test would silently adopt any future
+/// `CORE`-prefixed type the switch itself does not accept.
+///
+/// ⚠️ **Not the negation of `is_block`.** A pad, a cover cell and an end-cap are all non-block and
+/// non-core, so `!is_block` admits three kinds this rejects.
+///
+/// ⚠️ SPACE-separated, for the reason given on [`master_type_is_pad_without_signal`].
+pub fn master_type_is_core(master_type: &str) -> bool {
+    matches!(
+        master_type,
+        "CORE"
+            | "CORE FEEDTHRU"
+            | "CORE TIEHIGH"
+            | "CORE TIELOW"
+            | "CORE SPACER"
+            | "CORE ANTENNACELL"
+            | "CORE WELLTAP"
+    )
 }
 
 /// Upstream `getIOPads`: every pad instance that carries a core signal, in database order.
