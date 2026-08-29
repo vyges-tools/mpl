@@ -5831,3 +5831,25 @@ pub fn place_macros(
     let best = best_macro_run(&costs)?;
     Some(runs.swap_remove(best))
 }
+
+impl DbOrient {
+    /// The DATABASE spelling — `dbOrientType::getString`.
+    ///
+    /// ⛔ **Not [`DbOrient::from_def`]'s vocabulary.** The DEF names an orientation by compass
+    /// point (`N`, `W`, `FS`); the database names it by the transform (`R0`, `R90`, `MX`). Both
+    /// spellings reach the same eight values and neither parser accepts the other's words, so
+    /// feeding a DB string to `from_def` yields `None` and silently defaults the caller.
+    pub fn from_db(name: &str) -> Option<DbOrient> {
+        Some(match name {
+            "R0" => DbOrient::R0,
+            "R90" => DbOrient::R90,
+            "R180" => DbOrient::R180,
+            "R270" => DbOrient::R270,
+            "MY" => DbOrient::MY,
+            "MYR90" => DbOrient::MYR90,
+            "MX" => DbOrient::MX,
+            "MXR90" => DbOrient::MXR90,
+            _ => return None,
+        })
+    }
+}

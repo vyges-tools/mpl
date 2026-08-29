@@ -374,3 +374,33 @@ pub fn read_blockages(db: &Db) -> Vec<Rect> {
         })
         .collect()
 }
+
+/// Every instance's DATABASE PLACEMENT, in the form `dbInst::getTransform` returns it.
+///
+/// ⛔ **`getOrigin`, never `getLocation`.** The transform's offset is `(inst->x_, inst->y_)`, and
+/// `getOrigin` returns exactly that; `getLocation` returns the instance BOUNDING BOX's lower-left
+/// corner. They agree at `R0` and differ on every rotated or mirrored orientation, so reading the
+/// wrong one is invisible across most of the suite and wrong wherever it matters.
+///
+/// 🔑 **Read for NON-MACRO instances.** A macro's placement during the orientation pass is the one
+/// the placer chose, which the flip pass recomputes from the halo on every flip; the database still
+/// holds the pre-placement value. A pad's placement is fixed in the DEF and nothing recomputes it —
+/// `io_pads1` fixes `PAD_1` at `W`, and defaulting it to `R0` at the origin puts its terminal on
+/// the wrong side of the die and inverts the flip decision.
+///
+/// ⚠️ **An UNPLACED instance reads `R0` at the origin**, which is what the database holds and what
+/// the previous default assumed — so this reader can only move a design that places something.
+pub fn read_instance_placements(
+    db: &Db,
+    design: &Design,
+) -> Vec<(crate::placement::DbOrient, (i32, i32))> {
+    design
+        .instances
+        .iter()
+        .map(|inst| {
+            let orient = crate::placement::DbOrient::from_db(&db.inst_get_orient(&inst.name))
+                .unwrap_or(crate::placement::DbOrient::R0);
+            (orient, (db.inst_get_origin_x(&inst.name), db.inst_get_origin_y(&inst.name)))
+        })
+        .collect()
+}

@@ -181,7 +181,13 @@ fn main() {
             target_util,
         };
         let (term_boxes, master_of) = vyges_mpl::read::read_term_boxes(&db, &design);
-        let flip = FlipInputs { pins: &pins, term_boxes: &term_boxes, master_of: &master_of };
+        let inst_placement = vyges_mpl::read::read_instance_placements(&db, &design);
+        let flip = FlipInputs {
+            pins: &pins,
+            term_boxes: &term_boxes,
+            master_of: &master_of,
+            inst_placement: &inst_placement,
+        };
         print_coarse_shaping_trace(
             r, &blockages, dbu, place, summaries, &design, &nets, &guide_regions, overrides,
             &geometry, &flip,
@@ -209,6 +215,12 @@ pub struct FlipInputs<'a> {
     pub term_boxes: &'a std::collections::HashMap<(String, String), Vec<(i32, i32, i32, i32)>>,
     /// The master name per INSTANCE; `Instance` carries only an interned id.
     pub master_of: &'a [String],
+    /// Each instance's DATABASE transform — see `read::read_instance_placements`.
+    ///
+    /// ⛔ **Consulted for NON-MACRO instances only.** A macro's transform during the flip pass is
+    /// the placer's, rebuilt from the halo on every flip; the database still holds the value the
+    /// design was read with.
+    pub inst_placement: &'a [(vyges_mpl::placement::DbOrient, (i32, i32))],
 }
 
 fn print_coarse_shaping_trace(
@@ -1113,10 +1125,12 @@ fn print_boundary_push(
                             &net_terms,
                             &|i| {
                                 index_of.get(&i).map_or_else(
-                                    // A non-macro instance keeps its database placement. ⚠️ Its
-                                    // orientation is NOT read back: nothing in this stage moves it,
-                                    // and the only rotated instance in the suite is a pad.
-                                    || Some((p::DbOrient::R0, (0, 0))),
+                                    // ⛔ A non-macro instance keeps its DATABASE placement, read
+                                    // back in full. Nothing in this stage moves it, but that is
+                                    // not the same as it sitting at `R0` on the origin: `io_pads1`
+                                    // fixes `PAD_1` at `W`, and assuming `R0` put its terminal on
+                                    // the wrong side of the die and inverted the flip decision.
+                                    || flip.inst_placement.get(i).copied(),
                                     |&k| {
                                         // ⛔ TWO steps, and conflating them is wrong on every
                                         // flip: `real_origin` says WHERE THE BOX GOES (the halo

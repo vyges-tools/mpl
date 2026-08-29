@@ -408,6 +408,30 @@ fn the_def_orientation_names_map_as_the_format_defines_them() {
     assert_eq!(DbOrient::from_def("nonsense"), None);
 }
 
+/// ⛔ **The DATABASE spellings, and they are a DIFFERENT vocabulary from the DEF's.**
+/// `dbOrientType::getString` names the transform (`R90`); the DEF names the compass point (`W`).
+/// Neither parser accepts the other's words, so crossing them returns `None` and silently defaults
+/// whatever the caller does on `None` — which for the flip pass would be `R0` on a rotated pad.
+#[test]
+fn the_database_orientation_names_are_not_the_def_ones() {
+    for (db, def, want) in [
+        ("R0", "N", DbOrient::R0),
+        ("R90", "W", DbOrient::R90),
+        ("R180", "S", DbOrient::R180),
+        ("R270", "E", DbOrient::R270),
+        ("MY", "FN", DbOrient::MY),
+        ("MYR90", "FE", DbOrient::MYR90),
+        ("MX", "FS", DbOrient::MX),
+        ("MXR90", "FW", DbOrient::MXR90),
+    ] {
+        assert_eq!(DbOrient::from_db(db), Some(want), "db spelling {db}");
+        assert_eq!(DbOrient::from_def(def), Some(want), "def spelling {def}");
+        // The two vocabularies do not overlap on any of the eight values.
+        assert_eq!(DbOrient::from_db(def), None, "def word {def} read as a db word");
+    }
+    assert_eq!(DbOrient::from_db("nonsense"), None);
+}
+
 // ---------------------------------------------------------------- flipping the database orientation
 
 use vyges_mpl::placement::{flip_db_orientation, real_origin};
