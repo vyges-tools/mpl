@@ -1266,29 +1266,15 @@ pub const MUTATIONS: &[Mutation] = &[
         want: r#"groups_come_out_in_ascending_coordinate_order"#,
     },
     Mutation {
+        // ⚠️ Re-pointed at `flip_db_orientation` on 2026-08-29 when the `halo::Orient` twin was
+        // deleted; the rule it guards is the same one, on the faithful eight-variant type.
         name: r#"vertical-flip-mirrors-the-wrong-axis"#,
         file: r#"src/placement.rs"#,
         find: r#"    if is_vertical_flip {
-        // `flipY`: mirror about the vertical axis."#,
+        // flipY: mirror about Y."#,
         replace: r#"    if !is_vertical_flip {
-        // `flipY`: mirror about the vertical axis."#,
-        want: r#"a_vertical_flip_mirrors_about_the_vertical_axis"#,
-    },
-    Mutation {
-        name: r#"half-turn-flips-to-itself"#,
-        file: r#"src/placement.rs"#,
-        find: r#"            Orient::R180 => Orient::Mx,
-            Orient::Mx => Orient::R180,"#,
-        replace: r#"            Orient::R180 => Orient::R180,
-            Orient::Mx => Orient::R180,"#,
-        want: r#"a_half_turn_flips_to_the_other_mirror"#,
-    },
-    Mutation {
-        name: r#"flip-moves-the-macro"#,
-        file: r#"src/placement.rs"#,
-        find: r#"    (flip_orientation(orient, is_vertical_flip), real_location)"#,
-        replace: r#"    (flip_orientation(orient, is_vertical_flip), (0, 0))"#,
-        want: r#"the_location_survives_the_flip"#,
+        // flipY: mirror about Y."#,
+        want: r#"the_flip_mappings_match_the_reference_on_all_eight_orientations"#,
     },
     Mutation {
         name: r#"pin-without-geometry-placed-at-zero"#,

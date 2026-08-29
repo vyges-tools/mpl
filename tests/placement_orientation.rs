@@ -80,44 +80,7 @@ fn a_macro_one_unit_off_forms_its_own_group() {
 // ---------------------------------------------------------------- flipping, and what it costs
 
 use vyges_mpl::halo::Orient;
-use vyges_mpl::placement::{
-    flip_orientation, flip_real_macro, net_terminal_bbox, real_macro_wirelength, NetTerminal,
-};
-
-/// ⛔ **A "vertical flip" calls `flipY`** — mirroring about the vertical axis, which moves the
-/// macro HORIZONTALLY. The name describes the mirror line, not the direction of travel.
-#[test]
-fn a_vertical_flip_mirrors_about_the_vertical_axis() {
-    assert_eq!(flip_orientation(Orient::R0, true), Orient::My, "vertical flip gives MY");
-    assert_eq!(flip_orientation(Orient::R0, false), Orient::Mx, "horizontal flip gives MX");
-}
-
-/// ⚠️ Each flip is its own inverse.
-#[test]
-fn flipping_twice_returns_to_the_start() {
-    for orient in [Orient::R0, Orient::R180, Orient::Mx, Orient::My] {
-        for vertical in [true, false] {
-            let there = flip_orientation(orient, vertical);
-            assert_eq!(flip_orientation(there, vertical), orient, "{orient:?} {vertical}");
-        }
-    }
-}
-
-/// ⚠️ `R180` is the half-turn, so each flip takes it to the mirror about the OTHER axis.
-#[test]
-fn a_half_turn_flips_to_the_other_mirror() {
-    assert_eq!(flip_orientation(Orient::R180, true), Orient::Mx);
-    assert_eq!(flip_orientation(Orient::R180, false), Orient::My);
-}
-
-/// 🔑 **The location is re-applied after the orientation** — mirroring moves the lower-left corner,
-/// so the real location is written back to put the macro where placement wanted it.
-#[test]
-fn the_location_survives_the_flip() {
-    let (orient, location) = flip_real_macro(Orient::R0, (1234, 5678), true);
-    assert_eq!(orient, Orient::My);
-    assert_eq!(location, (1234, 5678), "unchanged, and that is the point");
-}
+use vyges_mpl::placement::{net_terminal_bbox, real_macro_wirelength, NetTerminal};
 
 // ---------------------------------------------------------------- the real wirelength
 

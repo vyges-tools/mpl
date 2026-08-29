@@ -46,6 +46,7 @@ fn main() {
             "--push" => {}
             "--flip" => {}
             "--commit" => {}
+            "--keep-clustering-data" => {}
             "--floorplan" => {}
             "--nets" => {}
             "--cost" => {}
@@ -1468,6 +1469,57 @@ fn print_boundary_push(
             haloed.0 + w as i32,
             haloed.1 + ht_dim as i32,
         ));
+    }
+
+    // ---------------------------------------------------------------- the clustering groups
+    //
+    // ⛔ **`commitClusteringDataToDb` runs only under `-keep_clustering_data`**, and writes
+    // `dbGroup`s typed `VISUAL_DEBUG`. Two designs in the suite set it, and their goldens carry a
+    // `GROUPS` section — the third and last thing `mpl` puts into a DEF.
+    //
+    // 🔑 **The ROOT's group is absent from both goldens, and it is EMPTY in both.**
+    // `createGroupForCluster` does create one for the root, but the recursion runs before the
+    // module sweep, so every instance is claimed by a descendant first and the root is left with
+    // nothing. `keep_clustering_data1` has three non-IO clusters and two groups;
+    // `keep_clustering_data2` has four and three. ⚠️ Both witnesses have an EMPTY root, so this
+    // suite cannot distinguish "empty groups are omitted" from "the root's group is omitted" —
+    // the more general reading is taken, and the ambiguity is stated rather than hidden.
+    //
+    // ⚠️ **Members come out in REVERSE claim order**, which is a `dbGroup` fact and not an `mpl`
+    // rule: `addInst` prepends, so `getInsts()` yields the last-added first. All three of
+    // `keep_clustering_data2`'s groups confirm it — `b3 b2 b1 b0`, `g3 g2 g1 g0`, `m1 m0`.
+    if std::env::args().any(|a| a == "--keep-clustering-data") {
+        let group_clusters: Vec<p::GroupCluster> = by_id
+            .iter()
+            .map(|c| p::GroupCluster {
+                name: c.name.clone(),
+                kind: p::area_kind_of(c),
+                leaf_std_cells: c.leaf_std_cells.clone(),
+                leaf_macros: c.leaf_macros.clone(),
+                module_insts: c
+                    .db_modules
+                    .iter()
+                    .flat_map(|&m| {
+                        p::module_core_instances(m, &module_insts, &module_children, &|_| true)
+                            .into_iter()
+                            .map(|i| (i, design.instances[i].is_block))
+                            .collect::<Vec<_>>()
+                    })
+                    .collect(),
+                children: c.children.iter().filter_map(|k| slot_of.get(&k.id).copied()).collect(),
+            })
+            .collect();
+        if let Some(&root_slot) = slot_of.get(&root.id) {
+            for (name, members) in p::create_groups(&group_clusters, root_slot) {
+                if members.is_empty() {
+                    continue;
+                }
+                let mut names: Vec<&str> =
+                    members.iter().map(|&i| design.instances[i].name.as_str()).collect();
+                names.reverse();
+                rows.push(format!("GROUP {} {}", name, names.join(" ")));
+            }
+        }
     }
 
     // ⚠️ **The temporary standard-cell placement reaches the DEF too.** `generateTemporaryStdCellsPlacement`

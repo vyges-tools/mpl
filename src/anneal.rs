@@ -1401,7 +1401,11 @@ impl Search {
         // average zero and the floor lifts them to `1.0` — exactly what shaping got when only
         // three were sampled. Sampling all nine is therefore inert there and is the only way the
         // placement path gets real factors.
-        let floor_at = |value: f32| if value <= 1e-4 { 1.0 } else { value };
+        // ⛔ **One rule, one site.** This was an inline duplicate of
+        // [`crate::placement::norm_floor`] until 2026-08-29 — the same `<= 1e-4 → 1.0` test
+        // written twice, on the live path here and unreferenced there. Two copies of a numeric
+        // threshold drift silently and no gate compares them to each other.
+        let floor_at = crate::placement::norm_floor;
         let mean = |f: &dyn Fn(&Sample) -> f32| -> f32 {
             floor_at(average(&samples.iter().map(f).collect::<Vec<f32>>()))
         };

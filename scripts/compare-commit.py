@@ -76,6 +76,10 @@ def flags(case):
         out += ["--base-halo", ",".join(vals.split())]
     if "-use_full_halo" in text:
         out += ["--use-full-halo"]
+    # ⛔ Only under this flag does `commitClusteringDataToDb` run at all, so only then does the
+    # golden carry a GROUPS section.
+    if "-keep_clustering_data" in text:
+        out += ["--keep-clustering-data"]
     for name, vals in GUIDE.findall(text):
         out += ["--macro-guide", f"{name}={','.join(vals.split())}"]
     for tcl_opt, flag in THRESH.items():
@@ -121,6 +125,7 @@ for case in cases:
     got = {}
     got_cells = {}
     got_blockages = set()
+    got_groups = {}
     bad_line = None
     for line in p.stdout.split("\n"):
         if not line.strip():
@@ -132,6 +137,8 @@ for case in cases:
             got[parts[1]] = (int(parts[2]), int(parts[3]), parts[4])
         elif parts[0] == "CELL" and len(parts) == 5:
             got_cells[parts[1]] = (int(parts[2]), int(parts[3]), parts[4])
+        elif parts[0] == "GROUP" and len(parts) >= 2:
+            got_groups[parts[1]] = parts[2:]
         elif parts[0] == "BLOCKAGE" and len(parts) == 6:
             got_blockages.add((parts[1], int(parts[2]), int(parts[3]), int(parts[4]), int(parts[5])))
         else:
@@ -148,6 +155,19 @@ for case in cases:
     # smaller denominator, not as a pass — which is why the count is printed beside every verdict.
     all_rows = {}
     want_blockages = set()
+    # ⚠️ A GROUPS entry WRAPS across lines and ends at `;`, so it cannot be read line by line the
+    # way COMPONENTS can. `keep_clustering_data1`'s 150-cell group spans 38 lines.
+    # ⚠️ **Keyed by NAME, so the ORDER groups appear in is NOT scored.** Upstream's is `dbGroup`
+    # creation order; ours is sorted. Nothing in the suite distinguishes them, and claiming the
+    # order matches would be asserting something this gate never checked.
+    want_groups = {}
+    text = io.open(golden, encoding="utf-8", errors="replace").read()
+    gm = re.search(r"^GROUPS\s+\d+\s*;(.*?)^END GROUPS", text, re.S | re.M)
+    if gm:
+        for entry in gm.group(1).split(";"):
+            toks = entry.split()
+            if len(toks) >= 2 and toks[0] == "-":
+                want_groups[toks[1]] = toks[2:]
     for line in io.open(golden, encoding="utf-8", errors="replace"):
         m = COMPONENT.match(line)
         if m:
@@ -169,6 +189,10 @@ for case in cases:
     # would hide which. Cells come from `generateTemporaryStdCellsPlacement`, blockages from
     # `commitMacroPlacementToDb`; a macro can be exact while either is wrong.
     cell_bad = [n for n in got_cells if n in want_cells and got_cells[n][:2] != want_cells[n][:2]]
+    grp_bad = [
+        n for n in set(want_groups) | set(got_groups)
+        if want_groups.get(n) != got_groups.get(n)
+    ]
     blk_missing = want_blockages - got_blockages
     blk_extra = got_blockages - want_blockages
     bad_orient = [n for n in got if n in want and got[n][2] != want[n][2]]
@@ -179,12 +203,13 @@ for case in cases:
     ]
     absent = [n for n in got if n not in want]
 
-    if bad_orient or absent or cell_bad or blk_missing or blk_extra:
+    if bad_orient or absent or cell_bad or blk_missing or blk_extra or grp_bad:
         differ += 1
         print(
             f"  {case:32} ⛔ DIFFER — {len(bad_orient)} orientation, {len(absent)} not in the DEF, "
             f"{len(cell_bad)}/{len(want_cells)} cells, "
-            f"{len(blk_missing)} blockages missing, {len(blk_extra)} extra"
+            f"{len(blk_missing)} blockages missing, {len(blk_extra)} extra, "
+            f"{len(grp_bad)}/{len(want_groups)} groups"
         )
         for n in (bad_orient + absent)[:2]:
             print(f"      macro {n}: ours {got[n]}  golden {want.get(n)}")
@@ -194,6 +219,10 @@ for case in cases:
             print(f"      blockage MISSING {b}")
         for b in list(blk_extra)[:2]:
             print(f"      blockage EXTRA   {b}")
+        for n in grp_bad[:2]:
+            print(f"      group {n}:")
+            print(f"        ours   {got_groups.get(n)}")
+            print(f"        golden {want_groups.get(n)}")
     elif deltas:
         orient_only += 1
         worst = max(abs(dx) for _, dx, _ in deltas), max(abs(dy) for _, _, dy in deltas)
@@ -206,7 +235,7 @@ for case in cases:
         exact += 1
         print(
             f"  {case:32} exact ({len(got)} macros, {len(want_cells)} cells, "
-            f"{len(want_blockages)} blockages)"
+            f"{len(want_blockages)} blockages, {len(want_groups)} groups)"
         )
 
 print(

@@ -60,6 +60,11 @@ pub struct BundledNet {
 /// The weight upstream gives a parent's virtual connections.
 pub const VIRTUAL_CONNECTION_WEIGHT: f32 = 10.0;
 
+// ⛔ **DELIBERATELY UNUSED — the SOFT-macro twin of a wired function.** Cluster placement reaches
+// its connectivity through the `connections` machinery, and the macro path calls
+// [`build_bundled_nets_for_macros`], which IS wired. This variant has no live caller and is kept
+// only as the transcription of the soft-cluster form. ⚠️ It is NOT dead-in-the-reference: upstream
+// calls it. What is unbuilt on our side is the soft path's use of it. Triaged 2026-08-29.
 /// Upstream `buildBundledNets` for soft macros.
 ///
 /// 🔑 **Order is part of the answer.** The virtual connections come first, in the parent's own
@@ -984,6 +989,10 @@ pub fn find_offset_intersections(
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct NeedsPolygonUnion;
 
+// ⛔ **DELIBERATELY UNUSED — a class-A REFUSAL, recorded in the divergence register.** Upstream
+// merges blockages with `boost::polygon` and re-cuts them into rectangles; the DECOMPOSITION is
+// that library's own choice — count, cut positions, order — so we refuse rather than invent one.
+// ⚠️ Every suite design with a blockage has exactly ONE, so nothing reaches it. Triaged 2026-08-29.
 /// Upstream `eliminateOverlaps`: merge the blockages and re-cut them into disjoint rectangles.
 ///
 /// ⛔ **Upstream does this with `boost::polygon`'s `polygon_90_set_data`, and the rectangles that
@@ -1070,6 +1079,12 @@ pub fn fixed_terminal(cluster: &TerminalCluster, outline_origin: (i32, i32)) -> 
     }
 }
 
+// ⛔ **DELIBERATELY UNUSED — and it was HIDDEN from the caller audit until 2026-08-29.** The
+// one-liner counted a DOC-COMMENT mention as a caller, so this and [`temp_macro_clusters`] both
+// read as wired when neither was. The audit now excludes comment lines; see register D4.
+//
+// ℹ️ The live path calls [`fixed_terminal`] per terminal and does the tree walk at the call site,
+// which register class E already records as a shape difference. Triaged 2026-08-29.
 /// Upstream `createFixedTerminals`' walk: every SIBLING at every level above the cluster.
 ///
 /// 🔑 **It climbs the tree, gathering aunts and uncles.** Placing a cluster's children means
@@ -1112,6 +1127,8 @@ pub fn fixed_terminal_walk(
 
 // ---------------------------------------------------------------- nets, fences and guides
 
+// ⛔ **DELIBERATELY UNUSED — pairs with [`build_bundled_nets`]** and shares its status: the soft
+// path that would call it is not built. Triaged 2026-08-29.
 /// Upstream `mergeNets`: collapse duplicate nets, summing their weights.
 ///
 /// ⛔ **The match is DIRECTED, despite the nets being documented as undirected.** Upstream's
@@ -1255,6 +1272,9 @@ pub fn valid_utilization(
     inflated_soft_area < available_area
 }
 
+// ⛔ **DELIBERATELY UNUSED.** The APPENDING `setShapes` form, which the macro path does not take:
+// shaping always forces and placement never does, and both of those call sites are built
+// elsewhere. Kept as the transcription of the third form. Triaged 2026-08-29.
 /// Upstream `setMacroClustersShapes`: give each movable macro cluster its tilings as shapes.
 ///
 /// ⚠️ **This is `setShapes` WITHOUT the force flag**, so it declines an empty tiling list — unlike
@@ -2760,6 +2780,10 @@ pub fn init_temperature(costs: &[f32], init_prob: f32) -> f32 {
     }
 }
 
+// ⛔ **DELIBERATELY UNUSED.** The HARD-macro annealing core stores widths as `float` where the soft
+// core stores `int`; this is that narrowing. The macro path we built samples through the soft
+// core's types, so nothing reaches it. ⚠️ A future hard-core path MUST use this rather than the
+// soft equivalent — the two round differently. Triaged 2026-08-29.
 /// Upstream's `std::vector<float> width_list` in the HARD core's `initialize`.
 ///
 /// ⛔ **The soft core stores its widths as `int`; the hard core stores them as `float`.** The
@@ -3822,6 +3846,13 @@ pub struct TempMacroClusters {
     pub next_cluster_id: i32,
 }
 
+// ⛔ **DELIBERATELY UNUSED — also hidden from the caller audit until 2026-08-29**, by a doc
+// reference rather than a call.
+//
+// ℹ️ The macro path builds its temporary clusters inline at the site marked
+// "`createTempMacroClusters`' view" in `cluster-dump`, and scores 33/33 doing so. ⚠️ The
+// DISTINCT-MASTER count this returns IS live — it scales the exchange probability — but it is
+// computed at that site rather than here. Triaged 2026-08-29.
 /// Upstream `ClusteringEngine::createTempMacroClusters`.
 ///
 /// 🔑 **One temporary cluster per hard macro**, so macro placement can reuse the cluster-shaped
@@ -4144,54 +4175,44 @@ pub fn snap_layer_data(
 
 // ---------------------------------------------------------------- flipping a placed macro
 
-/// Upstream `dbOrientType::flipX` and `flipY`, over the orientations `mpl` can reach.
+/// The inverse of [`real_origin`]: from the macro's REAL corner back to its HALOED one.
 ///
-/// ⛔ **A "vertical flip" calls `flipY`** — mirroring about the vertical (Y) axis, which moves the
-/// macro HORIZONTALLY. The name describes the mirror line, not the direction of travel, and it is
-/// the opposite of the reading most people arrive at.
+/// ⛔ **`setRealX` takes the halo off the SAME SIDE `getRealX` added it to**, which depends on the
+/// orientation — the left/bottom at `R0`, the right at `R180`/`MY`, the top at `R180`/`MX`. So the
+/// blockage a mirrored macro casts is not its real corner minus a constant.
 ///
-/// ⚠️ The four rotated orientations map among themselves and are outside what `mpl` produces; they
-/// are folded into `Other` here, which flips to itself. ⛔ That is a divergence: upstream maps
-/// `R90 → MYR90` under `flipX`, and a rotated macro reaching this path would take a different
-/// orientation than we give it. Nothing in `mpl` rotates a macro.
-pub fn flip_orientation(orient: crate::halo::Orient, is_vertical_flip: bool) -> crate::halo::Orient {
-    use crate::halo::Orient;
-    if is_vertical_flip {
-        // `flipY`: mirror about the vertical axis.
-        match orient {
-            Orient::R0 => Orient::My,
-            Orient::My => Orient::R0,
-            Orient::R180 => Orient::Mx,
-            Orient::Mx => Orient::R180,
-            Orient::Other => Orient::Other,
-        }
-    } else {
-        // `flipX`: mirror about the horizontal axis.
-        match orient {
-            Orient::R0 => Orient::Mx,
-            Orient::Mx => Orient::R0,
-            Orient::R180 => Orient::My,
-            Orient::My => Orient::R180,
-            Orient::Other => Orient::Other,
-        }
-    }
+/// 🔑 Used once, by the final commit: `setRealLocation(inst->getLocation())` then `getBBox()`, so
+/// the keep-out is computed from the SNAPPED position rather than the placed one.
+pub fn haloed_corner(
+    real: (i32, i32),
+    halo: (i32, i32, i32, i32),
+    orient: DbOrient,
+) -> (i32, i32) {
+    let (left, bottom, right, top) = halo;
+    let x = match orient {
+        DbOrient::R180 | DbOrient::MY => real.0 - right,
+        _ => real.0 - left,
+    };
+    let y = match orient {
+        DbOrient::R180 | DbOrient::MX => real.1 - top,
+        _ => real.1 - bottom,
+    };
+    (x, y)
 }
 
-/// Upstream `flipRealMacro`.
-///
-/// 🔑 **The location is re-applied AFTER the orientation.** Setting an orientation mirrors the
-/// macro about an axis, which moves its lower-left corner — so the real location is written back to
-/// put it where macro placement wanted it. Omitting that leaves every flipped macro displaced by
-/// its own width or height.
-///
-/// ⚠️ Both the instance and the `HardMacro` record the new orientation; they are separate stores.
-pub fn flip_real_macro(
-    orient: crate::halo::Orient,
-    real_location: (i32, i32),
-    is_vertical_flip: bool,
-) -> (crate::halo::Orient, (i32, i32)) {
-    (flip_orientation(orient, is_vertical_flip), real_location)
-}
+// ⛔ **`flip_orientation` and `flip_real_macro` were DELETED on 2026-08-29, not wired.** They were
+// a second transcription of `flipRealMacro`'s orientation change, built on `crate::halo::Orient` —
+// five variants, folding all four ROTATED orientations into `Other`. Upstream maps `R90 → MYR90`
+// under `flipX`; that reading did not, and said so in its own doc comment.
+//
+// 🔑 **[`flip_db_orientation`] is the faithful one, over all EIGHT database orientations, and it is
+// what the orientation pass actually calls.** Wiring the deleted pair would have been a REGRESSION,
+// so D4's rule — every uncalled function ends up wired or registered — resolves here as
+// *registered and removed* rather than wired.
+//
+// ⚠️ Both rules they carried are still pinned: the flipX/flipY mapping by `flip_db_orientation`'s
+// test over all eight orientations and both involutions, and "the location is re-applied AFTER the
+// orientation" at the live site, where the origin is recomputed from the halo on every flip.
 
 /// One terminal on a net, as the real-wirelength model sees it.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -4680,6 +4701,11 @@ pub fn reset_sa_parameters(base: crate::anneal::SoftWeights) -> ResetSaParameter
 /// the database's own integer.
 pub const WIRELENGTH_METRIC: &str = "macro_place__wirelength";
 
+// ⛔ **DELIBERATELY UNUSED, and it has NO ORACLE — measured, not assumed.** `computeWireLength`
+// emits `macro_place__wirelength` through `logger_->metric`, and **no `.ok` golden in the 36-design
+// suite records it**. The HPWL itself comes from `odb::WireLengthEvaluator`, an ODB utility we do
+// not reimplement, so this function is only the `dbuToMicrons` conversion around a number we would
+// have to invent. Wiring it would produce an unscored value. Triaged 2026-08-29.
 /// The value that metric carries.
 pub fn reported_wirelength(hpwl_dbu: i64, dbu_per_micron: i32) -> f64 {
     hpwl_dbu as f64 / dbu_per_micron as f64
