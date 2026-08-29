@@ -1146,6 +1146,83 @@ fn print_boundary_push(
         })
     };
 
+    // ⛔ **BOTH strategies measure the same way.** `adjustRealMacroOrientation` is overloaded,
+    // and the single-macro overload is the group one with a group of one: same sum, same flip,
+    // same `>` revert — only the trace line differs. So this is hoisted above the match rather
+    // than living in one arm, and the `Single` path stops reporting a hardcoded zero.
+    //
+    // ⚠️ **The zero it replaced was green by COINCIDENCE.** `halos5` is the only design that
+    // reaches `Single`, and all four of its reference lines read `orig_WL 0 new_WL 0` because
+    // its macros carry no signal net. A stub agreeing with the reference on the only case that
+    // executes it is indistinguishable from a model, and the gate cannot tell them apart.
+    //
+    // ⛔ **`adjustRealMacroOrientation` is a GROUP operation, not a per-macro one.** It sums
+    // the group's wirelength, flips EVERY member, sums again, and reverts the whole group
+    // if it got worse. Flipping members one at a time would judge each against a board the
+    // others have not moved on.
+    //
+    // ⚠️ **A flip moves the instance ORIGIN**, because `getRealX`/`getRealY` take the halo
+    // off a different side once mirrored — so the origin is recomputed on every flip, not
+    // carried.
+    let measure = |orient: &[p::DbOrient], group: &[usize]| -> f32 {
+        group
+            .iter()
+            .map(|&m| {
+                let inst = inst_of[m];
+                p::flip_macro_wirelength(
+                    &macro_pins[m],
+                    &net_terms,
+                    &|i| {
+                        index_of.get(&i).map_or_else(
+                            // ⛔ A non-macro instance keeps its DATABASE placement, read
+                            // back in full. Nothing in this stage moves it, but that is
+                            // not the same as it sitting at `R0` on the origin: `io_pads1`
+                            // fixes `PAD_1` at `W`, and assuming `R0` put its terminal on
+                            // the wrong side of the die and inverted the flip decision.
+                            || inst_placement.get(i).copied(),
+                            |&k| {
+                                // ⛔ TWO steps, and conflating them is wrong on every
+                                // flip: `real_origin` says WHERE THE BOX GOES (the halo
+                                // comes off a different side once mirrored), and
+                                // `instance_offset` turns that into the transform's
+                                // offset, which for a mirrored master differs by its
+                                // width.
+                                let at = p::real_origin(
+                                    flip_macros[k].location,
+                                    halo_of[k],
+                                    orient[k],
+                                );
+                                Some((
+                                    orient[k],
+                                    p::instance_offset(at, master_dims[k], orient[k]),
+                                ))
+                            },
+                        )
+                    },
+                    &boxes_of,
+                    &port,
+                    &port_region,
+                    available,
+                    inst,
+                )
+            })
+            .sum()
+    };
+    let mut wirelength_of = |group: &[usize], is_vertical: bool| -> (f32, f32) {
+        let original = measure(&orient, group);
+        for &m in group {
+            orient[m] = p::flip_db_orientation(orient[m], is_vertical);
+        }
+        let new = measure(&orient, group);
+        // ⚠️ `>` strictly — a TIE KEEPS THE FLIP, so only a strict worsening reverts.
+        if !p::keep_flip(original, new) {
+            for &m in group {
+                orient[m] = p::flip_db_orientation(orient[m], is_vertical);
+            }
+        }
+        (original, new)
+    };
+
     let use_full_halo = std::env::args().any(|a| a == "--use-full-halo");
     match p::orientation_strategy(use_full_halo) {
         p::OrientationStrategy::Single => {
@@ -1164,78 +1241,13 @@ fn print_boundary_push(
                 .filter(|&inst| !design.instances[inst].is_fixed)
                 .map(|inst| index_of[&inst])
                 .collect();
-            let mut zero = |_m: usize, _v: bool| (0.0f32, 0.0f32);
-            for line in p::run_orientation_single(&flip_macros, &unfixed, &mut zero) {
+            // A group of one, which is exactly what the single-macro overload computes.
+            let mut single = |m: usize, is_vertical: bool| wirelength_of(&[m], is_vertical);
+            for line in p::run_orientation_single(&flip_macros, &unfixed, &mut single) {
                 println!("{line}");
             }
         }
         p::OrientationStrategy::ByCluster => {
-            // ⛔ **`adjustRealMacroOrientation` is a GROUP operation, not a per-macro one.** It sums
-            // the group's wirelength, flips EVERY member, sums again, and reverts the whole group
-            // if it got worse. Flipping members one at a time would judge each against a board the
-            // others have not moved on.
-            //
-            // ⚠️ **A flip moves the instance ORIGIN**, because `getRealX`/`getRealY` take the halo
-            // off a different side once mirrored — so the origin is recomputed on every flip, not
-            // carried.
-            let measure = |orient: &[p::DbOrient], group: &[usize]| -> f32 {
-                group
-                    .iter()
-                    .map(|&m| {
-                        let inst = inst_of[m];
-                        p::flip_macro_wirelength(
-                            &macro_pins[m],
-                            &net_terms,
-                            &|i| {
-                                index_of.get(&i).map_or_else(
-                                    // ⛔ A non-macro instance keeps its DATABASE placement, read
-                                    // back in full. Nothing in this stage moves it, but that is
-                                    // not the same as it sitting at `R0` on the origin: `io_pads1`
-                                    // fixes `PAD_1` at `W`, and assuming `R0` put its terminal on
-                                    // the wrong side of the die and inverted the flip decision.
-                                    || inst_placement.get(i).copied(),
-                                    |&k| {
-                                        // ⛔ TWO steps, and conflating them is wrong on every
-                                        // flip: `real_origin` says WHERE THE BOX GOES (the halo
-                                        // comes off a different side once mirrored), and
-                                        // `instance_offset` turns that into the transform's
-                                        // offset, which for a mirrored master differs by its
-                                        // width.
-                                        let at = p::real_origin(
-                                            flip_macros[k].location,
-                                            halo_of[k],
-                                            orient[k],
-                                        );
-                                        Some((
-                                            orient[k],
-                                            p::instance_offset(at, master_dims[k], orient[k]),
-                                        ))
-                                    },
-                                )
-                            },
-                            &boxes_of,
-                            &port,
-                            &port_region,
-                            available,
-                            inst,
-                        )
-                    })
-                    .sum()
-            };
-            let mut wirelength_of = |group: &[usize], is_vertical: bool| -> (f32, f32) {
-                let original = measure(&orient, group);
-                for &m in group {
-                    orient[m] = p::flip_db_orientation(orient[m], is_vertical);
-                }
-                let new = measure(&orient, group);
-                // ⚠️ `>` strictly — a TIE KEEPS THE FLIP, so only a strict worsening reverts.
-                if !p::keep_flip(original, new) {
-                    for &m in group {
-                        orient[m] = p::flip_db_orientation(orient[m], is_vertical);
-                    }
-                }
-                (original, new)
-            };
             for line in
                 p::run_orientation_by_cluster(&flip_clusters, &flip_macros, &mut wirelength_of)
             {
