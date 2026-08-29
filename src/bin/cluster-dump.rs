@@ -781,7 +781,7 @@ fn print_placement_summaries(
                     // distance by the difference between the two corners.
                     c, &placed, design, h, dbu, weights, probabilities, root, geometry,
                     &available_abs, nets, &assoc,
-                    pin_cluster_of, has_io_pads, push_mode || flip_mode,
+                    pin_cluster_of, has_io_pads, push_mode || flip_mode, guide_regions,
                 );
                 for (inst, location) in located {
                     macro_location.insert(inst, location);
@@ -1067,6 +1067,7 @@ fn emit_macro_summary(
     pin_cluster_of: &dyn Fn(usize) -> Option<i32>,
     has_io_pads: bool,
     push_mode: bool,
+    guide_regions: &[(usize, (i32, i32, i32, i32))],
 ) -> Vec<(usize, (i32, i32))> {
     use vyges_mpl::placement as p;
     let Some(&(x0, y0, x1, y1)) = placed.get(&cluster.id) else { return Vec::new() };
@@ -1238,12 +1239,36 @@ fn emit_macro_summary(
             ));
         }
     }
+    // ⛔ **`computeFencesAndGuides`, the MACRO-path overload — and it was never called.**
+    // `placeMacros` computes them at step 4, keyed by the macro's INDEX in `hard_macros`, from
+    // `guides_[inst]` clipped to THIS cluster's outline and rebased onto it.
+    //
+    // ⚠️ **No area test here.** The cluster path drops a fence or guide whose clipped area is zero;
+    // this overload keeps every entry it finds. A guide that misses the outline entirely becomes a
+    // zero rect at the origin rather than being absent, which is what upstream's `intersection`
+    // writes on a miss.
+    //
+    // 🔑 Without this the guidance penalty is identically zero on the macro path, and `guides2` —
+    // whose whole point is a guidance weight of 30 outweighing wirelength — places its macros
+    // somewhere the reference does not.
+    let guide_for_macro: std::collections::HashMap<usize, (i32, i32, i32, i32)> =
+        guide_regions.iter().copied().collect();
+    let (_, guides) = p::macro_fences_and_guides(
+        // ℹ️ `set_macro_fence` is not exercised by the suite; the fence half stays empty rather
+        // than being invented.
+        &|_| None,
+        &|k| hard.get(k).and_then(|inst| guide_for_macro.get(inst).copied()),
+        n,
+        (x0, y0, x1, y1),
+    );
+
     let problem = p::MacroProblem {
         macros,
         number_of_sequence_pair_macros: n,
         inputs: p::PlacementInputs {
             attributes,
             nets,
+            guides,
             constraint_regions,
             available_regions: available
                 .iter()

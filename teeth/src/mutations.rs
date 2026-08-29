@@ -1540,6 +1540,37 @@ pub const MUTATIONS: &[Mutation] = &[
         replace: r#"        let Some(&first) = cluster.macros.last() else { continue };"#,
         want: r#"the_push_threshold_comes_from_the_first_macro_not_the_last"#,
     },
+    // ---------------------------------------------------------------- macro-path fences and guides
+    //
+    // ⚠️ **This function had TESTS and NO CALLER until 2026-08-28**, which is the failure mode the
+    // whole programme keeps hitting: a unit-tested function passes forever while contributing
+    // nothing. It had no mutations either — mutations cannot see an absent caller, but their
+    // absence is a fair signal that nobody had looked at the function recently.
+    Mutation {
+        name: r#"macro-guides-dropped-when-degenerate"#,
+        file: r#"src/placement.rs"#,
+        find: r#"        if let Some(fence) = fence_of(i) {
+            fences.push((i, clip_region_to_outline(fence, outline)));
+        }"#,
+        replace: r#"        if let Some(fence) = fence_of(i) {
+            let clipped = clip_region_to_outline(fence, outline);
+            if clipped.2 > clipped.0 && clipped.3 > clipped.1 {
+                fences.push((i, clipped));
+            }
+        }"#,
+        want: r#"every_macro_with_a_fence_gets_an_entry"#,
+    },
+    Mutation {
+        name: r#"macro-guides-share-the-fence-lookup"#,
+        file: r#"src/placement.rs"#,
+        find: r#"        if let Some(guide) = guide_of(i) {
+            guides.push((i, clip_region_to_outline(guide, outline)));
+        }"#,
+        replace: r#"        if let Some(guide) = fence_of(i) {
+            guides.push((i, clip_region_to_outline(guide, outline)));
+        }"#,
+        want: r#"fences_and_guides_are_independent"#,
+    },
     // ---------------------------------------------------------------- orientation improvement
     //
     // 🔑 Three of these pin rules that NO regression design can witness on its own: the line naming
