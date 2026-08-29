@@ -1540,6 +1540,105 @@ pub const MUTATIONS: &[Mutation] = &[
         replace: r#"        let Some(&first) = cluster.macros.last() else { continue };"#,
         want: r#"the_push_threshold_comes_from_the_first_macro_not_the_last"#,
     },
+    // ---------------------------------------------------------------- orientation improvement
+    //
+    // 🔑 Three of these pin rules that NO regression design can witness on its own: the line naming
+    // the macro's cluster rather than the group's, the real-versus-haloed coordinate split, and the
+    // single path, which only `halos5` reaches.
+    Mutation {
+        name: r#"flip-line-names-the-group-cluster"#,
+        file: r#"src/placement.rs"#,
+        find: r#"                    // ⛔ The MACRO's cluster, not the one being iterated. See `FlipMacro`.
+                    macros[first].cluster_name,"#,
+        replace: r#"                    cluster.name,"#,
+        want: r#"the_line_names_the_macros_own_cluster_not_the_group_being_flipped"#,
+    },
+    Mutation {
+        name: r#"flip-groups-key-on-the-haloed-coordinate"#,
+        file: r#"src/placement.rs"#,
+        find: r#"            cluster.macros.iter().map(|&i| (i, macros[i].real_location)).collect();"#,
+        replace: r#"            cluster.macros.iter().map(|&i| (i, macros[i].location)).collect();"#,
+        want: r#"the_group_keys_on_the_real_coordinate_and_reports_the_haloed_one"#,
+    },
+    Mutation {
+        name: r#"flip-reports-the-real-coordinate"#,
+        file: r#"src/placement.rs"#,
+        find: r#"                let at = if is_vertical {
+                    macros[first].location.0
+                } else {
+                    macros[first].location.1
+                };"#,
+        replace: r#"                let at = if is_vertical {
+                    macros[first].real_location.0
+                } else {
+                    macros[first].real_location.1
+                };"#,
+        want: r#"the_group_keys_on_the_real_coordinate_and_reports_the_haloed_one"#,
+    },
+    Mutation {
+        name: r#"flip-interleaves-the-two-passes"#,
+        file: r#"src/placement.rs"#,
+        find: r#"        for &is_vertical in FLIP_PASSES.iter() {
+            let groups = if is_vertical { &cols } else { &rows };"#,
+        replace: r#"        for &is_vertical in FLIP_PASSES.iter().rev() {
+            let groups = if is_vertical { &cols } else { &rows };"#,
+        want: r#"every_column_is_tried_before_any_row"#,
+    },
+    Mutation {
+        name: r#"flip-single-prints-a-coordinate"#,
+        file: r#"src/placement.rs"#,
+        find: r#"                "{FLIP_DEBUG}Inst {} flip {} orig_WL {} new_WL {}","#,
+        replace: r#"                "{FLIP_DEBUG}Inst {} flip {} at 0 orig_WL {} new_WL {}","#,
+        want: r#"the_single_path_prints_inst_lines_with_no_coordinate"#,
+    },
+    // ⛔ **An earlier version of this mutation was EQUIVALENT and was replaced, not kept.** It
+    // disabled a `format_wirelength` helper that trimmed the decimal point from an integral
+    // value — and Rust's own `{}` on an `f32` already does exactly that, so the mutant printed the
+    // same string. ⟹ the helper was dead weight and is gone; this mutation breaks the format for
+    // real by forcing a precision.
+    Mutation {
+        name: r#"flip-wirelength-printed-with-a-precision"#,
+        file: r#"src/placement.rs"#,
+        find: r#"                    "{FLIP_DEBUG}Cluster {} {} flip at {} orig_WL {} new_WL {}","#,
+        replace: r#"                    "{FLIP_DEBUG}Cluster {} {} flip at {} orig_WL {:.1} new_WL {:.1}","#,
+        want: r#"an_integral_wirelength_prints_without_a_decimal_point"#,
+    },
+    Mutation {
+        name: r#"hard-macros-skip-the-module-walk"#,
+        file: r#"src/placement.rs"#,
+        find: r#"    for &module in db_modules {
+        walk(module, &mut out, module_insts, module_children, is_macro);
+    }"#,
+        replace: r#"    let _ = db_modules;"#,
+        want: r#"a_clusters_hard_macros_include_everything_under_its_modules"#,
+    },
+    Mutation {
+        name: r#"hard-macros-do-not-recurse-into-child-modules"#,
+        file: r#"src/placement.rs"#,
+        find: r#"        for child in module_children(module) {
+            walk(child, out, module_insts, module_children, is_macro);
+        }"#,
+        replace: r#"        let _ = module_children;"#,
+        want: r#"a_clusters_hard_macros_include_everything_under_its_modules"#,
+    },
+    Mutation {
+        name: r#"hard-macros-module-walk-comes-first"#,
+        file: r#"src/placement.rs"#,
+        find: r#"    let mut out: Vec<usize> = leaf_macros.to_vec();"#,
+        replace: r#"    let mut out: Vec<usize> = Vec::new();"#,
+        want: r#"the_leaf_macros_come_before_the_module_walk"#,
+    },
+    Mutation {
+        name: r#"hard-macros-std-cell-cluster-still-counts"#,
+        file: r#"src/placement.rs"#,
+        find: r#"    if cluster_type == crate::cluster::ClusterType::StdCell {
+        return Vec::new();
+    }"#,
+        replace: r#"    if false {
+        return Vec::new();
+    }"#,
+        want: r#"a_std_cell_cluster_has_no_hard_macros"#,
+    },
     // ---------------------------------------------------------------- temporary macro clusters
     Mutation {
         name: r#"temp-cluster-ids-rewind"#,

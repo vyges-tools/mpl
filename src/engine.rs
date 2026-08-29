@@ -86,6 +86,18 @@ pub struct ShapingHandoff {
     /// The halo-inclusive bounding box, by instance index. Needed for the FIXED macros, whose
     /// position is part of what the tiling search has to pack around.
     pub macro_bboxes: Vec<Rect>,
+    /// The RESOLVED halo, by instance index — `HardMacro::halo_`.
+    ///
+    /// 🔑 **Needed because `HardMacro` has TWO coordinate systems and the orientation stage uses
+    /// both in one line.** The default `getX`/`getY` include the halo; `getRealX`/`getRealY` take
+    /// it off. `correctMacroOrientationByCluster` groups columns and rows by the REAL coordinate
+    /// and then reports `macros.front()->getX()` — the haloed one — in the same trace line.
+    ///
+    /// ⚠️ **Per instance, not per design.** `set_macro_halo` names a single macro, so two macros in
+    /// one cluster can carry different halos, and the two coordinate systems then differ by
+    /// different amounts. Grouping by the haloed coordinate agrees with the reference on every
+    /// design whose halos are uniform and disagrees exactly on the `halos*` cases.
+    pub macro_halos: Vec<crate::options::Halo>,
     /// ⚠️ Whether the design has any standard cells at all — it selects the search's action
     /// probabilities, because the reference zeroes the resize share when it does not.
     pub has_std_cells: bool,
@@ -366,6 +378,7 @@ pub fn run_clustering(input: &DesignInputs, opts: &ClusterOptions) -> Clustering
                 macro_with_halo_area,
                 macro_dims,
                 macro_bboxes,
+                halos.clone(),
                 &io,
                 !pads.is_empty(),
                 design_metrics.num_std_cell,
@@ -429,6 +442,7 @@ pub fn run_clustering(input: &DesignInputs, opts: &ClusterOptions) -> Clustering
             macro_with_halo_area,
             macro_dims,
             macro_bboxes,
+            halos.clone(),
             &io,
             !pads.is_empty(),
             design_metrics.num_std_cell,
@@ -505,6 +519,7 @@ fn shaping_handoff(
     macro_with_halo_area: i64,
     macro_dims: Vec<(i64, i64)>,
     macro_bboxes: Vec<Rect>,
+    macro_halos: Vec<crate::options::Halo>,
     io: &IoClusters,
     has_io_pads: bool,
     num_std_cell: i32,
@@ -531,6 +546,7 @@ fn shaping_handoff(
         top_std_cell_area,
         macro_dims,
         macro_bboxes,
+        macro_halos,
         has_std_cells: num_std_cell > 0,
         max_level,
         macro_with_halo_area,

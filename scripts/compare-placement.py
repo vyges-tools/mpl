@@ -109,8 +109,6 @@ for case in cases:
         os.path.join(log_dir, case + ".log"), encoding="utf-8", errors="replace"
     ).read()
     ref = tables(ref_text)
-    if not ref:
-        print(f"  {case:32} macro-path (no cluster summary)"); macro_path += 1; continue
     path = os.path.join(odb_dir, case + ".odb")
     if not os.path.exists(path):
         print(f"  {case:32} NO ODB"); refused += 1; continue
@@ -140,6 +138,15 @@ for case in cases:
                         break
                     continue
                 break
+    # ⛔ **The macro-path exit comes AFTER the macro comparison, and that ordering is the whole
+    # point.** It used to `continue` on an absent CLUSTER summary, which silently skipped the MACRO
+    # tables too — and the designs with no cluster summary are exactly the ALL-MACRO ones, where
+    # `placeMacros` is the only placement that happens. So the macro arm's denominator excluded the
+    # four designs that depend on it most, and reported `30 match, 0 differ` while never looking.
+    # ⚠️ Found on 2026-08-28 by the FLIP gate, which saw those designs' macros at positions the
+    # reference does not place them at.
+    if not ref:
+        print(f"  {case:32} macro-path (no cluster summary)"); macro_path += 1; continue
     if len(got) != len(ref):
         print(f"  {case:32} {len(got)} tables, upstream has {len(ref)}"); differ += 1; continue
     diffs = []

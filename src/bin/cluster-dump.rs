@@ -44,6 +44,7 @@ fn main() {
             "--place" => {}
             "--placement-trace" => {}
             "--push" => {}
+            "--flip" => {}
             "--floorplan" => {}
             "--nets" => {}
             "--cost" => {}
@@ -98,7 +99,8 @@ fn main() {
         || std::env::args().any(|a| a == "--floorplan")
         || std::env::args().any(|a| a == "--nets")
         || std::env::args().any(|a| a == "--cost")
-        || std::env::args().any(|a| a == "--push");
+        || std::env::args().any(|a| a == "--push")
+        || std::env::args().any(|a| a == "--flip");
     let db = match vyges_opendb::Db::open(&path) {
         Ok(d) => d,
         Err(e) => { eprintln!("cannot read {path}: {e}"); std::process::exit(2); }
@@ -571,6 +573,11 @@ fn print_placement_summaries(
     // summary this file would otherwise emit is suppressed — the `boundary_push` log carries no
     // penalty table, and a table printed alongside it would be diffed as a difference.
     let push_mode = std::env::args().any(|a| a == "--push");
+    // ⛔ **The flip runs AFTER the push and reads the positions the push left behind** — upstream
+    // orders `pushMacrosToCoreBoundaries` then `updateMacrosOnDb` then the orientation pass, so a
+    // macro the push moved is flipped at its new coordinate. Scoring the flip against pre-push
+    // positions differs on exactly the designs the push moved, which is the ones that matter.
+    let flip_mode = std::env::args().any(|a| a == "--flip");
     // Returns the winning run's macros and their names, so the caller can do the write-back that
     // `updateChildrenShapesAndLocations` does on the tree.
     let mut emit = |parent: &vyges_mpl::cluster::Cluster|
@@ -669,7 +676,7 @@ fn print_placement_summaries(
                     );
                 }
             }
-            if !floorplan_mode && !push_mode {
+            if !floorplan_mode && !push_mode && !flip_mode {
                 println!("Cluster Placement Summary");
                 print!(
                     "{}",
@@ -695,6 +702,15 @@ fn print_placement_summaries(
     // held beside the tree rather than on it; the values and the order are upstream's.
     let mut placed: std::collections::HashMap<i32, (i32, i32, i32, i32)> =
         std::collections::HashMap::new();
+    // ⛔ **THE ROOT'S OWN BOX IS THE FLOORPLAN, and it has to be seeded here.** `setRootShapes`
+    // gives the root soft macro the floorplan shape before any placement runs, so
+    // `cluster->getBBox()` is defined for the root even though nothing ever *placed* it.
+    // ⚠️ It matters only for an ALL-MACRO design, where `placeChildren` types the root
+    // `HardMacroCluster` and hands it straight to `placeMacros` — without this the root is absent
+    // from the map, `placeMacros` is skipped, and every macro keeps its DATABASE position. That is
+    // invisible in the placement gates, which report those designs as `macro-path`, and shows up
+    // first in the flip trace as a coordinate of zero where the reference has a placed one.
+    placed.insert(root.id, outline);
     // ⛔ **The soft macro's AREA, kept beside its box.** `designHasSingleCentralizedMacroArray`
     // reads it rather than the cluster's own area, and upstream says why: only the abstraction
     // records that fine shaping shrank a standard-cell cluster away. It is carried on the macro,
@@ -765,7 +781,7 @@ fn print_placement_summaries(
                     // distance by the difference between the two corners.
                     c, &placed, design, h, dbu, weights, probabilities, root, geometry,
                     &available_abs, nets, &assoc,
-                    pin_cluster_of, has_io_pads, push_mode,
+                    pin_cluster_of, has_io_pads, push_mode || flip_mode,
                 );
                 for (inst, location) in located {
                     macro_location.insert(inst, location);
@@ -775,8 +791,10 @@ fn print_placement_summaries(
         }
     }
 
-    if push_mode {
-        print_boundary_push(root, &placed, &placed_area, &macro_location, design, h, &raw_soft);
+    if push_mode || flip_mode {
+        print_boundary_push(
+            root, &placed, &placed_area, &macro_location, design, h, &raw_soft, flip_mode,
+        );
     }
 }
 
@@ -797,6 +815,7 @@ fn print_boundary_push(
     design: &vyges_mpl::design::Design,
     h: &vyges_mpl::engine::ShapingHandoff,
     io_blockages: &[(i32, i32, i32, i32)],
+    flip_mode: bool,
 ) {
     use vyges_mpl::placement as p;
 
@@ -813,6 +832,10 @@ fn print_boundary_push(
     // The flat obstacle list, in `fetchMacroClusters` order — and the clusters' indices into it.
     let mut macros: Vec<p::PushMacro> = Vec::new();
     let mut clusters: Vec<p::PushCluster> = Vec::new();
+    // ⚠️ The instance behind each flat entry, so the orientation pass can read the POST-push
+    // positions back out. `PushMacro` carries a name and a cluster id, neither of which indexes
+    // the design.
+    let mut macro_inst: Vec<usize> = Vec::new();
     for id in ids {
         let Some(c) = by_id(id) else { continue };
         let Some(&bbox) = placed.get(&c.id) else { continue };
@@ -820,6 +843,7 @@ fn print_boundary_push(
         for &inst in &c.leaf_macros {
             let (width, height) = h.macro_dims[inst];
             indices.push(macros.len());
+            macro_inst.push(inst);
             macros.push(p::PushMacro {
                 name: design.instances[inst].name.clone(),
                 cluster_id: c.id,
@@ -866,16 +890,140 @@ fn print_boundary_push(
         clusters.len(),
         p::push_decision(root.cluster_type, &root_children)
     );
-    for line in p::run_boundary_push(
+    let push_trace = p::run_boundary_push(
         root.cluster_type,
         &root_children,
         &clusters,
         &mut macros,
         core,
         io_blockages,
-    ) {
-        println!("{line}");
+    );
+    if !flip_mode {
+        for line in push_trace {
+            println!("{line}");
+        }
+        return;
     }
+
+    // ---------------------------------------------------------------- orientation improvement
+    //
+    // ⛔ **The cluster set here is NOT the pusher's.** `correctMacroOrientationByCluster` walks
+    // `id_to_cluster` — every cluster in the tree, in ASCENDING ID — and takes each that is a
+    // `HardMacroCluster` and not fixed. That INCLUDES THE ROOT, which in an all-macro design is
+    // typed `HardMacroCluster` by MPL-27 and holds every macro. `macro_only` has ten macros and
+    // emits fourteen lines per pass because of it.
+    let mut by_id: Vec<&vyges_mpl::cluster::Cluster> = Vec::new();
+    fn collect<'a>(c: &'a vyges_mpl::cluster::Cluster, out: &mut Vec<&'a vyges_mpl::cluster::Cluster>) {
+        out.push(c);
+        for k in &c.children {
+            collect(k, out);
+        }
+    }
+    collect(root, &mut by_id);
+    by_id.sort_by_key(|c| c.id);
+
+    // The flat macro list the flip groups index into. ⚠️ Built from the POST-PUSH positions.
+    // 🔑 **The positions the PUSH left**, read back through the instance map. `run_boundary_push`
+    // mutated `macros` in place, so these are post-push and pre-push only where nothing moved.
+    let push_of: std::collections::HashMap<usize, (i32, i32)> =
+        macro_inst.iter().zip(macros.iter()).map(|(&inst, m)| (inst, m.location)).collect();
+
+    // ⛔ **Which cluster a macro POINTS AT, by `mapMacroInCluster2HardMacro`'s own call order:**
+    // `id_to_cluster` ascending, ending in `setCluster`, so the HIGHEST-ID cluster holding a macro
+    // owns it. ⚠️ Std-cell clusters claim nothing — that function returns before either source.
+    let mut owner: std::collections::HashMap<usize, String> = std::collections::HashMap::new();
+    for c in &by_id {
+        for inst in hard_macros_of(c, design) {
+            owner.insert(inst, c.name.clone());
+        }
+    }
+
+    let mut flip_macros: Vec<p::FlipMacro> = Vec::new();
+    let mut index_of: std::collections::HashMap<usize, usize> = std::collections::HashMap::new();
+    let mut flip_clusters: Vec<p::FlipCluster> = Vec::new();
+    for c in &by_id {
+        if c.cluster_type != vyges_mpl::cluster::ClusterType::HardMacro || c.is_fixed_macro {
+            continue;
+        }
+        let mut indices = Vec::new();
+        for inst in hard_macros_of(c, design) {
+            let idx = *index_of.entry(inst).or_insert_with(|| {
+                let halo = h.macro_halos[inst];
+                let (hx, hy) = push_of
+                    .get(&inst)
+                    .copied()
+                    .unwrap_or_else(|| macro_location.get(&inst).copied().unwrap_or((0, 0)));
+                flip_macros.push(p::FlipMacro {
+                    name: design.instances[inst].name.clone(),
+                    cluster_name: owner
+                        .get(&inst)
+                        .cloned()
+                        .unwrap_or_else(|| design.instances[inst].name.clone()),
+                    location: (hx, hy),
+                    // ⛔ `getRealX` = `x_ + halo.left` at R0 — the halo comes OFF, and the trace
+                    // still reports the haloed corner above.
+                    real_location: (hx + halo.left as i32, hy + halo.bottom as i32),
+                });
+                flip_macros.len() - 1
+            });
+            indices.push(idx);
+        }
+        if indices.is_empty() {
+            continue;
+        }
+        flip_clusters.push(p::FlipCluster { id: c.id, name: c.name.clone(), macros: indices });
+    }
+
+    // ⚠️ **Wirelength is NOT modelled yet.** Reporting zero is correct for the 80 of 135 reference
+    // lines whose macros carry no signal net, and wrong for the other 55 — the gate attributes
+    // those by design rather than hiding them.
+    let use_full_halo = std::env::args().any(|a| a == "--use-full-halo");
+    match p::orientation_strategy(use_full_halo) {
+        p::OrientationStrategy::Single => {
+            // ⛔ **A DIFFERENT trace line, and only ONE design in the suite reaches it** —
+            // `halos5`, the only case setting `-use_full_halo`.
+            //
+            // ⚠️ **The order is a PROXY.** Upstream walks `tree_->maps.inst_to_hard`, an
+            // `odb::PtrMap` keyed by `dbInst*`, so its iteration order is POINTER order — stable
+            // within a run and formally unspecified. Database order is the closest thing we can
+            // reproduce, and it agrees on `halos5`. A design where the two disagree would differ
+            // here and nothing in the suite would say so.
+            let mut unfixed: Vec<usize> = index_of.keys().copied().collect();
+            unfixed.sort_unstable();
+            let unfixed: Vec<usize> = unfixed
+                .into_iter()
+                .filter(|&inst| !design.instances[inst].is_fixed)
+                .map(|inst| index_of[&inst])
+                .collect();
+            let mut zero = |_m: usize, _v: bool| (0.0f32, 0.0f32);
+            for line in p::run_orientation_single(&flip_macros, &unfixed, &mut zero) {
+                println!("{line}");
+            }
+        }
+        p::OrientationStrategy::ByCluster => {
+            let mut zero = |_g: &[usize], _v: bool| (0.0f32, 0.0f32);
+            for line in p::run_orientation_by_cluster(&flip_clusters, &flip_macros, &mut zero) {
+                println!("{line}");
+            }
+        }
+    }
+}
+
+/// A cluster's `getHardMacros()`, via [`p::cluster_hard_macros`].
+///
+/// ⚠️ Not `leaf_macros` — an all-macro ROOT has none of its own and every macro through its module.
+fn hard_macros_of(
+    c: &vyges_mpl::cluster::Cluster,
+    design: &vyges_mpl::design::Design,
+) -> Vec<usize> {
+    vyges_mpl::placement::cluster_hard_macros(
+        c.cluster_type,
+        &c.leaf_macros,
+        &c.db_modules,
+        &|m| design.modules[m].insts.clone(),
+        &|m| design.modules[m].children.clone(),
+        &|i| design.instances[i].is_block,
+    )
 }
 
 /// Depth-first lookup of any cluster by id.
@@ -928,9 +1076,13 @@ fn emit_macro_summary(
     }
 
     // The cluster's hard macros, in its OWN coordinates — `createTempMacroClusters`' view.
+    //
+    // ⛔ `getHardMacros()`, NOT `leaf_macros`. An all-macro ROOT owns no leaf macro and reaches
+    // every macro through its module; reading the leaf list places nothing at all there.
+    let hard = hard_macros_of(cluster, design);
     let mut macros = Vec::new();
     let mut masters: Vec<usize> = Vec::new();
-    for &inst in &cluster.leaf_macros {
+    for &inst in &hard {
         let b = h.macro_bboxes[inst];
         macros.push(vyges_mpl::anneal::SoftMacro {
             x: b.x_min as i32 - x0,
@@ -967,7 +1119,7 @@ fn emit_macro_summary(
     // score no wirelength at all, which is what an unassembled problem looks like.
     let first_temp_id = 1_000_000;
     let mut temp_assoc: Vec<Option<i32>> = assoc.to_vec();
-    for (k, &inst) in cluster.leaf_macros.iter().enumerate() {
+    for (k, &inst) in hard.iter().enumerate() {
         temp_assoc[inst] = Some(first_temp_id + k as i32);
     }
     let connections = vyges_mpl::netlist::build_connections(
@@ -1046,7 +1198,7 @@ fn emit_macro_summary(
     // of the master's SIGNAL pin bounding box plus HALF THE TOTAL halo — note it is
     // `(left + right) / 2`, not `left`, which is upstream's own expression and not an alignment
     // of the pin onto the haloed box. The two coincide only when the pins sit in the middle.
-    for (k, &inst) in cluster.leaf_macros.iter().enumerate() {
+    for (k, &inst) in hard.iter().enumerate() {
         let Some(g) = geometry[inst].as_ref() else { continue };
         let mut lo = (i64::MAX, i64::MAX);
         let mut hi = (i64::MIN, i64::MIN);
@@ -1148,9 +1300,7 @@ fn emit_macro_summary(
     // is by the CLUSTER's outline corner — the box cluster placement gave it — because everything
     // inside a macro problem is outline-relative.
     // ⚠️ Only the first `n` entries are the cluster's own macros; the rest are fixed terminals.
-    cluster
-        .leaf_macros
-        .iter()
+    hard.iter()
         .enumerate()
         .filter_map(|(k, &inst)| search.macros.get(k).map(|m| (inst, (m.x + x0, m.y + y0))))
         .collect()

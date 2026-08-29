@@ -183,3 +183,142 @@ fn a_net_reached_by_two_pins_is_counted_twice() {
     assert_eq!(once, 200.0);
     assert_eq!(twice, 400.0, "the same net, counted for each pin that reaches it");
 }
+
+// ---------------------------------------------------------------- the composed passes
+
+use vyges_mpl::cluster::ClusterType;
+use vyges_mpl::placement::{
+    cluster_hard_macros, run_orientation_by_cluster, run_orientation_single, FlipCluster, FlipMacro,
+};
+
+fn flip_macro(name: &str, owner: &str, x: i32, y: i32, halo: (i32, i32)) -> FlipMacro {
+    FlipMacro {
+        name: name.to_string(),
+        cluster_name: owner.to_string(),
+        location: (x, y),
+        // `getRealX` = `x_ + halo.left` at R0 — the halo comes OFF.
+        real_location: (x + halo.0, y + halo.1),
+    }
+}
+
+/// ⛔ **The line names the MACRO's cluster, not the one being flipped.** Upstream interpolates
+/// `macros.front()->getCluster()->getName()`, and a macro's cluster is whichever HIGHEST-ID cluster
+/// holds it — never the root, which has the lowest id. So the ROOT's own column group is reported
+/// under the leaf cluster its first macro belongs to.
+///
+/// ⚠️ This is the difference between `Cluster root …` and `Cluster U1 …` on every all-macro design,
+/// and nothing else in the trace reveals it.
+#[test]
+fn the_line_names_the_macros_own_cluster_not_the_group_being_flipped() {
+    let macros = vec![flip_macro("u1", "U1", 10, 20, (0, 0))];
+    let root = FlipCluster { id: 0, name: "root".into(), macros: vec![0] };
+    let mut zero = |_: &[usize], _: bool| (0.0, 0.0);
+    let out = run_orientation_by_cluster(&[root], &macros, &mut zero);
+    assert!(out[0].contains("Cluster U1 "), "not `Cluster root`: {:?}", out[0]);
+}
+
+/// ⛔ **Two FULL passes, columns then rows** — not two flips per group.
+#[test]
+fn every_column_is_tried_before_any_row() {
+    let macros = vec![
+        flip_macro("a", "C", 0, 0, (0, 0)),
+        flip_macro("b", "C", 100, 0, (0, 0)),
+    ];
+    let c = FlipCluster { id: 1, name: "C".into(), macros: vec![0, 1] };
+    let mut zero = |_: &[usize], _: bool| (0.0, 0.0);
+    let out = run_orientation_by_cluster(&[c], &macros, &mut zero);
+    // Two columns (x 0 and 100), one row (both at y 0).
+    assert_eq!(out.len(), 3);
+    assert!(out[0].contains("column-wise (V)"));
+    assert!(out[1].contains("column-wise (V)"));
+    assert!(out[2].contains("row-wise (H)"), "every column first: {out:#?}");
+}
+
+/// ⛔ **The grouping key is the REAL coordinate and the reported one is the HALOED coordinate.**
+/// Two macros with different halos can share a real column while reporting different `flip at`
+/// values — and the group is keyed by the one the line does not print.
+#[test]
+fn the_group_keys_on_the_real_coordinate_and_reports_the_haloed_one() {
+    // ⚠️ **The FRONT macro must be the one whose two coordinates DIFFER**, or the mutation that
+    // reports the real coordinate instead of the haloed one prints the same number and is
+    // invisible. `a` is haloed-90 / real-100; `b` is haloed-100 / real-100. Both share the real
+    // column; only `a` distinguishes the two accessors.
+    let macros = vec![
+        flip_macro("a", "C", 90, 0, (10, 0)),
+        flip_macro("b", "C", 100, 50, (0, 0)),
+    ];
+    let c = FlipCluster { id: 1, name: "C".into(), macros: vec![0, 1] };
+    let mut zero = |_: &[usize], _: bool| (0.0, 0.0);
+    let out = run_orientation_by_cluster(&[c], &macros, &mut zero);
+    let v: Vec<&String> = out.iter().filter(|l| l.contains("column-wise")).collect();
+    assert_eq!(v.len(), 1, "one shared column, keyed on the real coordinate: {out:#?}");
+    assert!(v[0].contains("flip at 90"), "reports the FRONT macro's HALOED x, not its real 100: {:?}", v[0]);
+}
+
+/// ⚠️ **The single path is a different line shape entirely** — `Inst {name} flip {V|H}`, with no
+/// coordinate and the macro's own name.
+#[test]
+fn the_single_path_prints_inst_lines_with_no_coordinate() {
+    let macros = vec![flip_macro("MACRO_1", "MACRO_1", 5, 5, (0, 0))];
+    let mut zero = |_: usize, _: bool| (0.0, 0.0);
+    let out = run_orientation_single(&macros, &[0], &mut zero);
+    assert_eq!(
+        out,
+        vec![
+            "[DEBUG MPL-flipping] Inst MACRO_1 flip V orig_WL 0 new_WL 0",
+            "[DEBUG MPL-flipping] Inst MACRO_1 flip H orig_WL 0 new_WL 0",
+        ]
+    );
+}
+
+/// ⚠️ **An integral wirelength prints with NO decimal point.** The value is a `float` formatted
+/// with `{}`, and every captured reference line is integral — which is what an `int64_t`
+/// accumulation with a late cast produces.
+#[test]
+fn an_integral_wirelength_prints_without_a_decimal_point() {
+    let macros = vec![flip_macro("a", "C", 0, 0, (0, 0))];
+    let c = FlipCluster { id: 1, name: "C".into(), macros: vec![0] };
+    let mut wl = |_: &[usize], _: bool| (218770.0, 19050.0);
+    let out = run_orientation_by_cluster(&[c], &macros, &mut wl);
+    assert!(out[0].ends_with("orig_WL 218770 new_WL 19050"), "{:?}", out[0]);
+}
+
+// ---------------------------------------------------------------- getHardMacros
+
+/// ⛔ **A cluster's hard macros are its leaf macros PLUS every macro under its modules**, walked
+/// recursively. 🔑 This is why an all-macro ROOT holds every macro while owning no leaf: it holds
+/// the top module.
+#[test]
+fn a_clusters_hard_macros_include_everything_under_its_modules() {
+    // module 0 owns inst 1 (a macro) and inst 2 (a cell); module 1 is its child and owns macro 3.
+    let insts = |m: usize| match m {
+        0 => vec![1, 2],
+        1 => vec![3],
+        _ => vec![],
+    };
+    let children = |m: usize| if m == 0 { vec![1] } else { vec![] };
+    let is_macro = |i: usize| i != 2;
+
+    let got = cluster_hard_macros(ClusterType::Mixed, &[], &[0], &insts, &children, &is_macro);
+    assert_eq!(got, vec![1, 3], "the cell is skipped and the child module is walked");
+}
+
+/// ⚠️ **The leaf macros come FIRST**, in their own order, and the module walk is appended. The first
+/// entry is what the trace reports and what the push threshold reads.
+#[test]
+fn the_leaf_macros_come_before_the_module_walk() {
+    let insts = |m: usize| if m == 0 { vec![9] } else { vec![] };
+    let children = |_: usize| vec![];
+    let got = cluster_hard_macros(ClusterType::HardMacro, &[7], &[0], &insts, &children, &|_| true);
+    assert_eq!(got, vec![7, 9]);
+}
+
+/// ⛔ **A standard-cell cluster returns NOTHING**, before either source is consulted — so it never
+/// claims a macro, which is what keeps `setCluster` pointing at a macro cluster.
+#[test]
+fn a_std_cell_cluster_has_no_hard_macros() {
+    let insts = |_: usize| vec![1, 2, 3];
+    let children = |_: usize| vec![];
+    let got = cluster_hard_macros(ClusterType::StdCell, &[4], &[0], &insts, &children, &|_| true);
+    assert!(got.is_empty(), "not even its own leaf macros");
+}

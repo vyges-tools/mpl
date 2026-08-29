@@ -3368,6 +3368,201 @@ pub fn orientation_groups(macros: &[(usize, (i32, i32))]) -> (Vec<Vec<usize>>, V
     (cols.into_values().collect(), rows.into_values().collect())
 }
 
+/// Upstream `ClusteringEngine::mapMacroInCluster2HardMacro`, which is what `getHardMacros()`
+/// returns for the rest of the run.
+///
+/// ⛔ **A cluster's hard macros are its own LEAF MACROS *plus* every macro reachable through the
+/// `dbModule`s it holds**, walked recursively into child module instances. It is NOT the union over
+/// child CLUSTERS, and it is not the leaf list alone.
+///
+/// 🔑 **This is why an all-macro ROOT has every macro.** The root holds the top module, so the
+/// module walk finds all of them even though `leaf_macros` is empty and each macro lives in its own
+/// child cluster. `placeMacros` then places them against the root's outline, and the orientation
+/// pass groups them into the root's own columns and rows — which is exactly the four extra lines
+/// per pass `macro_only` emits.
+///
+/// ⚠️ **A StdCellCluster returns nothing at all**, before either source is consulted.
+///
+/// ⚠️ Order matters and is upstream's: the leaf macros first, in their own order, then the module
+/// walk. The FIRST entry is what the flip trace reports and what the push threshold reads.
+pub fn cluster_hard_macros(
+    cluster_type: crate::cluster::ClusterType,
+    leaf_macros: &[usize],
+    db_modules: &[usize],
+    module_insts: &dyn Fn(usize) -> Vec<usize>,
+    module_children: &dyn Fn(usize) -> Vec<usize>,
+    is_macro: &dyn Fn(usize) -> bool,
+) -> Vec<usize> {
+    if cluster_type == crate::cluster::ClusterType::StdCell {
+        return Vec::new();
+    }
+    let mut out: Vec<usize> = leaf_macros.to_vec();
+    fn walk(
+        module: usize,
+        out: &mut Vec<usize>,
+        module_insts: &dyn Fn(usize) -> Vec<usize>,
+        module_children: &dyn Fn(usize) -> Vec<usize>,
+        is_macro: &dyn Fn(usize) -> bool,
+    ) {
+        for inst in module_insts(module) {
+            if is_macro(inst) {
+                out.push(inst);
+            }
+        }
+        for child in module_children(module) {
+            walk(child, out, module_insts, module_children, is_macro);
+        }
+    }
+    for &module in db_modules {
+        walk(module, &mut out, module_insts, module_children, is_macro);
+    }
+    // ⚠️ Upstream cannot produce a duplicate here — a macro is either a leaf of the cluster or
+    // inside one of its modules, never both — but the two sources are independent in our shape, so
+    // the invariant is asserted rather than assumed.
+    debug_assert!(
+        {
+            let mut seen = out.clone();
+            seen.sort_unstable();
+            seen.dedup();
+            seen.len() == out.len()
+        },
+        "a macro reached the hard-macro list twice"
+    );
+    out
+}
+
+/// One hard macro, as `correctAllMacrosOrientation` sees it.
+///
+/// ⛔ **Both coordinate systems are carried, because ONE TRACE LINE USES BOTH.** The columns and
+/// rows are keyed by `getRealX`/`getRealY` — the halo taken OFF — and the line then reports
+/// `macros.front()->getX()`/`getY()`, with the halo ON. Carrying one and deriving the other by a
+/// constant offset agrees on every design whose macros share a halo and disagrees exactly on the
+/// ones where `set_macro_halo` named a single macro.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct FlipMacro {
+    pub name: String,
+    /// ⛔ **`HardMacro::getCluster()`'s name — the MACRO's own cluster, which is NOT necessarily the
+    /// cluster whose group is being flipped.** The trace line prints
+    /// `macros.front()->getCluster()->getName()`, so the ROOT's own column groups are reported
+    /// under the LEAF cluster each macro belongs to, not under `root`.
+    ///
+    /// 🔑 **Which cluster that is comes from a call ORDER.** `mapMacroInCluster2HardMacro` runs over
+    /// `id_to_cluster` — ascending id — and ends with `hard_macro->setCluster(cluster)`, so the
+    /// HIGHEST-ID cluster holding a macro owns it. The root has the lowest id and always loses.
+    pub cluster_name: String,
+    /// The HALOED lower-left — `getX`/`getY`. What the trace prints.
+    pub location: (i32, i32),
+    /// The REAL lower-left — `getRealX`/`getRealY`. What the grouping keys on.
+    pub real_location: (i32, i32),
+}
+
+/// One cluster the orientation pass visits.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct FlipCluster {
+    pub id: i32,
+    pub name: String,
+    /// Indices into the flat macro list, in `getHardMacros()` order.
+    pub macros: Vec<usize>,
+}
+
+const FLIP_DEBUG: &str = "[DEBUG MPL-flipping] ";
+
+/// Upstream `correctMacroOrientationByCluster`, composed — the trace it prints.
+///
+/// 🔑 **Every group is tried VERTICALLY first, and only then is every group tried horizontally.**
+/// Two full passes over the columns and then the rows, not two flips per group. See [`FLIP_PASSES`].
+///
+/// ⛔ **The clusters arrive in ASCENDING ID**, because upstream walks `tree_->maps.id_to_cluster`,
+/// a `std::map<int, Cluster*>`. ⚠️ That is NOT `fetchMacroClusters`' depth-first order, which the
+/// boundary push uses — the two coincide on every design in the suite because ids are handed out in
+/// creation order, and would not on a deeper tree. Measured, not assumed.
+///
+/// ⛔ **THE ROOT IS ITERATED TOO.** It is just another entry in `id_to_cluster`, and in an all-macro
+/// design `runCoarseShaping` types it `HardMacroCluster` under MPL-27 — so it holds EVERY macro and
+/// contributes its own column and row groups on top of the per-macro clusters. `macro_only` has ten
+/// macros and emits **fourteen** lines per pass: four from the root's four columns, ten from the
+/// singles. Any model that visits only the leaf clusters is short by exactly the root's groups.
+///
+/// ⚠️ **A flip does not move the macro.** `flipRealMacro` sets the orientation and then re-writes
+/// the instance location from `getRealLocation()`, leaving `HardMacro::x_`/`y_` untouched — so the
+/// reported coordinate is stable across both passes and the groups stay valid throughout.
+///
+/// ⚠️ **The wirelengths are `f32` printed with `{}`, and that is deliberate.**
+/// `calculateRealMacroWirelength` returns a `float` and the reference logs it the same way, so an
+/// integral value carries NO decimal point — every captured line reads `orig_WL 0`, not `0.0`.
+/// Rust's `{}` on an `f32` already omits it, so no helper is needed; a formatter that forced a
+/// precision would differ on all 135 lines.
+///
+/// The caller supplies the wirelength of a group in its current orientation; returning the same
+/// value twice means the flip is kept, since [`keep_flip`] treats a tie as an improvement.
+pub fn run_orientation_by_cluster(
+    clusters: &[FlipCluster],
+    macros: &[FlipMacro],
+    wirelength_of: &mut dyn FnMut(&[usize], bool) -> (f32, f32),
+) -> Vec<String> {
+    let mut out = Vec::new();
+    for cluster in clusters {
+        let entries: Vec<(usize, (i32, i32))> =
+            cluster.macros.iter().map(|&i| (i, macros[i].real_location)).collect();
+        let (cols, rows) = orientation_groups(&entries);
+
+        for &is_vertical in FLIP_PASSES.iter() {
+            let groups = if is_vertical { &cols } else { &rows };
+            for group in groups {
+                // ⚠️ Upstream dereferences `macros.front()` unconditionally; a `std::map` never
+                // holds an empty vector, so this cannot arise.
+                let Some(&first) = group.first() else { continue };
+                let (original, new) = wirelength_of(group, is_vertical);
+                let at = if is_vertical {
+                    macros[first].location.0
+                } else {
+                    macros[first].location.1
+                };
+                out.push(format!(
+                    "{FLIP_DEBUG}Cluster {} {} flip at {} orig_WL {} new_WL {}",
+                    // ⛔ The MACRO's cluster, not the one being iterated. See `FlipMacro`.
+                    macros[first].cluster_name,
+                    if is_vertical { "column-wise (V)" } else { "row-wise (H)" },
+                    at,
+                    original,
+                    new
+                ));
+            }
+        }
+    }
+    out
+}
+
+/// Upstream `correctMacroOrientationSingle`.
+///
+/// ⛔ **TWO FULL PASSES over EVERY macro**, not two flips per macro — the same shape as the
+/// by-cluster path, with each macro its own group of one.
+///
+/// ⚠️ **The trace line is a DIFFERENT one**: `Inst {} flip {V|H} …`, naming the macro rather than a
+/// cluster and carrying no coordinate. ℹ️ Only ONE design in the reference suite reaches this path —
+/// `halos5`, the only case that sets `-use_full_halo` — so a gate that is green without it says
+/// nothing about this function.
+pub fn run_orientation_single(
+    macros: &[FlipMacro],
+    unfixed: &[usize],
+    wirelength_of: &mut dyn FnMut(usize, bool) -> (f32, f32),
+) -> Vec<String> {
+    let mut out = Vec::new();
+    for &is_vertical in FLIP_PASSES.iter() {
+        for &index in unfixed {
+            let (original, new) = wirelength_of(index, is_vertical);
+            out.push(format!(
+                "{FLIP_DEBUG}Inst {} flip {} orig_WL {} new_WL {}",
+                macros[index].name,
+                if is_vertical { "V" } else { "H" },
+                original,
+                new
+            ));
+        }
+    }
+    out
+}
+
 // ---------------------------------------------------------------- committing to the database
 
 /// What `updateMacroOnDb` writes, in the order it writes it.
