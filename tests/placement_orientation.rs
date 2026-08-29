@@ -407,3 +407,104 @@ fn the_def_orientation_names_map_as_the_format_defines_them() {
     assert_eq!(DbOrient::from_def("FN"), Some(DbOrient::MY));
     assert_eq!(DbOrient::from_def("nonsense"), None);
 }
+
+// ---------------------------------------------------------------- flipping the database orientation
+
+use vyges_mpl::placement::{flip_db_orientation, real_origin};
+
+/// Every case of `dbOrientType::flipX` and `flipY`, transcribed from `dbTypes.cpp`.
+///
+/// ⛔ **A "vertical flip" calls `flipY`** — a mirror about the VERTICAL axis, which moves the macro
+/// horizontally. The name is the mirror line, not the direction of travel, and it is the opposite
+/// of the reading most people reach for.
+#[test]
+fn the_flip_mappings_match_the_reference_on_all_eight_orientations() {
+    use DbOrient::*;
+    // flipY — the "vertical" flip.
+    for (from, to) in [
+        (R0, MY), (R90, MXR90), (R180, MX), (R270, MYR90),
+        (MY, R0), (MYR90, R270), (MX, R180), (MXR90, R90),
+    ] {
+        assert_eq!(flip_db_orientation(from, true), to, "flipY of {from:?}");
+    }
+    // flipX — the "horizontal" flip.
+    for (from, to) in [
+        (R0, MX), (R90, MYR90), (R180, MY), (R270, MXR90),
+        (MY, R180), (MYR90, R90), (MX, R0), (MXR90, R270),
+    ] {
+        assert_eq!(flip_db_orientation(from, false), to, "flipX of {from:?}");
+    }
+}
+
+/// ⚠️ **Flipping twice is the identity**, on every orientation — which is what makes a reverted
+/// flip exactly restore the state rather than approximately restore it.
+#[test]
+fn flipping_twice_restores_the_orientation() {
+    use DbOrient::*;
+    for o in [R0, R90, R180, R270, MY, MYR90, MX, MXR90] {
+        assert_eq!(flip_db_orientation(flip_db_orientation(o, true), true), o);
+        assert_eq!(flip_db_orientation(flip_db_orientation(o, false), false), o);
+    }
+}
+
+/// ⛔ **The instance ORIGIN depends on the orientation**, because `getRealX`/`getRealY` take the
+/// halo off a different side once the macro is mirrored. So a flip MOVES the origin even though
+/// `HardMacro::x_` never changes — and every pin moves with it.
+///
+/// ⚠️ **A symmetric halo hides this entirely**, which is every design that does not set a per-macro
+/// halo. The asymmetric case is the one that would go unnoticed.
+#[test]
+fn the_real_origin_moves_when_an_asymmetric_halo_is_flipped() {
+    // halo: left 10, bottom 20, right 30, top 40.
+    let halo = (10, 20, 30, 40);
+    assert_eq!(real_origin((0, 0), halo, DbOrient::R0), (10, 20));
+    assert_eq!(real_origin((0, 0), halo, DbOrient::MY), (30, 20), "x now off the RIGHT halo");
+    assert_eq!(real_origin((0, 0), halo, DbOrient::MX), (10, 40), "y now off the TOP halo");
+    assert_eq!(real_origin((0, 0), halo, DbOrient::R180), (30, 40), "both");
+
+    // 🔑 The control: a symmetric halo cannot show the difference.
+    let sym = (10, 10, 10, 10);
+    for o in [DbOrient::R0, DbOrient::MY, DbOrient::MX, DbOrient::R180] {
+        assert_eq!(real_origin((0, 0), sym, o), (10, 10), "symmetric halo is blind to the flip");
+    }
+}
+
+use vyges_mpl::placement::instance_offset;
+
+/// ⛔ **`dbInst::getLocation` returns the BBOX's lower-left, not the transform's offset.** It reads
+/// `bbox->rect.xMin()`, so `setLocation` positions the BOX and the origin is whatever makes that
+/// true. Mirroring a master that spans `0..w` about the origin sends it to `-w..0`, so the offset
+/// has to carry an extra `+w` to put the box back where it was asked for.
+///
+/// 🔑 **This is invisible at `R0` and wrong on every flip** — the exact shape that passes an
+/// unflipped measurement and fails the flipped one. It cost a wirelength that was right before the
+/// flip and off by the macro's width after it.
+#[test]
+fn the_offset_puts_the_bounding_box_where_it_was_asked_for() {
+    let master = (200, 100);
+    let want = (1000, 2000);
+
+    for orient in [
+        DbOrient::R0, DbOrient::R90, DbOrient::R180, DbOrient::R270,
+        DbOrient::MY, DbOrient::MYR90, DbOrient::MX, DbOrient::MXR90,
+    ] {
+        let offset = instance_offset(want, master, orient);
+        let box_ = transform_rect((0, 0, master.0, master.1), orient, offset);
+        assert_eq!(
+            (box_.0, box_.1),
+            want,
+            "{orient:?}: the transformed box must start at the requested corner"
+        );
+    }
+}
+
+/// ⚠️ **At `R0` the offset IS the corner**, which is why a model that ignores the master extent
+/// looks correct until something flips.
+#[test]
+fn at_r0_the_offset_is_the_corner_itself() {
+    assert_eq!(instance_offset((1000, 2000), (200, 100), DbOrient::R0), (1000, 2000));
+    // Mirrored about Y, the offset carries the master's WIDTH.
+    assert_eq!(instance_offset((1000, 2000), (200, 100), DbOrient::MY), (1200, 2000));
+    // Mirrored about X, it carries the HEIGHT.
+    assert_eq!(instance_offset((1000, 2000), (200, 100), DbOrient::MX), (1000, 2100));
+}

@@ -13,12 +13,19 @@ use crate::design::{is_ignored_inst, Design};
 use std::collections::BTreeMap;
 
 /// A pin on an instance.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct InstTerm {
     pub inst: usize,
     /// ⚠️ `OUTPUT` makes this the DRIVER. Anything else is a load — upstream tests only for
     /// output, so an inout counts as a load.
     pub is_output: bool,
+    /// The MTERM's name — the pin ON the master, not the instance.
+    ///
+    /// 🔑 **Needed because a terminal's POSITION is per-pin, not per-instance.** `getAvgXY` reads
+    /// the geometry of this MTERM's MPins and transforms it by the instance's placement, so the
+    /// flip wirelength cannot be computed from the instance alone. ⚠️ Two terminals of the same
+    /// instance sit at different points and can be on different nets.
+    pub term: String,
 }
 
 /// A pin on a block port.

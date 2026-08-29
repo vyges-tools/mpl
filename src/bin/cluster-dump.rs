@@ -180,9 +180,11 @@ fn main() {
             guidance: w_guidance,
             target_util,
         };
+        let (term_boxes, master_of) = vyges_mpl::read::read_term_boxes(&db, &design);
+        let flip = FlipInputs { pins: &pins, term_boxes: &term_boxes, master_of: &master_of };
         print_coarse_shaping_trace(
             r, &blockages, dbu, place, summaries, &design, &nets, &guide_regions, overrides,
-            &geometry,
+            &geometry, &flip,
         );
         return;
     }
@@ -197,6 +199,18 @@ fn main() {
 /// trace for one would put a SHORTER but otherwise matching block in front of the harness, which
 /// reads as a pass on everything it did emit.
 #[allow(clippy::too_many_arguments)]
+/// What the flip WIRELENGTH needs and nothing else does.
+///
+/// ⚠️ Bundled rather than threaded as four more parameters: the chain from `main` to the flip pass
+/// is three functions deep and already long, and these four travel together or not at all.
+pub struct FlipInputs<'a> {
+    pub pins: &'a [vyges_mpl::ioclusters::Pin],
+    /// Per master TERMINAL geometry, untransformed — see `read::read_term_boxes`.
+    pub term_boxes: &'a std::collections::HashMap<(String, String), Vec<(i32, i32, i32, i32)>>,
+    /// The master name per INSTANCE; `Instance` carries only an interned id.
+    pub master_of: &'a [String],
+}
+
 fn print_coarse_shaping_trace(
     mut r: vyges_mpl::engine::Clustering,
     blockages: &[vyges_mpl::design::Rect],
@@ -208,6 +222,7 @@ fn print_coarse_shaping_trace(
     guide_regions: &[(usize, (i32, i32, i32, i32))],
     overrides: Overrides,
     geometry: &[Option<vyges_mpl::read::MacroGeometry>],
+    flip: &FlipInputs,
 ) {
     use vyges_mpl::cluster::ClusterType;
     // Taken before `r` is dismantled below: a net reaches an IO cluster only through this.
@@ -291,6 +306,7 @@ fn print_coarse_shaping_trace(
             &pad_assoc,
             overrides,
             geometry,
+            flip,
         );
     } else {
         report_placement(&root, &h, &shaping, dbu, overrides);
@@ -428,6 +444,7 @@ fn print_placement_summaries(
     pad_assoc: &[(usize, vyges_mpl::cluster::ClusterId)],
     overrides: Overrides,
     geometry: &[Option<vyges_mpl::read::MacroGeometry>],
+    flip: &FlipInputs,
 ) {
     use vyges_mpl::placement as p;
 
@@ -794,6 +811,7 @@ fn print_placement_summaries(
     if push_mode || flip_mode {
         print_boundary_push(
             root, &placed, &placed_area, &macro_location, design, h, &raw_soft, flip_mode,
+            nets, flip, &available_abs,
         );
     }
 }
@@ -816,6 +834,9 @@ fn print_boundary_push(
     h: &vyges_mpl::engine::ShapingHandoff,
     io_blockages: &[(i32, i32, i32, i32)],
     flip_mode: bool,
+    nets: &[vyges_mpl::netlist::DbNet],
+    flip: &FlipInputs,
+    available: &[vyges_mpl::placement::Region],
 ) {
     use vyges_mpl::placement as p;
 
@@ -977,6 +998,79 @@ fn print_boundary_push(
     // ⚠️ **Wirelength is NOT modelled yet.** Reporting zero is correct for the 80 of 135 reference
     // lines whose macros carry no signal net, and wrong for the other 55 — the gate attributes
     // those by design rather than hiding them.
+    // ---------------------------------------------------------------- the flip wirelength
+    //
+    // ⛔ **Macros start at `R0`, whatever the DEF says.** `HardMacro`'s constructor never reads the
+    // instance's orientation — it keeps the member default — and `updateMacroOnDb` then OVERWRITES
+    // the database with it. So the flip pass begins from `R0` on every macro, and no orientation
+    // needs reading back for them. ⚠️ Other instances (pads, cells) DO keep their DEF orientation,
+    // and their terminals still count towards a macro's nets.
+    let mut orient: Vec<p::DbOrient> = vec![p::DbOrient::R0; flip_macros.len()];
+    let mut halo_of: Vec<(i32, i32, i32, i32)> = vec![(0, 0, 0, 0); flip_macros.len()];
+    // ⚠️ The MASTER's own size, not the haloed one — the transform acts on master geometry.
+    let mut master_dims: Vec<(i32, i32)> = vec![(0, 0); flip_macros.len()];
+    for (&inst, &idx) in &index_of {
+        let h2 = h.macro_halos[inst];
+        halo_of[idx] = (h2.left as i32, h2.bottom as i32, h2.right as i32, h2.top as i32);
+        let (w, ht) = h.macro_dims[inst];
+        master_dims[idx] = (
+            (w - h2.left - h2.right) as i32,
+            (ht - h2.bottom - h2.top) as i32,
+        );
+    }
+    let inst_of: Vec<usize> = {
+        let mut v = vec![usize::MAX; flip_macros.len()];
+        for (&inst, &idx) in &index_of {
+            v[idx] = inst;
+        }
+        v
+    };
+
+
+    // Each macro's SIGNAL terminals that carry a net, and the net they are on.
+    let mut macro_pins: Vec<Vec<(String, usize)>> = vec![Vec::new(); flip_macros.len()];
+    for (net_index, net) in nets.iter().enumerate() {
+        for t in &net.iterms {
+            if let Some(&idx) = index_of.get(&t.inst) {
+                macro_pins[idx].push((t.term.clone(), net_index));
+            }
+        }
+    }
+
+    let boxes_of = |inst: usize, term: &str| -> Vec<(i32, i32, i32, i32)> {
+        flip.master_of
+            .get(inst)
+            .and_then(|m| flip.term_boxes.get(&(m.clone(), term.to_string())))
+            .cloned()
+            .unwrap_or_default()
+    };
+    let net_terms = |n: usize| -> Vec<p::FlipNetTerm> {
+        let mut out = Vec::new();
+        for t in &nets[n].iterms {
+            out.push(p::FlipNetTerm::Instance { inst: t.inst, term: t.term.clone() });
+        }
+        for b in &nets[n].bterms {
+            out.push(p::FlipNetTerm::Port(b.bterm));
+        }
+        out
+    };
+    let port = |i: usize| -> Option<p::FlipPort> {
+        flip.pins.get(i).map(|q| p::FlipPort {
+            is_fixed: q.is_fixed,
+            bbox: (q.bbox.x_min as i32, q.bbox.y_min as i32, q.bbox.x_max as i32, q.bbox.y_max as i32),
+        })
+    };
+    let die = h.die;
+    let port_region = |i: usize| -> Option<p::Region> {
+        flip.pins.get(i).and_then(|q| q.constraint).map(|r| p::Region {
+            x0: r.x_min as i32,
+            y0: r.y_min as i32,
+            x1: r.x_max as i32,
+            y1: r.y_max as i32,
+            boundary: vyges_mpl::regions::boundary_of(&die, &r),
+        })
+    };
+
     let use_full_halo = std::env::args().any(|a| a == "--use-full-halo");
     match p::orientation_strategy(use_full_halo) {
         p::OrientationStrategy::Single => {
@@ -1001,8 +1095,73 @@ fn print_boundary_push(
             }
         }
         p::OrientationStrategy::ByCluster => {
-            let mut zero = |_g: &[usize], _v: bool| (0.0f32, 0.0f32);
-            for line in p::run_orientation_by_cluster(&flip_clusters, &flip_macros, &mut zero) {
+            // ⛔ **`adjustRealMacroOrientation` is a GROUP operation, not a per-macro one.** It sums
+            // the group's wirelength, flips EVERY member, sums again, and reverts the whole group
+            // if it got worse. Flipping members one at a time would judge each against a board the
+            // others have not moved on.
+            //
+            // ⚠️ **A flip moves the instance ORIGIN**, because `getRealX`/`getRealY` take the halo
+            // off a different side once mirrored — so the origin is recomputed on every flip, not
+            // carried.
+            let measure = |orient: &[p::DbOrient], group: &[usize]| -> f32 {
+                group
+                    .iter()
+                    .map(|&m| {
+                        let inst = inst_of[m];
+                        p::flip_macro_wirelength(
+                            &macro_pins[m],
+                            &net_terms,
+                            &|i| {
+                                index_of.get(&i).map_or_else(
+                                    // A non-macro instance keeps its database placement. ⚠️ Its
+                                    // orientation is NOT read back: nothing in this stage moves it,
+                                    // and the only rotated instance in the suite is a pad.
+                                    || Some((p::DbOrient::R0, (0, 0))),
+                                    |&k| {
+                                        // ⛔ TWO steps, and conflating them is wrong on every
+                                        // flip: `real_origin` says WHERE THE BOX GOES (the halo
+                                        // comes off a different side once mirrored), and
+                                        // `instance_offset` turns that into the transform's
+                                        // offset, which for a mirrored master differs by its
+                                        // width.
+                                        let at = p::real_origin(
+                                            flip_macros[k].location,
+                                            halo_of[k],
+                                            orient[k],
+                                        );
+                                        Some((
+                                            orient[k],
+                                            p::instance_offset(at, master_dims[k], orient[k]),
+                                        ))
+                                    },
+                                )
+                            },
+                            &boxes_of,
+                            &port,
+                            &port_region,
+                            available,
+                            inst,
+                        )
+                    })
+                    .sum()
+            };
+            let mut wirelength_of = |group: &[usize], is_vertical: bool| -> (f32, f32) {
+                let original = measure(&orient, group);
+                for &m in group {
+                    orient[m] = p::flip_db_orientation(orient[m], is_vertical);
+                }
+                let new = measure(&orient, group);
+                // ⚠️ `>` strictly — a TIE KEEPS THE FLIP, so only a strict worsening reverts.
+                if !p::keep_flip(original, new) {
+                    for &m in group {
+                        orient[m] = p::flip_db_orientation(orient[m], is_vertical);
+                    }
+                }
+                (original, new)
+            };
+            for line in
+                p::run_orientation_by_cluster(&flip_clusters, &flip_macros, &mut wirelength_of)
+            {
                 println!("{line}");
             }
         }

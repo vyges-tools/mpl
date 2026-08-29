@@ -172,6 +172,7 @@ pub fn read_nets(
             iterms.push(crate::netlist::InstTerm {
                 inst: i,
                 is_output: db.iterm_get_io_type(inst, pin) == "OUTPUT",
+                term: pin.to_string(),
             });
         }
         let mut bterms = Vec::new();
@@ -302,6 +303,50 @@ pub fn read_macro_geometry(db: &Db, design: &Design) -> Vec<Option<MacroGeometry
 /// `dbBlock::getBlockedRegionsForPins` — the die-edge stretches where pins may not sit.
 ///
 /// ⚠️ **Not placement blockages.** These are lines on the boundary, read only by coarse shaping;
+/// Every master terminal's pin geometry, keyed by `(master, terminal)`.
+///
+/// 🔑 **Per TERMINAL, not per master.** `dbITerm::getAvgXY` positions one terminal by transforming
+/// the geometry of ITS OWN MPins — two terminals of the same instance sit at different points and
+/// can be on different nets, so a per-master bounding box cannot answer it. That is the
+/// granularity `read_macro_geometry` does NOT have: it merges every SIGNAL pin into one box for
+/// the halo logic.
+///
+/// ⚠️ **Every terminal, not only SIGNAL ones.** The flip wirelength filters on signal type at the
+/// MACRO's own pins, but then walks EVERY terminal on the nets it finds — and those can be power
+/// terminals of other instances. Filtering here would silently drop them from the net's box.
+///
+/// ⚠️ Boxes are in MASTER coordinates, untransformed. The caller applies the instance's placement.
+/// ℹ️ Returns the per-INSTANCE master name alongside the geometry, because the caller needs to get
+/// from an instance to its terminals and `Instance` carries only an interned `master_id`.
+pub fn read_term_boxes(
+    db: &vyges_opendb::Db,
+    design: &crate::design::Design,
+) -> (std::collections::HashMap<(String, String), Vec<(i32, i32, i32, i32)>>, Vec<String>) {
+    let mut out: std::collections::HashMap<(String, String), Vec<(i32, i32, i32, i32)>> =
+        std::collections::HashMap::new();
+    let mut master_of: Vec<String> = Vec::with_capacity(design.instances.len());
+    let mut seen: std::collections::HashSet<String> = std::collections::HashSet::new();
+    for inst in &design.instances {
+        let master = db.inst_get_master(&inst.name);
+        master_of.push(master.clone());
+        if !seen.insert(master.clone()) {
+            continue;
+        }
+        for term in db.master_get_m_terms(&master) {
+            let mut boxes = Vec::new();
+            for p in 0..db.num_mterm_get_m_pins(&master, &term) {
+                for (_, x0, y0, x1, y1) in db.mpin_boxes(&master, &term, p).unwrap_or_default() {
+                    boxes.push((x0, y0, x1, y1));
+                }
+            }
+            if !boxes.is_empty() {
+                out.insert((master.clone(), term), boxes);
+            }
+        }
+    }
+    (out, master_of)
+}
+
 /// `read_blockages` returns areas inside the core. Reading one where the other is meant produces
 /// blockages of a plausible size in entirely the wrong places.
 pub fn read_blocked_regions_for_pins(db: &Db) -> Vec<Rect> {

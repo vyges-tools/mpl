@@ -1649,6 +1649,15 @@ pub const MUTATIONS: &[Mutation] = &[
         replace: r#"            "FS" => DbOrient::MY,"#,
         want: r#"the_def_orientation_names_map_as_the_format_defines_them"#,
     },
+    Mutation {
+        name: r#"instance-offset-ignores-the-master-extent"#,
+        file: r#"src/placement.rs"#,
+        find: r#"    let t = transform_rect((0, 0, master.0, master.1), orient, (0, 0));
+    (bbox_min.0 - t.0, bbox_min.1 - t.1)"#,
+        replace: r#"    let _ = master;
+    bbox_min"#,
+        want: r#"the_offset_puts_the_bounding_box_where_it_was_asked_for"#,
+    },
     // ---------------------------------------------------------------- orientation improvement
     //
     // 🔑 Three of these pin rules that NO regression design can witness on its own: the line naming

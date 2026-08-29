@@ -38,7 +38,7 @@ fn net(is_supply: bool, iterms: Vec<(usize, bool)>, bterms: Vec<(usize, bool)>) 
     DbNet {
         name: "n".into(),
         is_supply,
-        iterms: iterms.into_iter().map(|(inst, is_output)| InstTerm { inst, is_output }).collect(),
+        iterms: iterms.into_iter().map(|(inst, is_output)| InstTerm { inst, is_output, term: "P".into() }).collect(),
         bterms: bterms.into_iter().map(|(bterm, is_input)| PortTerm { bterm, is_input }).collect(),
     }
 }

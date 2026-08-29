@@ -4229,6 +4229,179 @@ pub fn real_macro_wirelength(nets_of_macro_pins: &[Vec<NetTerminal>]) -> f32 {
     wirelength as f32
 }
 
+/// One terminal on a net, as the flip wirelength needs to position it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum FlipNetTerm {
+    /// An instance pin: the instance's index, and its terminal name.
+    Instance { inst: usize, term: String },
+    /// A block port: its index into the pin list.
+    Port(usize),
+}
+
+/// What a block port contributes, once its kind is known.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct FlipPort {
+    /// ⚠️ Upstream tests the FIRST pin's placement status, not the terminal's.
+    pub is_fixed: bool,
+    /// The port's bounding box — used ONLY when it is fixed.
+    pub bbox: (i32, i32, i32, i32),
+}
+
+/// Upstream `calculateRealMacroWirelength`, assembled.
+///
+/// ⛔ **A net is counted ONCE PER PIN OF THIS MACRO ON IT.** The loop walks the macro's own
+/// terminals and adds each one's whole net half-perimeter, so a macro with two pins on one net
+/// contributes that net twice. This compares two orientations of the same macro, so the doubling
+/// cancels — it is still not the wirelength of anything.
+///
+/// ⛔ **An unplaced port measures from THIS MACRO PIN's bbox centre**, not from the net's other
+/// terminals and not from the macro's centre. The nearest point of its constraint region — or of
+/// the available regions when it has none — is what joins the net box.
+///
+/// ⚠️ **Only the macro's own SIGNAL terminals start a net**, and a terminal with no net contributes
+/// nothing. But once a net is chosen, EVERY terminal on it counts, signal or not.
+///
+/// ⚠️ **A terminal with no geometry contributes NOTHING** rather than contributing the origin —
+/// `getAvgXY` returns false and the merge is skipped.
+#[allow(clippy::too_many_arguments)]
+pub fn flip_macro_wirelength(
+    macro_pins: &[(String, usize)],
+    net_terms: &dyn Fn(usize) -> Vec<FlipNetTerm>,
+    inst_state: &dyn Fn(usize) -> Option<(DbOrient, (i32, i32))>,
+    term_boxes: &dyn Fn(usize, &str) -> Vec<(i32, i32, i32, i32)>,
+    port: &dyn Fn(usize) -> Option<FlipPort>,
+    port_region: &dyn Fn(usize) -> Option<Region>,
+    available_regions: &[Region],
+    this_macro: usize,
+) -> f32 {
+    let mut nets: Vec<Vec<NetTerminal>> = Vec::new();
+    for (term, net) in macro_pins {
+        // The point an unplaced port measures its nearest region from: the CENTRE of this macro
+        // pin's transformed bounding box.
+        let from = inst_state(this_macro).and_then(|(orient, offset)| {
+            iterm_bbox(&term_boxes(this_macro, term), orient, offset)
+                .map(|b| ((b.0 + b.2) / 2, (b.1 + b.3) / 2))
+        });
+        let mut terminals = Vec::new();
+        for t in net_terms(*net) {
+            match t {
+                FlipNetTerm::Instance { inst, term } => {
+                    let point = inst_state(inst).and_then(|(orient, offset)| {
+                        iterm_avg_xy(&term_boxes(inst, &term), orient, offset)
+                    });
+                    terminals.push(NetTerminal::Instance(point));
+                }
+                FlipNetTerm::Port(index) => {
+                    let Some(p) = port(index) else { continue };
+                    if p.is_fixed {
+                        terminals.push(NetTerminal::FixedPin((
+                            (p.bbox.0 + p.bbox.2) / 2,
+                            (p.bbox.1 + p.bbox.3) / 2,
+                        )));
+                    } else {
+                        let Some(from) = from else { continue };
+                        let regions: Vec<Region> = match port_region(index) {
+                            Some(r) => vec![r],
+                            None => available_regions.to_vec(),
+                        };
+                        if let Some(point) = regions
+                            .iter()
+                            .map(|r| nearest_point_in_region(r, from))
+                            .min_by_key(|p| {
+                                (p.0 as i64 - from.0 as i64).abs()
+                                    + (p.1 as i64 - from.1 as i64).abs()
+                            })
+                        {
+                            terminals.push(NetTerminal::UnplacedPin(point));
+                        }
+                    }
+                }
+            }
+        }
+        nets.push(terminals);
+    }
+    real_macro_wirelength(&nets)
+}
+
+/// Where `updateMacroOnDb` puts a macro's INSTANCE ORIGIN, which is what the transform offsets by.
+///
+/// ⛔ **`getRealX`/`getRealY`, and they DEPEND ON THE ORIENTATION.** The halo comes off the left and
+/// bottom at `R0`, but off the RIGHT at `R180`/`MY` and the TOP at `R180`/`MX`. So flipping a macro
+/// with an asymmetric halo MOVES its instance origin even though `HardMacro::x_` never changes —
+/// and every pin position moves with it.
+///
+/// ⚠️ A symmetric halo hides this completely, which is every design in the suite that does not set
+/// a per-macro halo.
+pub fn real_origin(
+    haloed: (i32, i32),
+    halo: (i32, i32, i32, i32),
+    orient: DbOrient,
+) -> (i32, i32) {
+    let (left, bottom, right, top) = halo;
+    let x = match orient {
+        DbOrient::R180 | DbOrient::MY => haloed.0 + right,
+        _ => haloed.0 + left,
+    };
+    let y = match orient {
+        DbOrient::R180 | DbOrient::MX => haloed.1 + top,
+        _ => haloed.1 + bottom,
+    };
+    (x, y)
+}
+
+/// The transform OFFSET that puts an instance's bounding box at a given lower-left corner.
+///
+/// ⛔ **`dbInst::getLocation` returns the BBOX's lower-left, NOT the transform's offset.** It reads
+/// `bbox->rect.xMin()`, so `setLocation` positions the *box* and the origin is whatever makes that
+/// true. For a mirrored or rotated master those differ — mirroring `0..w` about the origin gives
+/// `-w..0`, so the offset must carry an extra `+w` to put the box back.
+///
+/// 🔑 **Getting this wrong is invisible at `R0` and wrong on every flip**, which is exactly the
+/// shape that survives an unflipped measurement and fails the flipped one.
+///
+/// ⚠️ The master box is `(0, 0, w, h)` — LEF masters are anchored at their own origin.
+pub fn instance_offset(
+    bbox_min: (i32, i32),
+    master: (i32, i32),
+    orient: DbOrient,
+) -> (i32, i32) {
+    let t = transform_rect((0, 0, master.0, master.1), orient, (0, 0));
+    (bbox_min.0 - t.0, bbox_min.1 - t.1)
+}
+
+/// Upstream `flipRealMacro`'s orientation change, over the eight database orientations.
+///
+/// ⛔ **A "vertical flip" is `flipY`** — a mirror about the vertical axis, which moves the macro
+/// HORIZONTALLY. The name describes the mirror line, not the direction of travel.
+pub fn flip_db_orientation(orient: DbOrient, is_vertical_flip: bool) -> DbOrient {
+    use DbOrient::*;
+    if is_vertical_flip {
+        // flipY: mirror about Y.
+        match orient {
+            R0 => MY,
+            MY => R0,
+            R180 => MX,
+            MX => R180,
+            R90 => MXR90,
+            MXR90 => R90,
+            R270 => MYR90,
+            MYR90 => R270,
+        }
+    } else {
+        // flipX: mirror about X.
+        match orient {
+            R0 => MX,
+            MX => R0,
+            R180 => MY,
+            MY => R180,
+            R90 => MYR90,
+            MYR90 => R90,
+            R270 => MXR90,
+            MXR90 => R270,
+        }
+    }
+}
+
 // ---------------------------------------------------------------- clustering data to the database
 
 /// One cluster, as the group builder needs to see it.

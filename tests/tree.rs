@@ -853,8 +853,8 @@ fn merge_fixture(
             name: name.into(),
             is_supply: false,
             iterms: vec![
-                vyges_mpl::netlist::InstTerm { inst: 0, is_output: true },
-                vyges_mpl::netlist::InstTerm { inst: load, is_output: false },
+                vyges_mpl::netlist::InstTerm { inst: 0, is_output: true, term: "A".into() },
+                vyges_mpl::netlist::InstTerm { inst: load, is_output: false, term: "Z".into() },
             ],
             bterms: Vec::new(),
         })
