@@ -142,3 +142,41 @@ fn the_wirelength_metric_is_in_microns() {
     assert_eq!(reported_wirelength(2_000_000, 2000), 1000.0);
     assert_eq!(reported_wirelength(1, 2000), 0.0005, "a fraction, not zero");
 }
+
+// ---------------------------------------------------------------- the module walk
+
+use vyges_mpl::placement::module_core_instances;
+
+/// Upstream `setModuleStdCellsLocation`: a module's own instances first, then its children,
+/// recursively — and `isCore()` filters both.
+///
+/// ⛔ **`keep_clustering_data2`'s shape**, which is why the filter is not decoration: module 1
+/// holds four buffers AND two macros, and the macros must not be moved to the cluster's centre.
+#[test]
+fn the_module_walk_takes_core_instances_own_first_then_children() {
+    // module 0 -> insts 0 (core), 1 (a pad); child module 1 -> insts 2,3 (core), 4 (a macro).
+    let insts = |m: usize| match m {
+        0 => vec![0, 1],
+        1 => vec![2, 3, 4],
+        _ => vec![],
+    };
+    let children = |m: usize| if m == 0 { vec![1] } else { vec![] };
+    let is_core = |i: usize| matches!(i, 0 | 2 | 3);
+
+    assert_eq!(
+        module_core_instances(0, &insts, &children, &is_core),
+        vec![0, 2, 3],
+        "own instances before the child module's, non-core dropped from both"
+    );
+    // The child alone, to show the recursion is not what does the filtering.
+    assert_eq!(module_core_instances(1, &insts, &children, &is_core), vec![2, 3]);
+}
+
+/// ⚠️ A module with nothing core contributes nothing rather than contributing its instances.
+#[test]
+fn a_module_of_non_core_instances_places_nothing() {
+    let insts = |_: usize| vec![0, 1];
+    let children = |_: usize| Vec::new();
+    let is_core = |_: usize| false;
+    assert!(module_core_instances(0, &insts, &children, &is_core).is_empty());
+}

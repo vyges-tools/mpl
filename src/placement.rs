@@ -4511,6 +4511,46 @@ pub fn temporary_std_cell_location(
     Some((center.0 - cell_extent.0 / 2, center.1 - cell_extent.1 / 2))
 }
 
+/// Upstream `setModuleStdCellsLocation`'s walk over one `dbModule`.
+///
+/// ⛔ **`isCore()` is the filter, and it is NOT `!isBlock()`.** A pad, a cover cell and an end-cap
+/// are all non-block and non-core, so the negation admits three kinds this rejects.
+/// `keep_clustering_data2`'s `mixed_module0` holds four buffers *and two macros*; without the
+/// filter the walk would move all six to the cluster's centre.
+///
+/// ⚠️ **Own instances first, then child modules** — the order the writes reach the database in,
+/// and the order [`temporary_std_cell_placement`] reports.
+///
+/// 🔑 Upstream recurses through `dbModInst::getMaster()`, so a module instantiated twice is walked
+/// once per instantiation. `children_of` is expected to answer with that same multiplicity.
+pub fn module_core_instances(
+    module: usize,
+    insts_of: &dyn Fn(usize) -> Vec<usize>,
+    children_of: &dyn Fn(usize) -> Vec<usize>,
+    is_core: &dyn Fn(usize) -> bool,
+) -> Vec<usize> {
+    let mut out = Vec::new();
+    walk_module_core(module, insts_of, children_of, is_core, &mut out);
+    out
+}
+
+fn walk_module_core(
+    module: usize,
+    insts_of: &dyn Fn(usize) -> Vec<usize>,
+    children_of: &dyn Fn(usize) -> Vec<usize>,
+    is_core: &dyn Fn(usize) -> bool,
+    out: &mut Vec<usize>,
+) {
+    for inst in insts_of(module) {
+        if is_core(inst) {
+            out.push(inst);
+        }
+    }
+    for child in children_of(module) {
+        walk_module_core(child, insts_of, children_of, is_core, out);
+    }
+}
+
 /// A cluster, as the temporary standard-cell placement walks it.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct StdCellPlacementCluster {

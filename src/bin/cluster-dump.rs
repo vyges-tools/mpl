@@ -1007,9 +1007,72 @@ fn print_boundary_push(
         flip_clusters.push(p::FlipCluster { id: c.id, name: c.name.clone(), macros: indices });
     }
 
-    // ⚠️ **Wirelength is NOT modelled yet.** Reporting zero is correct for the 80 of 135 reference
-    // lines whose macros carry no signal net, and wrong for the other 55 — the gate attributes
-    // those by design rather than hiding them.
+    // ---------------------------------------------------------------- temporary std-cell places
+    //
+    // ⛔ **`generateTemporaryStdCellsPlacement` runs BETWEEN the commit and the flip.** Upstream's
+    // `run()` is `updateMacrosOnDb()`, then this, then `correctAllMacrosOrientation()` — so the
+    // wirelength the flip measures sees standard cells at their cluster's centre, never at
+    // whatever the database was read with. `keep_clustering_data2`'s eight buffers are the whole
+    // distance between its two macros and their nets.
+    //
+    // ⛔ **TWO routes into a placing leaf, and this design uses one of each**: the CORE instances
+    // of the `dbModule`s it holds (`mixed_module0`), and its own `leaf_std_cells`
+    // (`(root)_glue_logic`). A gate green on one path says nothing about the other.
+    //
+    // ⚠️ **`getNumStdCell()` is TYPE-MASKED** — it returns 0 for a `HardMacroCluster` whatever the
+    // metrics say — so `Cluster::num_std_cell`, not `metrics.num_std_cell`.
+    let slot_of: std::collections::HashMap<i32, usize> =
+        by_id.iter().enumerate().map(|(i, c)| (c.id, i)).collect();
+    let module_insts = |m: usize| -> Vec<usize> { design.modules[m].insts.clone() };
+    let module_children = |m: usize| -> Vec<usize> { design.modules[m].children.clone() };
+    let is_core = |i: usize| -> bool { design.instances[i].master.is_core };
+    let place_clusters: Vec<p::StdCellPlacementCluster> = by_id
+        .iter()
+        .map(|c| p::StdCellPlacementCluster {
+            is_leaf: c.children.is_empty(),
+            num_std_cell: c.num_std_cell(),
+            module_core_insts: c
+                .db_modules
+                .iter()
+                .flat_map(|&m| {
+                    p::module_core_instances(m, &module_insts, &module_children, &is_core)
+                })
+                .collect(),
+            leaf_std_cells: c.leaf_std_cells.clone(),
+            children: c.children.iter().filter_map(|k| slot_of.get(&k.id).copied()).collect(),
+        })
+        .collect();
+
+    // ⚠️ A COPY of the database placements: the temporary placement overwrites some of them, and
+    // an instance no leaf places keeps what the database holds.
+    let mut inst_placement: Vec<(p::DbOrient, (i32, i32))> = flip.inst_placement.to_vec();
+    if let Some(&root_slot) = slot_of.get(&root.id) {
+        for (inst, slot) in p::temporary_std_cell_placement(&place_clusters, root_slot) {
+            // ⚠️ The SOFT MACRO's box as cluster placement left it — `placed` is absolute, so the
+            // width and height come off the corners rather than from the cluster.
+            let Some(&(x0, y0, x1, y1)) = placed.get(&by_id[slot].id) else { continue };
+            let bbox = &design.instances[inst].bbox;
+            let extent = ((bbox.x_max - bbox.x_min) as i32, (bbox.y_max - bbox.y_min) as i32);
+            let Some(at) =
+                p::temporary_std_cell_location(Some(((x0, y0), (x1 - x0, y1 - y0))), extent)
+            else {
+                continue;
+            };
+            // ⛔ `setLocation` positions the BOUNDING BOX, and the transform's offset is whatever
+            // makes that true — the same two-step distinction the macro path draws. The master's
+            // own dimensions are the instance box UN-rotated, so a cell at `R90` is not assumed
+            // square.
+            let orient = inst_placement[inst].0;
+            let master = match orient {
+                p::DbOrient::R90 | p::DbOrient::R270 | p::DbOrient::MXR90 | p::DbOrient::MYR90 => {
+                    (extent.1, extent.0)
+                }
+                _ => extent,
+            };
+            inst_placement[inst] = (orient, p::instance_offset(at, master, orient));
+        }
+    }
+
     // ---------------------------------------------------------------- the flip wirelength
     //
     // ⛔ **Macros start at `R0`, whatever the DEF says.** `HardMacro`'s constructor never reads the
@@ -1130,7 +1193,7 @@ fn print_boundary_push(
                                     // not the same as it sitting at `R0` on the origin: `io_pads1`
                                     // fixes `PAD_1` at `W`, and assuming `R0` put its terminal on
                                     // the wrong side of the die and inverted the flip decision.
-                                    || flip.inst_placement.get(i).copied(),
+                                    || inst_placement.get(i).copied(),
                                     |&k| {
                                         // ⛔ TWO steps, and conflating them is wrong on every
                                         // flip: `real_origin` says WHERE THE BOX GOES (the halo

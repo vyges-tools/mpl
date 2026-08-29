@@ -50,6 +50,40 @@
 use crate::Mutation;
 
 pub const MUTATIONS: &[Mutation] = &[
+    // ---------------------------------------------------------------- the module walk
+    Mutation {
+        // ⛔ Children before own instances — the order the database sees the writes in.
+        name: r#"module-walk-children-before-own"#,
+        file: r#"src/placement.rs"#,
+        find: r#"    for inst in insts_of(module) {
+        if is_core(inst) {
+            out.push(inst);
+        }
+    }
+    for child in children_of(module) {
+        walk_module_core(child, insts_of, children_of, is_core, out);
+    }"#,
+        replace: r#"    for child in children_of(module) {
+        walk_module_core(child, insts_of, children_of, is_core, out);
+    }
+    for inst in insts_of(module) {
+        if is_core(inst) {
+            out.push(inst);
+        }
+    }"#,
+        want: r#"the_module_walk_takes_core_instances_own_first_then_children"#,
+    },
+    Mutation {
+        // ⛔ The filter dropped: a macro reached through a module would be placed at the
+        // cluster's centre alongside the standard cells.
+        name: r#"module-walk-without-the-core-filter"#,
+        file: r#"src/placement.rs"#,
+        find: r#"        if is_core(inst) {
+            out.push(inst);
+        }"#,
+        replace: r#"        out.push(inst);"#,
+        want: r#"the_module_walk_takes_core_instances_own_first_then_children"#,
+    },
     // ---------------------------------------------------------------- the master-type spellings
     Mutation {
         // ⛔ The spelling this was written with until 2026-08-29, and it matched nothing.
