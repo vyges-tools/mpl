@@ -37,7 +37,18 @@ fn describe() -> String {
         "artifacts": [{"name": "design", "type": "odb", "written_in_place": true}],
         "reports": ["status", "macros_placed", "blockages_created", "refusal"],
         "assertion": {"field": "status", "pass_when": {"eq": "applied"}},
-        "consumes": ["ifp", "pad", "ppl"],
+        // ⛔ **`odb`, not an engine list.** This previously read `["ifp", "pad", "ppl"]`, which
+        // asserted that pin placement runs BEFORE macro placement. Upstream's own `test/flow.tcl`
+        // does the opposite: `rtl_macro_placer` at line 37, `place_pins` at line 65 — after a
+        // first `global_placement -skip_io`.
+        //
+        // 🔑 **`mpl` supports BOTH orders by design, and they give DIFFERENT placements.** A block
+        // terminal that is already placed contributes its bbox centre; an unplaced one contributes
+        // the nearest point of its constraint region. Both branches are transcribed and live. So a
+        // fixed predecessor list is not just wrong, it is the wrong SHAPE of claim.
+        //
+        // ⚠️ Every other engine we ship declares the generic `["odb"]`. This was the outlier.
+        "consumes": ["odb"],
         "stages": ORDER.iter().map(|s| s.upstream_name()).collect::<Vec<_>>(),
         "limits": {
             "par_partitioning": "not implemented; a flat cluster over the level threshold is refused",
