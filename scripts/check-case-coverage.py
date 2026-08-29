@@ -20,7 +20,11 @@ import io, os, re, sys
 if len(sys.argv) < 2:
     sys.exit(__doc__.strip().splitlines()[-1])
 up_dir = sys.argv[1]
-odb_dir = sys.argv[2] if len(sys.argv) > 2 else os.path.expanduser("~/vyges-test/mpl-scope-probe")
+# ⚠️ No default: the ODB directory is machine-specific, and a default that happens to exist on one
+# developer's box silently scores a DIFFERENT corpus than the one the caller meant. Ask for it.
+if len(sys.argv) < 3:
+    sys.exit("usage: check-case-coverage.py <upstream-test-dir> <odb-dir>")
+odb_dir = sys.argv[2]
 here = os.path.dirname(os.path.abspath(__file__))
 
 shipped = {f[:-4] for f in os.listdir(up_dir) if f.endswith(".tcl")}
