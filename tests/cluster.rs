@@ -160,6 +160,48 @@ fn either_leaf_kind_can_trip_the_par_gate() {
     assert!(is_large_flat_cluster(&k, 5000, 5), "macros alone");
 }
 
+#[test]
+fn the_tinyrocket_flow_shape_trips_the_par_gate() {
+    // ⛔ **MEASURED, not constructed.** OpenROAD `test/flow.tcl` driven by
+    // `tinyRocket_nangate45.tcl`, at pin 945a9f48dc6e5cc91d865daa92c45a1094cb682c, emits
+    //
+    //   [DEBUG MPL-multilevel_autoclustering] num level: 1, max_macro: 5, min_macro: 1,
+    //                                         max_inst:10945, min_inst:2189
+    //   [DEBUG MPL-multilevel_autoclustering] Attempting flat cluster (root)_glue_logic
+    //                                         partitioning with balance constraint = 1
+    //
+    // 🔑 **Why it is flat.** `tinyRocket_nangate45.v` declares exactly ONE module and `flow.tcl`
+    // links it with a bare `link_design` (no `-hier`). So `breakCluster(root)` takes upstream's
+    // `module->getChildren().empty()` branch, `createFlatCluster` puts all 21,890 std cells into
+    // one `(root)_glue_logic` cluster carrying no `dbModule`s, and `isLargeFlatCluster`
+    // (clusterEngine.cpp:1101) is true by construction rather than by size alone.
+    //
+    // ⚠️ This is the case the 36-design regression suite does NOT cover: those read a prepared
+    // database whose hierarchy survives, so TritonPart fires in 0 of them. A green suite is
+    // therefore not evidence that `mpl` runs on a synthesized flat netlist — and this test is
+    // here so that claim cannot be made by accident again.
+    let mut root_glue_logic = c(1, "(root)_glue_logic");
+    root_glue_logic.leaf_std_cells = (0..21_890).collect();
+    root_glue_logic.leaf_macros = (21_890..21_892).collect();
+
+    // The thresholds the reference derived for this design at level 1.
+    assert!(
+        is_large_flat_cluster(&root_glue_logic, 10_945, 5),
+        "the only macro-bearing top-level flow design reaches the partitioner"
+    );
+
+    // ⚠️ Upstream then recurses on the split halves. The larger one, 13,724 std cells, is still
+    // over the threshold — which is why the reference logs the line TWICE, not once.
+    let mut half = c(2, "(root)_glue_logic_0");
+    half.leaf_std_cells = (0..13_724).collect();
+    assert!(is_large_flat_cluster(&half, 10_945, 5), "and again on the larger half");
+
+    // The smaller halves are under it, and that is where upstream's recursion stops.
+    let mut quarter = c(3, "(root)_glue_logic_0_1");
+    quarter.leaf_std_cells = (0..7_350).collect();
+    assert!(!is_large_flat_cluster(&quarter, 10_945, 5), "recursion terminates here");
+}
+
 // ------------------------------------------------------------- update_sub_tree
 
 #[test]
