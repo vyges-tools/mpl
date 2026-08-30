@@ -11,8 +11,16 @@ vyges physical mpl — hierarchical macro placement
 
 USAGE:
   vyges physical mpl run <design.odb> [options]
+  vyges physical mpl place-macro <design.odb> --macro NAME=X,Y[,ORIENT] [--macro ...]
+                                 [--dbu] [--out-odb FILE]
   vyges physical mpl --describe
   vyges physical mpl --help
+
+PLACE-MACRO:
+  LibreLane `Classic` step 16, `Odb.ManualMacroPlacement` -- the manual placement a real harden
+  flow uses. X,Y are the macro ORIGIN in MICRONS (as the MACROS config states them); pass --dbu
+  to give database units instead. ORIENT is R0/R90/R180/R270/MX/MY/MXR90/MYR90, default R0.
+  Each macro is left FIXED, which is the status LibreLane's step produces.
 
 STATUS:
   0 applied   macros placed and committed
@@ -70,6 +78,149 @@ fn describe() -> String {
     .to_string()
 }
 
+/// `place-macro`: LibreLane `Classic` step 16, `Odb.ManualMacroPlacement`.
+///
+/// 🔑 **The reference here is LibreLane's `Odb.ManualMacroPlacement`, NOT OpenROAD's
+/// `place_macro`.** They are different commands with different behaviour, and the flow we ship
+/// runs the former: `Classic` has no RTL macro placer at all, and `ManualMacroPlacement` is an
+/// `OdbpyStep` over OpenDB. OpenROAD's `mpl::placeMacro` additionally snaps to tracks, checks core
+/// containment (MPL-34) and checks macro overlap (MPL-41); this step does none of those.
+///
+/// ⚠️ **Measured at pin `945a9f4`, on OpenROAD's `place_macro`, so the difference is on record:**
+///   - a macro that is already LOCKED cannot be relocated at all -- OpenDB raises
+///     `ODB-0359 Attempt to change the origin of LOCKED instance` before any check runs;
+///   - a macro that is already PLACED trips `MPL-0041 ... Found overlap with other macros: <itself>`,
+///     because `findOverlappedMacros` (`rtl_mp.cpp:175`) iterates every placed block instance and
+///     **never skips the macro being placed**. Upstream's only shipped case cannot see this: its
+///     input macro is UNPLACED.
+/// ⟹ Macros must arrive UNPLACED. That is what a real flow hands this step, and it is why this
+/// command does not attempt to relocate a locked instance.
+///
+/// 🔑 **Orientation is set BEFORE location**, matching `placeMacro`'s explicit ordering comment.
+/// The final origin is the same either way, but the ordering is the reference's and is free to keep.
+fn place_macro_main(args: &[String]) -> ExitCode {
+    let mut path: Option<&str> = None;
+    let mut out: Option<&str> = None;
+    let mut in_dbu = false;
+    let mut specs: Vec<(String, f64, f64, String)> = Vec::new();
+
+    let mut i = 0;
+    while i < args.len() {
+        match args[i].as_str() {
+            "--dbu" => in_dbu = true,
+            "--out-odb" => {
+                i += 1;
+                match args.get(i) {
+                    Some(v) => out = Some(v),
+                    None => return usage_err("--out-odb needs a FILE"),
+                }
+            }
+            "--macro" => {
+                i += 1;
+                let Some(spec) = args.get(i) else {
+                    return usage_err("--macro needs NAME=X,Y[,ORIENT]");
+                };
+                let Some((name, rest)) = spec.split_once('=') else {
+                    return usage_err(&format!("--macro wants NAME=X,Y[,ORIENT], got {spec:?}"));
+                };
+                let f: Vec<&str> = rest.split(',').collect();
+                if f.len() < 2 || f.len() > 3 {
+                    return usage_err(&format!("--macro wants X,Y[,ORIENT], got {rest:?}"));
+                }
+                let (Ok(x), Ok(y)) = (f[0].trim().parse::<f64>(), f[1].trim().parse::<f64>()) else {
+                    return usage_err(&format!("--macro X,Y must be numbers, got {rest:?}"));
+                };
+                let orient = f.get(2).map(|s| s.trim().to_string()).unwrap_or_else(|| "R0".into());
+                specs.push((name.to_string(), x, y, orient));
+            }
+            a if a.starts_with("--") => return usage_err(&format!("unknown option {a}")),
+            a => path = Some(a),
+        }
+        i += 1;
+    }
+
+    let Some(path) = path else { return usage_err("place-macro needs <design.odb>") };
+
+    // ⛔ **No macros named is VACUOUS, not success.** A pass word must never come from a run that
+    // did nothing -- the convention every engine in this suite reserves status 3 for.
+    if specs.is_empty() {
+        eprintln!("vyges-mpl place-macro: no --macro given; nothing was placed.");
+        return ExitCode::from(3);
+    }
+
+    let mut db = match vyges_opendb::Db::open(path) {
+        Ok(d) => d,
+        Err(e) => {
+            eprintln!("vyges-mpl place-macro: cannot read {path}: {e}");
+            return ExitCode::from(2);
+        }
+    };
+
+    // ⚠️ **MICRONS by default, because that is the unit the config states.** Passing database units
+    // where microns are expected turned an 8 um halo into 8 DBU once; the same trap is here.
+    let dbu = db.dbu_per_micron();
+    if dbu <= 0 {
+        eprintln!("vyges-mpl place-macro: {path} has no DBU scale");
+        return ExitCode::from(2);
+    }
+    let known: std::collections::HashSet<String> = db.inst_names().into_iter().collect();
+
+    let mut placed = Vec::new();
+    for (name, x, y, orient) in &specs {
+        if !known.contains(name) {
+            eprintln!("vyges-mpl place-macro: no instance named {name}");
+            return ExitCode::from(1);
+        }
+        let (xd, yd) = if in_dbu {
+            (*x as i32, *y as i32)
+        } else {
+            ((x * dbu as f64).round() as i32, (y * dbu as f64).round() as i32)
+        };
+        // Orientation first -- `placeMacro`'s ordering.
+        if let Err(e) = db.set_inst_orient(name, orient) {
+            eprintln!("vyges-mpl place-macro: {name}: cannot set orientation {orient}: {e}");
+            return ExitCode::from(1);
+        }
+        if let Err(e) = db.set_inst_location(name, xd, yd) {
+            eprintln!("vyges-mpl place-macro: {name}: cannot set location: {e}");
+            eprintln!("  ⚠️ a macro that is already LOCKED cannot be relocated; this step expects\n\
+                            macros to arrive UNPLACED, as a harden flow hands them.");
+            return ExitCode::from(1);
+        }
+        // 🔑 **FIXED, not PLACED.** LibreLane's step leaves macros fixed so later placement cannot
+        // move them; our own taped-out `user_project_wrapper.def` records every macro as `+ FIXED`.
+        if let Err(e) = db.inst_set_placement_status(name, "FIRM") {
+            eprintln!("vyges-mpl place-macro: {name}: cannot set placement status: {e}");
+            return ExitCode::from(1);
+        }
+        placed.push(serde_json::json!({
+            "instance": name, "x_dbu": xd, "y_dbu": yd, "orient": orient,
+        }));
+    }
+
+    let dest = out.unwrap_or(path);
+    if let Err(e) = db.write(dest) {
+        eprintln!("vyges-mpl place-macro: cannot write {dest}: {e}");
+        return ExitCode::from(2);
+    }
+
+    println!("{}", serde_json::json!({
+        "tool": "vyges-mpl",
+        "command": "place-macro",
+        "status": "applied",
+        "macros_placed": placed.len(),
+        "macros": placed,
+        "odb_written": dest,
+    }));
+    ExitCode::SUCCESS
+}
+
+fn usage_err(msg: &str) -> ExitCode {
+    eprintln!("vyges-mpl place-macro: {msg}");
+    ExitCode::from(2)
+}
+
+
 fn main() -> ExitCode {
     let args: Vec<String> = std::env::args().skip(1).collect();
     match args.first().map(String::as_str) {
@@ -85,6 +236,7 @@ fn main() -> ExitCode {
             println!("vyges-mpl {}", env!("CARGO_PKG_VERSION"));
             ExitCode::SUCCESS
         }
+        Some("place-macro") => place_macro_main(&args[1..]),
         _ => {
             // ⛔ **The ALGORITHM is written and correlated; this CLI PATH is not wired.** Those are
             // different claims and the old message conflated them, saying "the placement algorithm
