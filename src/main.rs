@@ -72,7 +72,7 @@ fn describe() -> String {
         "consumes": ["odb"],
         "stages": ORDER.iter().map(|s| s.upstream_name()).collect::<Vec<_>>(),
         "limits": {
-            "par_partitioning": "not implemented; a flat cluster over the level threshold is refused",
+            "par_partitioning": "not implemented yet; a flat cluster over the level threshold is refused",
         },
     })
     .to_string()
