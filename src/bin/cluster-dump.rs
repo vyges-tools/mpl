@@ -159,6 +159,22 @@ fn main() {
 
     let r = vyges_mpl::engine::run_clustering(&input, &opts);
     if let Some(refusal) = &r.refusal {
+        // ⛔ **OUR refusal, not an upstream message — so it does not borrow an upstream code.**
+        // Upstream never refuses here: it calls TritonPart and errors MPL-45 only when the
+        // partitioner cannot balance. We have no `par` at all, so a flat cluster over the level
+        // threshold stops the run instead of being approximated. Dressing that as MPL-45 would
+        // claim we ran a partitioner and it failed.
+        vyges_events::emit(
+            &vyges_events::Event::new(
+                "vyges-mpl",
+                vyges_events::Severity::Error,
+                format!(
+                    "clustering refused: {refusal:?} — see the `par_partitioning` limit in \
+                     `--describe`"
+                ),
+            )
+            .with_code("MPL-CLUSTERING-REFUSED"),
+        );
         eprintln!("refused: {refusal:?}");
         std::process::exit(1);
     }
@@ -327,6 +343,14 @@ fn print_coarse_shaping_trace(
     let shaping = match vyges_mpl::shaping::run_coarse_shaping_traced(&mut root, &input, dbu, &mut trace) {
         Ok(s) => s,
         Err(e) => {
+            vyges_events::emit(
+                &vyges_events::Event::new(
+                    "vyges-mpl",
+                    vyges_events::Severity::Error,
+                    format!("coarse shaping refused: {e:?}"),
+                )
+                .with_code("MPL-SHAPING-REFUSED"),
+            );
             eprintln!("shaping refused: {e:?}");
             std::process::exit(4);
         }
