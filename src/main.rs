@@ -102,7 +102,7 @@ fn place_macro_main(args: &[String]) -> ExitCode {
     let mut path: Option<&str> = None;
     let mut out: Option<&str> = None;
     let mut in_dbu = false;
-    let mut specs: Vec<(String, f64, f64, String)> = Vec::new();
+    let mut specs: Vec<(String, f32, f32, String)> = Vec::new();
 
     let mut i = 0;
     while i < args.len() {
@@ -127,7 +127,13 @@ fn place_macro_main(args: &[String]) -> ExitCode {
                 if f.len() < 2 || f.len() > 3 {
                     return usage_err(&format!("--macro wants X,Y[,ORIENT], got {rest:?}"));
                 }
-                let (Ok(x), Ok(y)) = (f[0].trim().parse::<f64>(), f[1].trim().parse::<f64>()) else {
+                // ⛔ **f32, NOT f64 — the reference's parameter type.** `MacroPlacer::placeMacro`
+                // takes `const float& x_origin` (`mpl/include/mpl/rtl_mp.h:72`), so the coordinate
+                // has already lost precision to ~7 significant digits BEFORE `micronsToDbu`
+                // promotes it to double. Parsing as f64 keeps precision the reference threw away.
+                // See `docs/openroad/cpp-to-rust-numeric-reference.md` §1: float beats every
+                // integer type, and the narrowing is a second rounding people miss.
+                let (Ok(x), Ok(y)) = (f[0].trim().parse::<f32>(), f[1].trim().parse::<f32>()) else {
                     return usage_err(&format!("--macro X,Y must be numbers, got {rest:?}"));
                 };
                 let orient = f.get(2).map(|s| s.trim().to_string()).unwrap_or_else(|| "R0".into());
@@ -174,7 +180,7 @@ fn place_macro_main(args: &[String]) -> ExitCode {
         let (xd, yd) = if in_dbu {
             (*x as i32, *y as i32)
         } else {
-            ((x * dbu as f64).round() as i32, (y * dbu as f64).round() as i32)
+            (microns_to_dbu(*x, dbu), microns_to_dbu(*y, dbu))
         };
         // Orientation first -- `placeMacro`'s ordering.
         if let Err(e) = db.set_inst_orient(name, orient) {
@@ -218,6 +224,56 @@ fn place_macro_main(args: &[String]) -> ExitCode {
 fn usage_err(msg: &str) -> ExitCode {
     eprintln!("vyges-mpl place-macro: {msg}");
     ExitCode::from(2)
+}
+
+
+/// `dbBlock::micronsToDbu` (`dbBlock.cpp:2231`), with the reference's ARGUMENT type in front of it.
+///
+/// ```text
+/// int dbBlock::micronsToDbu(const double microns) {
+///   double dbu = microns * dbu_per_micron;
+///   return static_cast<int>(std::round(dbu));      // round, NOT truncate
+/// }
+/// ```
+///
+/// ⛔ **The `f32` is the load-bearing part.** `placeMacro` takes `const float&`, so the value is
+/// already a float when it reaches this; the promotion to `double` here cannot restore what the
+/// float dropped. Doing the whole thing in `f64` is the tempting Rust and it is wrong.
+///
+/// ⚠️ **Measured range of the difference**: none at 3-decimal micron coordinates between 0.001 and
+/// 5000 µm at 1000 or 2000 DBU — so this changes no realistic macro placement. It diverges at
+/// arbitrary precision, e.g. 2168.228474947361 µm at 1000 DBU: f64 gives 2168228, the reference's
+/// f32 path gives 2168229. Transcribed for the type, not for a bug.
+fn microns_to_dbu(microns: f32, dbu_per_micron: i32) -> i32 {
+    (microns as f64 * dbu_per_micron as f64).round() as i32
+}
+
+#[cfg(test)]
+mod micron_conversion_tests {
+    use super::microns_to_dbu;
+
+    /// ⛔ The value that separates the two. Doing this in `f64` yields 2168228.
+    #[test]
+    fn the_coordinate_is_a_float_before_it_becomes_dbu() {
+        let v: f32 = 2168.228474947361_f32;
+        assert_eq!(microns_to_dbu(v, 1000), 2168229, "f64 would give 2168228");
+    }
+
+    /// ⚠️ And it changes nothing for a real placement — every edge-sensor macro is a whole micron.
+    #[test]
+    fn ordinary_coordinates_are_unaffected() {
+        for (um, dbu, want) in [(1353.0_f32, 1000, 1353000), (100.0, 1000, 100000),
+                                (3122.515, 1000, 3122515), (22.4, 2000, 44800)] {
+            assert_eq!(microns_to_dbu(um, dbu), want, "{um} um at {dbu} dbu");
+        }
+    }
+
+    /// `micronsToDbu` ROUNDS; it does not truncate.
+    #[test]
+    fn it_rounds_rather_than_truncating() {
+        assert_eq!(microns_to_dbu(0.0006_f32, 1000), 1, "0.6 dbu rounds up");
+        assert_eq!(microns_to_dbu(0.0004_f32, 1000), 0);
+    }
 }
 
 
