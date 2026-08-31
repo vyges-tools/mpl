@@ -199,6 +199,27 @@ fn place_macro_main(args: &[String]) -> ExitCode {
             eprintln!("vyges-mpl place-macro: {name}: cannot set placement status: {e}");
             return ExitCode::from(1);
         }
+        // 🔑 **Upstream's own line, verbatim** — `MacroPlacer::placeMacro` closes with MPL-35
+        // (`rtl_mp.cpp:161`), and it reports the BOUNDING BOX after placement, not the origin it
+        // was given. This is `mpl`'s first structured event: the crate carried the `vyges-events`
+        // dependency with no emission at all, so nothing it did reached the causal trail.
+        let bx = db.inst_bbox(name).unwrap_or_default();
+        if bx.len() == 4 {
+            let um = |v: i32| v as f64 / dbu as f64;
+            vyges_events::emit(
+                &vyges_events::Event::new(
+                    "vyges-mpl",
+                    vyges_events::Severity::Info,
+                    format!(
+                        "MPL-0035 Macro {name} placed. Bounding box ({:.3}um, {:.3}um), \
+                         ({:.3}um, {:.3}um). Orientation {orient}",
+                        um(bx[0]), um(bx[1]), um(bx[2]), um(bx[3])
+                    ),
+                )
+                .with_code("MPL-MACRO-PLACED")
+                .with_objects(vec![format!("instance:{name}")]),
+            );
+        }
         placed.push(serde_json::json!({
             "instance": name, "x_dbu": xd, "y_dbu": yd, "orient": orient,
         }));
