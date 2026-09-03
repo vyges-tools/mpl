@@ -92,7 +92,23 @@ jobs:
           python3 - <<'PY'
           import json
           d = json.load(open("/tmp/describe.json"))
-          assert d["tool"] == "vyges-mpl", d["tool"]
+          # ⛔ `name`, not `tool`: this descriptor is on the SHARED schema
+          # (vyges-tool-descriptor/1.1), which every other engine publishes and which
+          # `render-contracts.py` and `vyges mcp` read. `tool` was this engine's own key from
+          # when its descriptor was ad-hoc; asserting it here is what pinned the odd shape in
+          # place, and the check failed the moment the descriptor was brought into line.
+          assert d["schema"] == "vyges-tool-descriptor/1.1", d.get("schema")
+          assert d["name"] == "mpl", d.get("name")
+          # ⛔ `maturity` is a CLOSED enum of three. An unrecognised value is not a modest claim:
+          # the consumer parses it to None, treats the engine as `discovered`, and suppresses the
+          # verdict to `unknown` however well-formed the assertion is.
+          assert d["maturity"] in ("discovered", "structured", "workflow-validated"), d["maturity"]
+          # Required: what `input_hash` does NOT cover, in the engine's own words.
+          assert d["provenance_limitations"], "provenance_limitations is required"
+          # ⛔ The advertised subcommand must be one main() actually dispatches. This descriptor
+          # advertised `run` while `run` was unwired and exited 2, so a caller built exactly that
+          # command and got a usage error.
+          assert d["invocation"]["args_template"][0] == "place-macro", d["invocation"]
           # The assertion must name a field the engine emits, and pass on one value only.
           assert d["assertion"]["field"] == "status", d["assertion"]
           assert d["assertion"]["pass_when"] == {"eq": "applied"}, d["assertion"]
@@ -100,7 +116,7 @@ jobs:
           # over the level threshold is REFUSED rather than approximated. If this key ever
           # disappears, either par landed or the engine started guessing — both need a human.
           assert "par_partitioning" in d["limits"], d["limits"]
-          print(f"descriptor ok; {d['tool']} {d['version']}, limits: {sorted(d['limits'])}")
+          print(f"descriptor ok; {d['name']} {d['version']}, limits: {sorted(d['limits'])}")
           PY
 
   lint:
