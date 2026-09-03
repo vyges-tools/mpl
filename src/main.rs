@@ -10,11 +10,17 @@ const USAGE: &str = "\
 vyges physical mpl — hierarchical macro placement
 
 USAGE:
-  vyges physical mpl run <design.odb> [options]
   vyges physical mpl place-macro <design.odb> --macro NAME=X,Y[,ORIENT] [--macro ...]
                                  [--dbu] [--out-odb FILE]
   vyges physical mpl --describe
   vyges physical mpl --help
+
+NOT WIRED:
+  `run` -- the automatic hierarchical placement -- is NOT reachable from this command line and
+  exits 2 if you ask for it. The pipeline IS implemented and correlated against OpenROAD; it is
+  driven by the `cluster-dump` binary, which every correlation gate uses. What is missing is the
+  entry point, not the algorithm. It is listed here rather than in USAGE because a usage line is
+  a promise.
 
 PLACE-MACRO:
   LibreLane `Classic` step 16, `Odb.ManualMacroPlacement` -- the manual placement a real harden
@@ -38,8 +44,26 @@ LIMITS:
 /// emits**, and the limit above must be stated here too — a consumer reads this, not the help.
 fn describe() -> String {
     serde_json::json!({
-        "tool": "vyges-mpl",
-        "version": env!("CARGO_PKG_VERSION"),
+        // ⛔ **`vyges-tool-descriptor/1.1`, and this engine was the only one of eight not on it.**
+        // It published an ad-hoc shape with no `schema`, `name`, `summary`, `maturity` or
+        // `provenance_limitations`, so `render-contracts.py` printed its published contract as
+        // `### (unnamed)` with `Assertion: None`, and `vyges mcp` could not read it like the rest.
+        "schema": "vyges-tool-descriptor/1.1",
+        "name": "mpl",
+        "summary": "hierarchical macro placement over the design database",
+        // ⛔ **`structured`, and the ladder has exactly three rungs** — `discovered`, `structured`,
+        // `workflow-validated`. ⚠️ **Anything else is not "more honest", it is INVALID**:
+        // `Maturity::parse` returns `None` for an unknown word, the schema `enum` rejects it, and
+        // an unparsed maturity degrades to `discovered`, at which point `can_assert()` is false
+        // and the verdict is suppressed to `unknown` however well-formed the assertion is.
+        //
+        // 🔑 **The rung is about the shape of the EVIDENCE, not about feature completeness.** What
+        // is unbuilt belongs in `provenance_limitations` below, not in this word. `structured` is
+        // the honest rung here: the operation and result are versioned and normalised, but the
+        // in-repo suite does not run the pipeline end to end against a pinned golden and assert —
+        // `tests/goldens/` is not loaded by any test, and the nine correlation gates that DO
+        // assert against upstream live outside this repository.
+        "maturity": "structured",
         // ⛔ **The pin the BINARY was built against, not the one the repo names.** Taken from
         // `vyges_opendb`, which inherits it from `openroad-pin.yaml`, so it cannot drift from the
         // database layer this engine links.
@@ -53,11 +77,34 @@ fn describe() -> String {
         // ⚠️ **A score without a pin is not quotable.** Every number this engine produces is true
         // of one upstream commit; this field is what lets a reader tell which.
         "openroad_pin": vyges_opendb::OPENROAD_PIN,
-        "args_template": ["run", "{design}"],
-        "inputs": [{"name": "design", "type": "odb"}],
-        "artifacts": [{"name": "design", "type": "odb", "written_in_place": true}],
-        "reports": ["status", "macros_placed", "blockages_created", "refusal"],
-        "assertion": {"field": "status", "pass_when": {"eq": "applied"}},
+        "version": env!("CARGO_PKG_VERSION"),
+        // ⛔ **`place-macro`, because it is the command that RUNS.** This read
+        // `["run", "{design}"]` while `run` was unwired and exited 2 — so an MCP client built
+        // exactly that command and got a usage error. A contract's whole job is to say how to
+        // invoke the tool; naming a command that refuses is worse than naming none.
+        //
+        // ⚠️ The auto-placement pipeline IS implemented and correlated — see the limitations —
+        // but it is driven by `cluster-dump`, not by this entry point. When `run` is wired, this
+        // is the line that moves, together with the first limitation below.
+        "invocation": {
+            "args_template": ["place-macro", "{design}"],
+            "optional": [
+                {"arg": "macro", "flag": "--macro"},
+                {"arg": "dbu", "flag": "--dbu"},
+                {"arg": "out_odb", "flag": "--out-odb"}
+            ],
+            "emits_json": true
+        },
+        "inputs": {
+            "type": "object",
+            "required": ["design", "macro"],
+            "properties": {
+                "design": {"type": "string", "description": "path to the design database (.odb)"},
+                "macro": {"type": "string", "description": "NAME=X,Y[,ORIENT] — repeatable; X,Y is the macro ORIGIN in microns unless --dbu"},
+                "dbu": {"type": "boolean", "description": "read --macro coordinates as database units, not microns"},
+                "out_odb": {"type": "string", "description": "write the database here instead of in place"}
+            }
+        },
         // ⛔ **`odb`, not an engine list.** This previously read `["ifp", "pad", "ppl"]`, which
         // asserted that pin placement runs BEFORE macro placement. Upstream's own `test/flow.tcl`
         // does the opposite: `rtl_macro_placer` at line 37, `place_pins` at line 65 — after a
@@ -70,10 +117,25 @@ fn describe() -> String {
         //
         // ⚠️ Every other engine we ship declares the generic `["odb"]`. This was the outlier.
         "consumes": ["odb"],
+        "produces": ["odb"],
+        "artifacts": [{"role": "odb", "field": "out_odb"}],
+        "reports": ["status", "macros_placed", "blockages_created", "refusal"],
+        "assertion": {"id": "macros-placed", "field": "status", "pass_when": {"eq": "applied"}},
         "stages": ORDER.iter().map(|s| s.upstream_name()).collect::<Vec<_>>(),
         "limits": {
-            "par_partitioning": "not implemented yet; a flat cluster over the level threshold is refused",
+            "par_partitioning": "not implemented; a flat cluster over the level threshold is refused",
+            "run_command": "the auto-placement pipeline is not reachable from this CLI; `run` is unwired",
         },
+        // ⛔ **REQUIRED, and it is where the gaps go.** The maturity word is a rung on a
+        // three-value ladder and cannot carry nuance; this can.
+        "provenance_limitations": [
+            "input_hash covers the argument vector, not the content of the .odb it names.",
+            "THE `run` COMMAND IS NOT WIRED. This binary exposes `place-macro` only -- LibreLane `Classic` step 16, `Odb.ManualMacroPlacement`, the manual placement a real harden flow uses. The automatic hierarchical pipeline IS implemented and correlated, but it is driven by the `cluster-dump` binary, which is what every correlation gate uses. `place-macro` places the macros it is told to place and asserts nothing about where they should go.",
+            "TritonPart (OpenROAD's `par`) is NOT implemented. A FLAT cluster -- one with no module children -- whose leaf standard cells exceed the level threshold is REFUSED rather than approximated. Upstream's own mpl suite never reaches that path; a large flat block does, so a refusal here is a real design shape and not a corner case.",
+            "Correlation is measured against upstream's own 36-design regression suite at the pin above, per stage rather than on the final output: physical hierarchy and design report 34 of 34 byte-exact each; coarse shaping, boundary push and orientation byte-exact on every case that emits a trace; golden DEFs -- macro positions, temporary standard cells, halo blockages and clustering groups -- 34 of 34 exact. Those gates drive `cluster-dump`, not `place-macro`.",
+            "Every score is true of ONE upstream commit, named in `openroad_pin`. The reference moves: a score quoted without its pin says nothing.",
+            "`consumes` is the generic `odb` on purpose. mpl supports running BEFORE or AFTER pin placement and the two give DIFFERENT placements, so a fixed predecessor list would be the wrong shape of claim rather than merely the wrong list.",
+        ],
     })
     .to_string()
 }
@@ -355,6 +417,47 @@ mod descriptor_tests {
             pin.chars().all(|c| c.is_ascii_hexdigit()),
             "a commit SHA, not a tag or a branch name: {pin}"
         );
+    }
+
+    /// ⛔ **The contract must name a command that RUNS.** This descriptor advertised
+    /// `args_template: ["run", "{design}"]` while `run` was unwired and exited 2 — so an MCP
+    /// client built exactly that command and got a usage error. A contract's whole job is to say
+    /// how to invoke the tool; naming a command that refuses is worse than naming none.
+    #[test]
+    fn the_advertised_command_is_one_this_binary_dispatches() {
+        let v: serde_json::Value =
+            serde_json::from_str(&describe()).expect("the descriptor is valid JSON");
+        let cmd = v["invocation"]["args_template"][0].as_str().expect("a subcommand");
+        assert_eq!(cmd, "place-macro",
+                   "`{cmd}` is advertised but `place-macro` is the only wired command");
+        // ⚠️ And `--help` must not promise it either: a usage line is a promise.
+        assert!(!super::USAGE.contains("mpl run "),
+                "USAGE advertises `run`, which this binary refuses");
+        assert!(super::USAGE.contains("NOT WIRED"),
+                "an unwired command must be named as unwired rather than omitted silently");
+    }
+
+    /// ⛔ **`maturity` is a closed enum of three** — `discovered`, `structured`,
+    /// `workflow-validated`. An unrecognised word does NOT read as a modest claim: the consumer
+    /// parses it to `None`, treats the engine as `discovered`, and suppresses the verdict to
+    /// `unknown` however well-formed the assertion is.
+    ///
+    /// 🔑 The rung is about the shape of the EVIDENCE, not feature completeness — what is
+    /// unbuilt goes in `provenance_limitations`, which is required.
+    #[test]
+    fn maturity_is_one_of_the_three_legal_rungs() {
+        let v: serde_json::Value =
+            serde_json::from_str(&describe()).expect("the descriptor is valid JSON");
+        let m = v["maturity"].as_str().unwrap_or_default().to_string();
+        assert!(["discovered", "structured", "workflow-validated"].contains(&m.as_str()),
+                "`{m}` is not a legal maturity; an unrecognised one suppresses the verdict");
+        // ⚠️ `workflow-validated` needs a pinned design in-repo that the SUITE runs end to end
+        // and asserts against. `tests/goldens/` here is not loaded by any test, and the nine
+        // correlation gates live outside this repository.
+        assert_ne!(m, "workflow-validated",
+                   "no in-repo test asserts the pipeline end to end against a pinned golden");
+        assert!(!v["provenance_limitations"].as_array().expect("required").is_empty(),
+                "provenance_limitations is required and states what the hash does not cover");
     }
 
     /// ⚠️ The `par` limit is part of the published contract, not a footnote — a caller must be able
