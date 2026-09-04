@@ -155,6 +155,11 @@ fn describe() -> String {
 ///     because `findOverlappedMacros` (`rtl_mp.cpp:175`) iterates every placed block instance and
 ///     **never skips the macro being placed**. Upstream's only shipped case cannot see this: its
 ///     input macro is UNPLACED.
+///     ⛔ **That second one is a BUG upstream has now confirmed, not a rule to match.** Asked as
+///     OpenROAD #11269, answered 2026-09-04: *"our use case at that time was specifically for
+///     unplaced macros ... This is just a bug"*, closed as a duplicate of the open #11278. So do
+///     not transcribe it, and do not pin it as a test asserting upstream's behaviour — it is
+///     expected to change. We are unaffected: this command performs no overlap check at all.
 /// ⟹ Macros must arrive UNPLACED. That is what a real flow hands this step, and it is why this
 /// command does not attempt to relocate a locked instance.
 ///
