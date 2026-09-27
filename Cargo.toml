@@ -1,6 +1,6 @@
 [package]
 name = "vyges-mpl"
-version = "0.1.37"
+version = "0.1.38"
 edition = "2021"
 description = "Hierarchical macro placement over the OpenDB database: clustering, shaping, annealing, snapping."
 license = "Apache-2.0"
