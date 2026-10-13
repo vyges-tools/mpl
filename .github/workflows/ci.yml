@@ -27,18 +27,18 @@ jobs:
       # path does not exist is a hard `failed to load source` — Cargo does NOT fall back to the
       # git source it is patching, so a missing checkout here fails the build outright.
       # 🔑 mpl patches THREE siblings, not two: opendb, opendb-lib and loom.
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with:
           path: vyges-tools-mpl
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with:
           repository: vyges-tools/opendb
           path: vyges-tools-opendb
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with:
           repository: vyges-tools/opendb-lib
           path: vyges-tools-opendb-lib
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with:
           repository: vyges-tools/loom
           path: vyges-tools-loom
@@ -123,7 +123,7 @@ jobs:
     name: fmt-free lint
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       # ⛔ NO `cargo fmt --check`. These crates are deliberately hand-formatted; `cargo fmt`
       # rewrites whole files and has produced 1100-line diffs from a 20-line edit elsewhere in
       # this tool set. Formatting is reviewed by humans, not enforced by a bot.
