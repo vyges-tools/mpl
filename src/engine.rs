@@ -206,10 +206,30 @@ pub fn run_clustering(input: &DesignInputs, opts: &ClusterOptions) -> Clustering
         Err(e) => return refuse(Refusal::Mpl(e)),
     };
 
+    // ---- getUnfixedMacros: no unfixed macros means the run does nothing (MPL-17). That is
+    // `vacuous`, never `applied`.
+    //
+    // ⛔ **Right after `createHardMacros`, BEFORE every check below.** The reference moved it here
+    // (between the `da9f29f` and `27288f5` pins): the checks guard a placement, and a design whose
+    // macros are all fixed may legitimately hold a FIXED standard cell in the core — which the
+    // module metrics would otherwise refuse (MPL-50). `no_unfixed_macros_and_fixed_cells` is the
+    // case; it skips where we used to refuse.
+    let unfixed = crate::design::unfixed_macros(design);
+    if unfixed.is_empty() {
+        return Clustering {
+            pad_assoc: Vec::new(),
+            pin_cluster: Vec::new(),
+            root: Cluster::new(0, "root"),
+            status: Status::Vacuous,
+            refusal: None,
+            report: None,
+            shaping: None,
+        };
+    }
+
     // ---- movableCellsFitInMacroPlacementArea (MPL-65)
     //
-    // 🔑 This runs BEFORE the module metrics and before the vacuous test, so a design that fails
-    // it never produces a tree at all.
+    // 🔑 This runs BEFORE the module metrics, so a design that fails it never produces a tree.
     let macro_area = |i: usize| -> i64 {
         let Some(g) = input.geometry[i].as_ref() else { return 0 };
         let h = halos[i];
@@ -265,20 +285,6 @@ pub fn run_clustering(input: &DesignInputs, opts: &ClusterOptions) -> Clustering
             "fixed non-macro instance {} inside the macro placement area",
             e.name
         )));
-    }
-
-    // ⚠️ No unfixed macros means the run does nothing. That is `vacuous`, never `applied`.
-    let unfixed = crate::design::unfixed_macros(design);
-    if unfixed.is_empty() {
-        return Clustering {
-            pad_assoc: Vec::new(),
-            pin_cluster: Vec::new(),
-            root: Cluster::new(0, "root"),
-            status: Status::Vacuous,
-            refusal: None,
-            report: None,
-            shaping: None,
-        };
     }
 
     // ---- the halo-area test (MPL-16), which upstream runs only once it knows there is work
