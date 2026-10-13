@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 //! The `coarse_shaping` trace format.
 //!
-//! 🔑 **Every expected string here was COPIED from a real upstream run** — `openroad -no_init`
+//! 🔑 **Every expected string here was COPIED from a real upstream run** — the reference
 //! at pin `945a9f48dc6e5cc91d865daa92c45a1094cb682c` with `set_debug_level MPL coarse_shaping 2`
 //! over the `mpl` regression designs. They are not reconstructions from the format strings, and
 //! they are what the harness diffs against, so a "tidier" spelling of any of them is a defect.

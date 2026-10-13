@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 //! `vyges-mpl` — hierarchical macro placement over the OpenDB database.
 //!
-//! The reference implementation is OpenROAD's `mpl`; the rules are re-derived from its source and
+//! The reference implementation is an open-source `mpl`; the rules are re-derived from its source and
 //! written as ours (decision B — same algorithm, our architecture). Spec and stage-by-stage
 //! flowchart: the stage table in `pipeline::ORDER`, which mirrors upstream `HierRTLMP::run`.
 //!

@@ -2,7 +2,7 @@
 //! Command translation — the tests that would have caught `tap`'s `-halo_width_x` and `ppl`'s
 //! `set_slots_per_section`.
 //!
-//! ⚠️ Each of these pins a rule read from OpenROAD's `src/mpl/src/mpl.tcl`. None needs a database.
+//! ⚠️ Each of these pins a rule read from the reference's `src/mpl/src/mpl.tcl`. None needs a database.
 use vyges_mpl::options::{parse_placer_args, Halo, PlacerOptions, Region};
 
 // ---------------------------------------------------------------- defaults

@@ -11,10 +11,7 @@ depth and **each blockage's boundary, endpoints and depth**.
 approximated. They are reported as `anneals`, never as a pass — a shorter trace that agrees as far
 as it goes is not a match.
 
-Regenerate the upstream side with, per case:
-    printf 'set_debug_level MPL coarse_shaping 2\\nsource "CASE.tcl"\\n' > wrapcs_CASE.tcl
-    docker run --rm -v "$P:$P" -w "$P" vyges-openroad:945a9f4-tcl \\
-        bash -c 'openroad -no_init -exit wrapcs_CASE.tcl'
+The upstream side is each case run by the reference with `set_debug_level MPL coarse_shaping 2`.
 
 Usage:  python3 scripts/compare-shaping.py <odb-dir> [log-dir] [tcl-dir]
 """
@@ -64,7 +61,7 @@ def is_trace(line):
 
 
 def upstream_trace(path):
-    """The contiguous trace region of an openroad log.
+    """The contiguous trace region of a reference log.
 
     ⚠️ Stops at the first non-blank line that is not part of the trace rather than filtering the
     whole file. A foreign line inside the region — an MPL warning, say — then TRUNCATES the

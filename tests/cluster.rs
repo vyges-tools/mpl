@@ -162,7 +162,7 @@ fn either_leaf_kind_can_trip_the_par_gate() {
 
 #[test]
 fn the_tinyrocket_flow_shape_trips_the_par_gate() {
-    // ⛔ **MEASURED, not constructed.** OpenROAD `test/flow.tcl` driven by
+    // ⛔ **MEASURED, not constructed.** The reference's `test/flow.tcl` driven by
     // `tinyRocket_nangate45.tcl`, at pin 945a9f48dc6e5cc91d865daa92c45a1094cb682c, emits
     //
     //   [DEBUG MPL-multilevel_autoclustering] num level: 1, max_macro: 5, min_macro: 1,

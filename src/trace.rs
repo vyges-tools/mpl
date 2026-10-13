@@ -4,7 +4,7 @@
 //! Upstream emits `runCoarseShaping`'s working through the `coarse_shaping` debug channel, and at
 //! level 2 that channel prints every value the stage computes: the traversal order, each hard
 //! cluster's tilings, the pin-access depth limits, the base depth, and **one line per pin-access
-//! blockage**. Reproduced here byte for byte, so `openroad -no_init` output and ours diff
+//! blockage**. Reproduced here byte for byte, so the reference's output and ours diff
 //! directly.
 //!
 //! 🔑 **Why this is worth more than the design report.** `reportDesignData` scores the resolved

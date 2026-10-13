@@ -225,7 +225,7 @@ fn main() {
 }
 
 /// Run the coarse-shaping stage on a clustered design and print upstream's `coarse_shaping`
-/// trace, so `openroad -no_init` output and ours can be diffed line for line.
+/// trace, so the reference's output and ours can be diffed line for line.
 ///
 /// ⛔ **A refusal gets its own exit code (4).** Eight of the regression designs anneal at the
 /// root, and this engine refuses those by name rather than approximating them. Printing a partial

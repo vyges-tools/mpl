@@ -78,7 +78,7 @@ def is_trace(line):
 
 
 def upstream_trace(path):
-    """The contiguous boundary-push region of an openroad log.
+    """The contiguous boundary-push region of a reference log.
 
     ⚠️ Stops at the first line that is not part of the trace rather than filtering the whole file.
     The `flipping` channel follows immediately, so filtering would silently splice two stages'

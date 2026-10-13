@@ -3,14 +3,13 @@
 Hierarchical macro placement over the [OpenDB](https://github.com/vyges-tools/opendb) database:
 clustering, coarse shaping, simulated-annealing placement, boundary push, and track snapping.
 
-OpenROAD's `mpl` is the **reference implementation**. The rules here are re-derived from its
-source and written against our own database and geometry layers — same algorithm and same
-parameter semantics, so a disagreement with OpenROAD is a bug rather than a difference of
-approach. No code is copied.
+The rules are written against our own database and geometry layers — same algorithm and same
+parameter semantics as the reference macro placer, so a disagreement with it is a bug rather than
+a difference of approach. No code is copied.
 
 ## Status
 
-✅ **The pipeline is complete and correlated against OpenROAD's own regression suite** — clustering,
+✅ **The pipeline is complete and correlated against the reference's own regression suite** — clustering,
 coarse shaping, the annealing search, cluster and macro placement, the boundary push, orientation
 improvement with its wirelength model, the commit stage, track snapping and the clustering groups.
 

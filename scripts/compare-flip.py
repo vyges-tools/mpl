@@ -87,7 +87,7 @@ def structural(line):
 
 
 def upstream_trace(path):
-    """The contiguous flipping region of an openroad log.
+    """The contiguous flipping region of a reference log.
 
     ⚠️ The `boundary_push` channel precedes this one in the SAME log, so the scan starts at the
     first flipping line rather than at the first debug line of any kind.

@@ -5,7 +5,7 @@
 //! decides where macros go; the database records that decision only if the whole decision is
 //! sound. A half-placed design is worse than an unplaced one, because it looks placed.
 //!
-//! That differs from OpenROAD's model, where the caller invokes an explicit rollback that walks
+//! That differs from the reference's model, where the caller invokes an explicit rollback that walks
 //! back over the values it changed. Here the scope IS the transaction: leaving it by any path —
 //! success, refusal, or error — settles the database.
 //!

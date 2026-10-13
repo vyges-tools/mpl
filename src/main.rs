@@ -17,7 +17,7 @@ USAGE:
 
 NOT WIRED:
   `run` -- the automatic hierarchical placement -- is NOT reachable from this command line and
-  exits 2 if you ask for it. The pipeline IS implemented and correlated against OpenROAD; it is
+  exits 2 if you ask for it. The pipeline IS implemented and correlated against the reference; it is
   driven by the `cluster-dump` binary, which every correlation gate uses. What is missing is the
   entry point, not the algorithm. It is listed here rather than in USAGE because a usage line is
   a promise.
@@ -35,7 +35,7 @@ STATUS:
   3 vacuous   nothing to do -- no unfixed macros
 
 LIMITS:
-  This engine does not implement TritonPart (OpenROAD's `par`). A FLAT cluster -- one with no
+  This engine does not implement TritonPart partitioning. A FLAT cluster -- one with no
   module children -- whose leaf standard cells exceed the level threshold is REFUSED rather
   than approximated. Upstream's own mpl suite never reaches that path; a large flat block does.
 ";
@@ -131,8 +131,8 @@ fn describe() -> String {
         "provenance_limitations": [
             "input_hash covers the argument vector, not the content of the .odb it names.",
             "THE `run` COMMAND IS NOT WIRED. This binary exposes `place-macro` only -- LibreLane `Classic` step 16, `Odb.ManualMacroPlacement`, the manual placement a real harden flow uses. The automatic hierarchical pipeline IS implemented and correlated, but it is driven by the `cluster-dump` binary, which is what every correlation gate uses. `place-macro` places the macros it is told to place and asserts nothing about where they should go.",
-            "TritonPart (OpenROAD's `par`) is NOT implemented. A FLAT cluster -- one with no module children -- whose leaf standard cells exceed the level threshold is REFUSED rather than approximated. Upstream's own mpl suite never reaches that path; a large flat block does, so a refusal here is a real design shape and not a corner case.",
-            "Correlation is measured against upstream's own 36-design regression suite at the pin above, per stage rather than on the final output: physical hierarchy and design report 34 of 34 byte-exact each; coarse shaping, boundary push and orientation byte-exact on every case that emits a trace; golden DEFs -- macro positions, temporary standard cells, halo blockages and clustering groups -- 34 of 34 exact. Those gates drive `cluster-dump`, not `place-macro`.",
+            "TritonPart partitioning is NOT implemented. A FLAT cluster -- one with no module children -- whose leaf standard cells exceed the level threshold is REFUSED rather than approximated. Upstream's own mpl suite never reaches that path; a large flat block does, so a refusal here is a real design shape and not a corner case.",
+            "Correlation is measured against upstream's own 36-design regression suite at the pin above, per stage rather than on the final output: physical hierarchy and design report 33 of 33 byte-exact each; coarse shaping, boundary push and orientation byte-exact on every case that emits a trace; golden DEFs -- macro positions, temporary standard cells, halo blockages and clustering groups -- 33 of 33 exact. Those gates drive `cluster-dump`, not `place-macro`.",
             "Every score is true of ONE upstream commit, named in `openroad_pin`. The reference moves: a score quoted without its pin says nothing.",
             "`consumes` is the generic `odb` on purpose. mpl supports running BEFORE or AFTER pin placement and the two give DIFFERENT placements, so a fixed predecessor list would be the wrong shape of claim rather than merely the wrong list.",
         ],
@@ -142,21 +142,21 @@ fn describe() -> String {
 
 /// `place-macro`: LibreLane `Classic` step 16, `Odb.ManualMacroPlacement`.
 ///
-/// 🔑 **The reference here is LibreLane's `Odb.ManualMacroPlacement`, NOT OpenROAD's
+/// 🔑 **The reference here is LibreLane's `Odb.ManualMacroPlacement`, NOT the reference's
 /// `place_macro`.** They are different commands with different behaviour, and the flow we ship
 /// runs the former: `Classic` has no RTL macro placer at all, and `ManualMacroPlacement` is an
-/// `OdbpyStep` over OpenDB. OpenROAD's `mpl::placeMacro` additionally snaps to tracks, checks core
+/// `OdbpyStep` over OpenDB. The reference's `mpl::placeMacro` additionally snaps to tracks, checks core
 /// containment (MPL-34) and checks macro overlap (MPL-41); this step does none of those.
 ///
-/// ⚠️ **Measured at pin `945a9f4`, on OpenROAD's `place_macro`, so the difference is on record:**
+/// ⚠️ **Measured at pin `945a9f4`, on the reference's `place_macro`, so the difference is on record:**
 ///   - a macro that is already LOCKED cannot be relocated at all -- OpenDB raises
 ///     `ODB-0359 Attempt to change the origin of LOCKED instance` before any check runs;
 ///   - a macro that is already PLACED trips `MPL-0041 ... Found overlap with other macros: <itself>`,
 ///     because `findOverlappedMacros` (`rtl_mp.cpp:175`) iterates every placed block instance and
 ///     **never skips the macro being placed**. Upstream's only shipped case cannot see this: its
 ///     input macro is UNPLACED.
-///     ⛔ **That second one is a BUG upstream has now confirmed, not a rule to match.** Asked as
-///     OpenROAD #11269, answered 2026-09-04: *"our use case at that time was specifically for
+///     ⛔ **That second one is a BUG upstream has now confirmed, not a rule to match.** Asked
+///     upstream (#11269), answered 2026-09-04: *"our use case at that time was specifically for
 ///     unplaced macros ... This is just a bug"*, closed as a duplicate of the open #11278. So do
 ///     not transcribe it, and do not pin it as a test asserting upstream's behaviour — it is
 ///     expected to change. We are unaffected: this command performs no overlap check at all.
@@ -198,8 +198,7 @@ fn place_macro_main(args: &[String]) -> ExitCode {
                 // takes `const float& x_origin` (`mpl/include/mpl/rtl_mp.h:72`), so the coordinate
                 // has already lost precision to ~7 significant digits BEFORE `micronsToDbu`
                 // promotes it to double. Parsing as f64 keeps precision the reference threw away.
-                // See `docs/openroad/cpp-to-rust-numeric-reference.md` §1: float beats every
-                // integer type, and the narrowing is a second rounding people miss.
+                // A float narrowing is a second rounding people miss.
                 let (Ok(x), Ok(y)) = (f[0].trim().parse::<f32>(), f[1].trim().parse::<f32>()) else {
                     return usage_err(&format!("--macro X,Y must be numbers, got {rest:?}"));
                 };
@@ -396,7 +395,7 @@ fn main() -> ExitCode {
             // caller to discover at runtime.
             eprintln!(
                 "vyges-mpl: `run` is not wired yet.\n\
-                 The placement pipeline IS implemented and correlated against OpenROAD -- it is\n\
+                 The placement pipeline IS implemented and correlated against the reference -- it is\n\
                  driven by the `cluster-dump` binary, which every correlation gate uses. What is\n\
                  missing is this command-line entry point, not the algorithm.\n\
                  See `--describe` for the published contract and its limits."
