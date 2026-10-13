@@ -29,6 +29,7 @@ log_dir = sys.argv[2] if len(sys.argv) > 2 else os.path.join(odb_dir, "pushlogs"
 tcl_dir = sys.argv[3] if len(sys.argv) > 3 else odb_dir
 
 from _mplchannel import channel_flags
+from _mplrefusal import same_error
 GUIDE = re.compile(r"set_macro_guidance_region\s+-macro_name\s+(\S+)\s+-region\s*\{([^}]*)\}")
 # ⛔ Same list, and the same reason, as compare-placement.py: a `.odb` cannot carry a command, so
 # every option the case sets on the command line has to be re-read from its `.tcl`. An untranslated
@@ -99,7 +100,7 @@ cases = sorted(f[:-4] for f in os.listdir(odb_dir) if f.endswith(".odb"))
 if not cases:
     sys.exit(f"no .odb files in {odb_dir}")
 
-match = differ = no_push = missing = other = refused = 0
+match = differ = no_push = missing = other = refused = stopped = 0
 for case in cases:
     log = os.path.join(log_dir, case + ".log")
     if not os.path.exists(log):
@@ -123,6 +124,12 @@ for case in cases:
         else:
             differ += 1
             print(f"  {case:32} ⛔ REFUSED while upstream pushed {len(want)} lines")
+        continue
+    # Both sides refuse the design for the same logged reason: agreement, in its own bucket.
+    code = same_error(p.stderr, io.open(log, encoding="utf-8").read()) if p.returncode else None
+    if code is not None and not want:
+        stopped += 1
+        print(f"  {case:32} both refuse — MPL-{code}, and upstream pushed nothing")
         continue
     if p.returncode != 0:
         other += 1
@@ -152,6 +159,7 @@ for case in cases:
 
 print(
     f"\npush: {match} match, {differ} differ, {no_push} no-push (both silent), "
-    f"{refused} refused, {missing} without a log, {other} other, of {len(cases)}"
+    f"{refused} refused, {stopped} both-refuse, {missing} without a log, {other} other, "
+    f"of {len(cases)}"
 )
 sys.exit(1 if (differ or other) else 0)

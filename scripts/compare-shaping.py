@@ -25,6 +25,7 @@ log_dir = sys.argv[2] if len(sys.argv) > 2 else os.path.join(odb_dir, "cslogs")
 tcl_dir = sys.argv[3] if len(sys.argv) > 3 else odb_dir
 
 from _mplchannel import channel_flags
+from _mplrefusal import both_skip, same_error
 
 # ⛔ Same list as compare-report.py, for the same reason: an mpl command that changes what the
 # engine reads and is not translated here is silently ignored, and the difference it causes looks
@@ -90,7 +91,7 @@ cases = sorted(
 if not cases:
     sys.exit(f"no .odb files in {odb_dir}")
 
-match = differ = anneals = missing = other = only_macros = suspect = 0
+match = differ = anneals = missing = other = only_macros = suspect = stopped = 0
 for case in cases:
     log = os.path.join(log_dir, case + ".log")
     if not os.path.exists(log):
@@ -109,6 +110,16 @@ for case in cases:
     if p.returncode == 4:
         anneals += 1
         print(f"  {case:24s} anneals — refused, not approximated")
+        continue
+    # Both sides stop before shaping, for the same logged reason: agreement, in its own bucket.
+    if not want and both_skip(p.returncode, log_text):
+        stopped += 1
+        print(f"  {case:24s} both skip — no unfixed macros (MPL-17)")
+        continue
+    code = same_error(p.stderr, log_text) if p.returncode != 0 else None
+    if code is not None and not want:
+        stopped += 1
+        print(f"  {case:24s} both refuse — MPL-{code}")
         continue
     if p.returncode != 0:
         other += 1
@@ -145,7 +156,7 @@ for case in cases:
 
 total = len(cases)
 print(
-    f"\n{match} match, {only_macros} only-macros, {differ} differ, "
+    f"\n{match} match, {only_macros} only-macros, {stopped} both-stop, {differ} differ, "
     f"{anneals} anneal (refused), {missing} without a log, {other} other, "
     f"{suspect} unexplained-empty, of {total}"
 )
