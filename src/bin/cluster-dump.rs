@@ -50,8 +50,6 @@ fn main() {
             "--floorplan" => {}
             "--nets" => {}
             "--cost" => {}
-            // Read again below by the orientation stage only; it no longer reaches the halo.
-            "--use-full-halo" => {}
             "--pin-aware-channels" => pin_aware_channels = true,
             "--min-channel" => {
                 let Some(spec) = it.next() else { usage("--min-channel needs w,h in microns") };
@@ -88,7 +86,7 @@ fn main() {
     }
     let Some(path) = path else {
         usage(
-            "usage: cluster-dump [--report|--shaping] [--use-full-halo] \
+            "usage: cluster-dump [--report|--shaping] \
              [--min-channel w,h] [--pin-aware-channels] \
              [--macro-guide NAME=lx,ly,ux,uy] [--push] <design.odb>   (all values in microns)",
         )
@@ -1210,9 +1208,9 @@ fn print_boundary_push(
     // same `>` revert — only the trace line differs. So this is hoisted above the match rather
     // than living in one arm, and the `Single` path stops reporting a hardcoded zero.
     //
-    // ⚠️ **The zero it replaced was green by COINCIDENCE.** `halos5` is the only design that
-    // reaches `Single`, and all four of its reference lines read `orig_WL 0 new_WL 0` because
-    // its macros carry no signal net. A stub agreeing with the reference on the only case that
+    // ⚠️ **The zero it replaced was green by COINCIDENCE.** `halos5` was then the only design
+    // that reached `Single`, and all four of its reference lines read `orig_WL 0 new_WL 0`
+    // because its macros carry no signal net. A stub agreeing with the reference on the only case that
     // executes it is indistinguishable from a model, and the gate cannot tell them apart.
     //
     // ⛔ **`adjustRealMacroOrientation` is a GROUP operation, not a per-macro one.** It sums
@@ -1282,17 +1280,16 @@ fn print_boundary_push(
         (original, new)
     };
 
-    let use_full_halo = std::env::args().any(|a| a == "--use-full-halo");
-    match p::orientation_strategy(use_full_halo) {
+    let pin_aware_channels = std::env::args().any(|a| a == "--pin-aware-channels");
+    match p::orientation_strategy(pin_aware_channels) {
         p::OrientationStrategy::Single => {
-            // ⛔ **A DIFFERENT trace line, and only ONE design in the suite reaches it** —
-            // `halos5`, the only case setting `-use_full_halo`.
+            // ⚠️ **A DIFFERENT trace line**: `Inst {} flip …`, naming the macro. The default path.
             //
-            // ⚠️ **The order is a PROXY.** Upstream walks `tree_->maps.inst_to_hard`, an
-            // `odb::PtrMap` keyed by `dbInst*`, so its iteration order is POINTER order — stable
-            // within a run and formally unspecified. Database order is the closest thing we can
-            // reproduce, and it agrees on `halos5`. A design where the two disagree would differ
-            // here and nothing in the suite would say so.
+            // 🔑 **The order is odb ID order, not pointer order.** Upstream walks
+            // `tree_->maps.inst_to_hard`, an `odb::PtrMap` — a `std::map` whose comparator,
+            // `ODBPtrLess`, compares `getId()` (then the owner's). So the walk is the instance
+            // table's order, which is the order we read instances in. (Read from the header: this
+            // comment once called it pointer order and the iteration a proxy.)
             let mut unfixed: Vec<usize> = index_of.keys().copied().collect();
             unfixed.sort_unstable();
             let unfixed: Vec<usize> = unfixed

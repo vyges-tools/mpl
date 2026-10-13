@@ -5,13 +5,14 @@ use vyges_mpl::placement::{
     keep_flip, orientation_groups, orientation_strategy, OrientationStrategy, FLIP_PASSES,
 };
 
-/// ⛔ **The branch reads backwards.** Pin-aware halos — `use_full_halo` FALSE — take the
-/// RESTRICTED by-cluster path, because flipping a single macro inside a cluster could leave part of
-/// it unreachable. A full halo has no such worry and flips each macro alone.
+/// 🔑 `-pin_aware_channels` takes the RESTRICTED by-cluster path, because flipping a single macro
+/// inside a cluster could turn a pin toward a neighbour with no channel. Without it -- the DEFAULT
+/// since the minimum-channel rework -- each macro is flipped alone. The reference's own trace
+/// (`VYGMPL orient`) gives 32 single and 1 by-cluster over the suite: `halos3` alone.
 #[test]
-fn pin_aware_halos_take_the_restricted_path() {
-    assert_eq!(orientation_strategy(false), OrientationStrategy::ByCluster);
-    assert_eq!(orientation_strategy(true), OrientationStrategy::Single);
+fn only_pin_aware_channels_take_the_restricted_path() {
+    assert_eq!(orientation_strategy(true), OrientationStrategy::ByCluster);
+    assert_eq!(orientation_strategy(false), OrientationStrategy::Single);
 }
 
 /// ⚠️ **`>`, strictly — so a TIE KEEPS THE FLIP.** The flip happens first and is undone only when

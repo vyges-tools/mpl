@@ -5,11 +5,11 @@
 🔑 **The `flipping` channel, and it is the largest single oracle in this engine** — 135 lines
 across the suite against the boundary push's 37.
 
-⛔ **TWO different line shapes, and only ONE design produces the second.**
+⛔ **TWO different line shapes, and only ONE design produces the first.**
 `correctMacroOrientationByCluster` prints `Cluster {name} {column-wise (V)|row-wise (H)} flip at
 {coord} …`; `correctMacroOrientationSingle` prints `Inst {name} flip {V|H} …`. The branch is
-`use_full_halo`, and `halos5` is the ONLY case in the suite that sets it — so a gate green without
-`halos5` says nothing whatever about the single path.
+`-pin_aware_channels`, and `halos3` is the ONLY case in the suite that sets it — so a gate green
+without `halos3` says nothing whatever about the by-cluster path.
 
 ⛔ **THE ROOT CLUSTER IS VISITED.** `id_to_cluster` holds it like any other, and an all-macro design
 types it `HardMacroCluster` under MPL-27 — so it carries every macro and contributes its own column
@@ -17,7 +17,7 @@ and row groups. `macro_only` has ten macros and emits FOURTEEN lines per pass.
 
 ⚠️ **The grouping key and the reported value are different accessors.** Columns and rows are keyed
 by `getRealX`/`getRealY`, halo OFF; the line reports `macros.front()->getX()`/`getY()`, halo ON.
-They differ per macro exactly where `set_macro_halo` named one.
+They differ per macro exactly where a DEF halo (`set_halo`) is set on one.
 
 ℹ️ **Wirelength is reported but not yet modelled**, so both `_WL` fields are emitted as zero. That
 is CORRECT for the 80 of 135 reference lines whose macros carry no signal net and wrong for the
@@ -63,8 +63,6 @@ def flags(case):
     text = io.open(path, encoding="utf-8").read()
     out = []
     out += channel_flags(text)
-    if "-use_full_halo" in text:
-        out += ["--use-full-halo"]
     for name, vals in GUIDE.findall(text):
         out += ["--macro-guide", f"{name}={','.join(vals.split())}"]
     for tcl_opt, flag in THRESH.items():

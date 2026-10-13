@@ -36,8 +36,6 @@ def halo_args(case):
     text = io.open(path, encoding="utf-8").read()
     out = []
     out += channel_flags(text)
-    if "-use_full_halo" in text:
-        out += ["--use-full-halo"]
     return out
 
 

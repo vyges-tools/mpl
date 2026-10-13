@@ -3344,15 +3344,19 @@ pub enum OrientationStrategy {
 
 /// Upstream `correctAllMacrosOrientation`.
 ///
-/// ⛔ **The branch reads backwards.** It is `!use_full_halo_` that takes the RESTRICTED,
-/// by-cluster path — pin-aware halos are the case that needs the restriction, because flipping a
-/// single macro inside a cluster could leave a region of it unreachable. A full halo has no such
-/// worry and each macro is flipped alone.
-pub fn orientation_strategy(use_full_halo: bool) -> OrientationStrategy {
-    if use_full_halo {
-        OrientationStrategy::Single
-    } else {
+/// 🔑 **`-pin_aware_channels` takes the RESTRICTED, by-cluster path** — pin-aware halos leave the
+/// sides no pin faces at the minimum spacing, so flipping a single macro inside a cluster could
+/// turn a pin toward a neighbour with no channel between them. Without it every side has the
+/// channel and each macro is flipped alone.
+///
+/// ⚠️ **Single is the DEFAULT.** It was the other way round before the minimum-channel rework,
+/// when pin-aware halos were the default and a `-use_full_halo` flag opted out; the reference now
+/// sends 32 of 33 suite designs down the single path and only `halos3` by cluster.
+pub fn orientation_strategy(pin_aware_channels: bool) -> OrientationStrategy {
+    if pin_aware_channels {
         OrientationStrategy::ByCluster
+    } else {
+        OrientationStrategy::Single
     }
 }
 
@@ -3723,9 +3727,8 @@ pub fn run_orientation_by_cluster(
 /// by-cluster path, with each macro its own group of one.
 ///
 /// ⚠️ **The trace line is a DIFFERENT one**: `Inst {} flip {V|H} …`, naming the macro rather than a
-/// cluster and carrying no coordinate. ℹ️ Only ONE design in the reference suite reaches this path —
-/// `halos5`, the only case that sets `-use_full_halo` — so a gate that is green without it says
-/// nothing about this function.
+/// cluster and carrying no coordinate. ℹ️ The default path: every suite design but `halos3` (the
+/// only one setting `-pin_aware_channels`) reaches it.
 pub fn run_orientation_single(
     macros: &[FlipMacro],
     unfixed: &[usize],

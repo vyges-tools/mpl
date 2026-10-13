@@ -59,8 +59,6 @@ def flags(case):
     text = io.open(path, encoding="utf-8").read()
     out = []
     out += channel_flags(text)
-    if "-use_full_halo" in text:
-        out += ["--use-full-halo"]
     for name, vals in GUIDE.findall(text):
         out += ["--macro-guide", f"{name}={','.join(vals.split())}"]
     for tcl_opt, flag in THRESH.items():

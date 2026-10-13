@@ -70,8 +70,6 @@ def flags(case):
     text = io.open(path, encoding="utf-8").read()
     out = []
     out += channel_flags(text)
-    if "-use_full_halo" in text:
-        out += ["--use-full-halo"]
     # ⛔ Only under this flag does `commitClusteringDataToDb` run at all, so only then does the
     # golden carry a GROUPS section.
     if "-keep_clustering_data" in text:
