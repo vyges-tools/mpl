@@ -29,6 +29,11 @@ KNOWN = ("set_macro_base_halo", "-halo_width", "-halo_height", "-min_channel_siz
 
 
 def channel_flags(text):
+    # ⛔ Comments first. `halos4.tcl` opens with `# Test that the default (no -pin_aware_channels)
+    # ...`, and a substring test on the raw text turned pin-awareness ON for the one case written
+    # to prove it is off. Its halos came out the same either way (no channel, so the pin-aware
+    # halo IS the spacing); only the orientation branch showed it.
+    text = "\n".join(l for l in text.splitlines() if not l.lstrip().startswith("#"))
     channel = None
     for vals in BASE_HALO.findall(text):
         v = [float(x) for x in vals.split()]
