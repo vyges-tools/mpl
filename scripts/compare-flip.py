@@ -32,8 +32,7 @@ odb_dir = sys.argv[1] if len(sys.argv) > 1 else "/tmp/mplodb"
 log_dir = sys.argv[2] if len(sys.argv) > 2 else os.path.join(odb_dir, "pushlogs")
 tcl_dir = sys.argv[3] if len(sys.argv) > 3 else odb_dir
 
-MACRO_HALO = re.compile(r"set_macro_halo\s+-macro_name\s+(\S+)\s+-halo\s*\{([^}]*)\}")
-BASE_HALO = re.compile(r"set_macro_base_halo\s+([0-9.\s]+)")
+from _mplchannel import channel_flags
 GUIDE = re.compile(r"set_macro_guidance_region\s+-macro_name\s+(\S+)\s+-region\s*\{([^}]*)\}")
 # ⛔ Same list, and the same reason, as compare-placement.py: a `.odb` cannot carry a command, so
 # every option the case sets on the command line has to be re-read from its `.tcl`. An untranslated
@@ -63,10 +62,7 @@ def flags(case):
         return []
     text = io.open(path, encoding="utf-8").read()
     out = []
-    for name, vals in MACRO_HALO.findall(text):
-        out += ["--macro-halo", f"{name}={','.join(vals.split())}"]
-    for vals in BASE_HALO.findall(text):
-        out += ["--base-halo", ",".join(vals.split())]
+    out += channel_flags(text)
     if "-use_full_halo" in text:
         out += ["--use-full-halo"]
     for name, vals in GUIDE.findall(text):

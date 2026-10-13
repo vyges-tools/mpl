@@ -6,9 +6,9 @@
 //! declared not to fit at all. Getting a side wrong is invisible on a symmetric halo and wrong
 //! everywhere on an asymmetric one.
 //!
-//! Upstream: `ClusteringEngine::buildMacroHalo`.
+//! Upstream: `ClusteringEngine::buildMacroHalo` and `buildPinAwareHalo`.
 
-use crate::options::Halo;
+use crate::options::{Channel, Halo};
 
 /// Which side of the macro a pin is closest to.
 ///
@@ -118,34 +118,34 @@ pub fn closest_boundary(pin: PinBox, master_width: i64, master_height: i64) -> B
     }
 }
 
-/// The macro's declared halo, before pin-awareness narrows it.
+/// Raise each side to at least the other halo's same side — upstream `Halo::flooredToHalo`.
 ///
-/// Upstream rule:
-/// - an explicit `set_macro_halo` for this instance wins outright;
-/// - otherwise a **soft** `dbHalo` is taken as-is;
-/// - a **hard** `dbHalo` is raised componentwise to at least the base halo;
-/// - no `dbHalo` at all means the base halo.
+/// ⚠️ Per side, NOT "whichever halo is bigger": the result can take two sides from each.
+pub fn floored_to_halo(halo: Halo, floor: Halo) -> Halo {
+    Halo {
+        left: halo.left.max(floor.left),
+        bottom: halo.bottom.max(floor.bottom),
+        right: halo.right.max(floor.right),
+        top: halo.top.max(floor.top),
+    }
+}
+
+/// Raise each side to at least half the minimum channel — upstream `Halo::flooredToChannel`.
 ///
-/// ⚠️ The soft case does NOT floor to the base halo. A soft halo is a hint other tools already
-/// respect, so upstream declines to enlarge it.
-pub fn full_halo(
-    explicit: Option<Halo>,
-    inst_halo: Option<(Halo, bool)>, // (halo, is_soft)
-    base: Halo,
-) -> Halo {
-    if let Some(h) = explicit {
-        return h;
+/// 🔑 **Half, because a channel is shared by the two macros either side of it.** Left and right
+/// take `width / 2`, bottom and top `height / 2`, in integer DBU — the division truncates, so an
+/// odd channel loses one unit, as upstream's `int / 2` does.
+pub fn floored_to_channel(halo: Halo, channel: Channel) -> Halo {
+    Halo {
+        left: halo.left.max(channel.width / 2),
+        bottom: halo.bottom.max(channel.height / 2),
+        right: halo.right.max(channel.width / 2),
+        top: halo.top.max(channel.height / 2),
     }
-    match inst_halo {
-        Some((h, true)) => h,
-        Some((h, false)) => Halo {
-            left: h.left.max(base.left),
-            bottom: h.bottom.max(base.bottom),
-            right: h.right.max(base.right),
-            top: h.top.max(base.top),
-        },
-        None => base,
-    }
+}
+
+fn uniform(v: i64) -> Halo {
+    Halo { left: v, bottom: v, right: v, top: v }
 }
 
 /// Reorient a halo for a **fixed** macro.
@@ -166,44 +166,47 @@ pub fn reorient_for_fixed(halo: Halo, orient: Orient) -> Halo {
     h
 }
 
-/// The pin-aware halo: start at `minimum_spacing` on every side, then widen a side to the full
-/// halo for each signal pin that is closest to it.
+/// The pin-aware halo — upstream `buildPinAwareHalo`.
 ///
-/// ⚠️ **A side with no pin facing it keeps `minimum_spacing`.** That is the entire point of the
-/// pin-aware mode — the routing keep-out only needs to be wide where pins actually escape.
+/// Every side starts at `minimum_spacing`; a side that some SIGNAL pin is closest to is raised to
+/// the channel-floored value. ⚠️ **A side with no pin facing it keeps `minimum_spacing`**, not half
+/// the channel — that is the entire point of the mode: the keep-out need only be wide where pins
+/// escape.
 ///
 /// `pins` must already be filtered to SIGNAL pins; power and ground do not widen a halo.
 pub fn pin_aware_halo(
     pins: &[PinBox],
     master_width: i64,
     master_height: i64,
-    full: Halo,
+    channel: Channel,
     minimum_spacing: i64,
 ) -> Halo {
-    let mut halo = Halo {
-        left: minimum_spacing,
-        bottom: minimum_spacing,
-        right: minimum_spacing,
-        top: minimum_spacing,
-    };
+    let halo = floored_to_channel(uniform(minimum_spacing), channel);
+    let mut min_halo = uniform(minimum_spacing);
     for pin in pins {
         match closest_boundary(*pin, master_width, master_height) {
-            Boundary::B => halo.bottom = full.bottom,
-            Boundary::L => halo.left = full.left,
-            Boundary::T => halo.top = full.top,
-            Boundary::R => halo.right = full.right,
+            Boundary::B => min_halo.bottom = halo.bottom,
+            Boundary::L => min_halo.left = halo.left,
+            Boundary::T => min_halo.top = halo.top,
+            Boundary::R => min_halo.right = halo.right,
         }
     }
-    halo
+    min_halo
 }
 
-/// The whole rule, in upstream's order.
+/// The whole rule, in upstream's order — `buildMacroHalo`.
+///
+/// 1. `minimum_spacing` on every side, floored to half the minimum channel;
+/// 2. a DEF halo on the instance floors that per side — ⚠️ **soft or hard alike**: this function
+///    never reads the soft flag (only the commit-time blockage does);
+/// 3. otherwise, only when `-pin_aware_channels` is set, the pin-aware halo REPLACES it — so a
+///    macro with a DEF halo is never pin-aware;
+/// 4. a FIXED macro has the result reoriented, on every path.
 #[allow(clippy::too_many_arguments)]
 pub fn build_macro_halo(
-    explicit: Option<Halo>,
-    inst_halo: Option<(Halo, bool)>,
-    base: Halo,
-    use_full_halo: bool,
+    inst_halo: Option<Halo>,
+    channel: Channel,
+    pin_aware_channels: bool,
     pins: &[PinBox],
     master_width: i64,
     master_height: i64,
@@ -211,18 +214,12 @@ pub fn build_macro_halo(
     is_fixed: bool,
     orient: Orient,
 ) -> Halo {
-    // ⚠️ The explicit halo returns IMMEDIATELY, before `use_full_halo` is even consulted and
-    // before any reorientation. A `set_macro_halo` is taken exactly as written.
-    if let Some(h) = explicit {
-        return h;
+    let mut halo = floored_to_channel(uniform(minimum_spacing), channel);
+    if let Some(def) = inst_halo {
+        halo = floored_to_halo(halo, def);
+    } else if pin_aware_channels {
+        halo = pin_aware_halo(pins, master_width, master_height, channel, minimum_spacing);
     }
-
-    let full = full_halo(None, inst_halo, base);
-    if use_full_halo {
-        return full;
-    }
-
-    let halo = pin_aware_halo(pins, master_width, master_height, full, minimum_spacing);
     if is_fixed {
         return reorient_for_fixed(halo, orient);
     }

@@ -2,15 +2,16 @@
 //! Print a design's physical hierarchy — or its design-data report — in upstream's own format,
 //! so the two can be diffed.
 //!
-//! ⛔ **The halo commands are COMMANDS, not database state.** Preparing the `.odb` captures
-//! `set_io_pin_constraint`, which writes onto the ports, and captures nothing of
-//! `set_macro_halo`, `set_macro_base_halo` or `-use_full_halo`. A case that sets one and is run
-//! without the matching flag is being scored against a different input than upstream used.
+//! ⛔ **The channel options are COMMAND state, not database state.** Preparing the `.odb`
+//! captures `set_io_pin_constraint` and `set_halo` (both write the database) and nothing of
+//! `-min_channel_size`, `-pin_aware_channels`, `set_macro_base_halo` or `-halo_width`. A case
+//! that sets one and is run without the matching flag is scored against a different input than
+//! upstream used.
 //!
-//! ⚠️ **Halo values are MICRONS**, as the Tcl takes them — `mpl.i` converts with
+//! ⚠️ **Channel values are MICRONS**, as the Tcl takes them — `mpl.i` converts with
 //! `block->micronsToDbu`, which multiplies and **rounds**. Passing database units instead makes
-//! a 8 µm halo into 8 DBU, which on Nangate45 is 1/2000th of the intended keep-out and looks
-//! almost exactly like no halo at all.
+//! an 8 µm channel into 8 DBU, which on Nangate45 is 1/2000th of the intended keep-out and looks
+//! almost exactly like none at all.
 use std::collections::HashMap;
 
 fn main() {
@@ -18,9 +19,8 @@ fn main() {
     let mut path = None;
     let mut want_report = false;
     let mut want_shaping = false;
-    let mut use_full_halo = false;
-    let mut base_halo: Option<[f64; 4]> = None;
-    let mut macro_halos: Vec<(String, [f64; 4])> = Vec::new();
+    let mut pin_aware_channels = false;
+    let mut min_channel: Option<[f64; 2]> = None;
     // ⛔ `set_macro_guidance_region` is ENGINE state, like the halo commands — a prepared `.odb`
     // cannot carry it, so the case's `.tcl` has to be translated onto this command line.
     let mut macro_guides: Vec<(String, [f64; 4])> = Vec::new();
@@ -50,17 +50,15 @@ fn main() {
             "--floorplan" => {}
             "--nets" => {}
             "--cost" => {}
-            "--use-full-halo" => use_full_halo = true,
-            "--base-halo" => {
-                let Some(spec) = it.next() else { usage("--base-halo needs l,b,r,t in microns") };
-                base_halo = Some(four(spec));
-            }
-            "--macro-halo" => {
-                let Some(spec) = it.next() else { usage("--macro-halo needs NAME=l,b,r,t") };
-                let Some((name, vals)) = spec.split_once('=') else {
-                    usage("--macro-halo needs NAME=l,b,r,t")
-                };
-                macro_halos.push((name.to_string(), four(vals)));
+            // Read again below by the orientation stage only; it no longer reaches the halo.
+            "--use-full-halo" => {}
+            "--pin-aware-channels" => pin_aware_channels = true,
+            "--min-channel" => {
+                let Some(spec) = it.next() else { usage("--min-channel needs w,h in microns") };
+                let v: Vec<f64> =
+                    spec.split(',').filter_map(|s| s.trim().parse().ok()).collect();
+                let [w, h] = v[..] else { usage("--min-channel needs w,h in microns") };
+                min_channel = Some([w, h]);
             }
             // ⛔ `rtl_macro_placer`'s threshold options are ENGINE state like the halos: a
             // prepared `.odb` cannot carry them, and supplying them keeps `max_level` at 2 where
@@ -91,7 +89,7 @@ fn main() {
     let Some(path) = path else {
         usage(
             "usage: cluster-dump [--report|--shaping] [--use-full-halo] \
-             [--base-halo l,b,r,t] [--macro-halo NAME=l,b,r,t] \
+             [--min-channel w,h] [--pin-aware-channels] \
              [--macro-guide NAME=lx,ly,ux,uy] [--push] <design.odb>   (all values in microns)",
         )
     };
@@ -121,22 +119,17 @@ fn main() {
     let blockages = vyges_mpl::read::read_blockages(&db);
     let blocked_for_pins = vyges_mpl::read::read_blocked_regions_for_pins(&db);
 
-    // ⚠️ Halos arrive by instance NAME on the command line and by index in the engine. A name
-    // that matches nothing is an error, not a silent no-op — it would look like the halo applied.
+    // ⚠️ Guides arrive by instance NAME on the command line and by index in the engine. A name
+    // that matches nothing is an error, not a silent no-op — it would look like the guide applied.
     let by_name: HashMap<&str, usize> =
         design.instances.iter().enumerate().map(|(i, x)| (x.name.as_str(), i)).collect();
     let dbu = db.dbu_per_micron();
     let mut opts = vyges_mpl::engine::ClusterOptions::default();
-    opts.use_full_halo = use_full_halo;
+    opts.pin_aware_channels = pin_aware_channels;
     opts.thresholds = sup;
-    if let Some(h) = base_halo {
-        opts.base_halo = to_dbu(h, dbu);
-    }
-    for (name, halo) in &macro_halos {
-        match by_name.get(name.as_str()) {
-            Some(&i) => { opts.macro_halos.insert(i, to_dbu(*halo, dbu)); }
-            None => { eprintln!("no instance named {name}"); std::process::exit(2); }
-        }
+    if let Some([w, h]) = min_channel {
+        let d = |v: f64| (v * dbu as f64).round() as i64;
+        opts.min_channel = vyges_mpl::options::Channel { width: d(w), height: d(h) };
     }
     let mut guide_regions: Vec<(usize, (i32, i32, i32, i32))> = Vec::new();
     for (name, region) in &macro_guides {
@@ -1931,11 +1924,6 @@ fn next_i32(it: &mut std::slice::Iter<'_, String>, flag: &str) -> i32 {
         Some(v) => v,
         None => usage(&format!("{flag} needs an integer")),
     }
-}
-
-fn to_dbu(h: [f64; 4], dbu: i32) -> vyges_mpl::options::Halo {
-    let d = |v: f64| (v * dbu as f64).round() as i64;
-    vyges_mpl::options::Halo { left: d(h[0]), bottom: d(h[1]), right: d(h[2]), top: d(h[3]) }
 }
 
 /// Four comma-separated microns, or two mirrored into four — `parse_halo`'s own rule.

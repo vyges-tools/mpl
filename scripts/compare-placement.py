@@ -25,8 +25,8 @@ odb_dir = sys.argv[1] if len(sys.argv) > 1 else "/tmp/mplodb"
 log_dir = sys.argv[2] if len(sys.argv) > 2 else os.path.join(odb_dir, "hmplogs")
 tcl_dir = sys.argv[3] if len(sys.argv) > 3 else odb_dir
 
-MACRO_HALO = re.compile(r"set_macro_halo\s+-macro_name\s+(\S+)\s+-halo\s*\{([^}]*)\}")
-BASE_HALO = re.compile(r"set_macro_base_halo\s+([0-9.\s]+)")
+import _mplchannel
+from _mplchannel import channel_flags
 GUIDE = re.compile(r"set_macro_guidance_region\s+-macro_name\s+(\S+)\s+-region\s*\{([^}]*)\}")
 # ⛔ `rtl_macro_placer`'s own threshold options are engine state too. Supplying them keeps the
 # tree's `max_level` at 2, and `adjustSoftBlockageWeight` fires only at 1 -- so an untranslated
@@ -46,8 +46,7 @@ THRESH = {
     "-min_num_macro": "--min-num-macro",
 }
 
-KNOWN = ("set_macro_halo", "set_macro_base_halo", "-use_full_halo",
-         "set_macro_guidance_region")
+KNOWN = _mplchannel.KNOWN + ("set_macro_guidance_region",)
 
 ROW = re.compile(r"^\s*(.+?)\s*\|\s*([\d.]+)\s*\|\s*([\d.]+)\s*\|\s*([\d.]+)\s*\|\s*([\d.]+)\s*$")
 TOTAL = re.compile(r"^\s*Total Cost\s+([\d.]+)\s*$")
@@ -59,10 +58,7 @@ def flags(case):
         return []
     text = io.open(path, encoding="utf-8").read()
     out = []
-    for name, vals in MACRO_HALO.findall(text):
-        out += ["--macro-halo", f"{name}={','.join(vals.split())}"]
-    for vals in BASE_HALO.findall(text):
-        out += ["--base-halo", ",".join(vals.split())]
+    out += channel_flags(text)
     if "-use_full_halo" in text:
         out += ["--use-full-halo"]
     for name, vals in GUIDE.findall(text):

@@ -10,7 +10,6 @@ use crate::design::{compute_module_metrics, is_ignored_inst, Design, Rect};
 use crate::ioclusters::{create_io_clusters, IoClusters, Pin};
 use crate::options::{Halo, MplError};
 use crate::read::MacroGeometry;
-use std::collections::HashMap;
 use crate::status::Status;
 use crate::thresholds::{set_base_thresholds, DesignMetrics, Thresholds};
 use crate::tree::TreeBuilder;
@@ -152,11 +151,11 @@ pub struct ClusterOptions {
     pub cluster_size_ratio: f32,
     pub global_fence: Option<Rect>,
     pub large_net_threshold: usize,
-    pub base_halo: Halo,
-    pub use_full_halo: bool,
-    /// `set_macro_halo` per instance. ⚠️ An explicit halo wins outright — before `use_full_halo`
-    /// is consulted and before any reorientation.
-    pub macro_halos: HashMap<usize, Halo>,
+    /// The minimum channel, in DBU. Every macro's halo is floored to half of it.
+    pub min_channel: crate::options::Channel,
+    /// `-pin_aware_channels`: a macro WITHOUT a DEF halo keeps the channel only on the sides its
+    /// signal pins face.
+    pub pin_aware_channels: bool,
 }
 
 impl Default for ClusterOptions {
@@ -173,9 +172,10 @@ impl Default for ClusterOptions {
             cluster_size_ratio: d.coarsening_ratio as f32,
             global_fence: None,
             large_net_threshold: d.large_net_threshold as usize,
-            base_halo: d.base_halo_from_flags.unwrap_or_default(),
-            use_full_halo: d.use_full_halo,
-            macro_halos: HashMap::new(),
+            // ⚠️ `min_channel_from_flags` is in MICRONS and only a caller knows the DBU scale,
+            // so the default here is the command's own default: no channel.
+            min_channel: crate::options::Channel::default(),
+            pin_aware_channels: d.pin_aware_channels,
         }
     }
 }
@@ -300,7 +300,7 @@ pub fn run_clustering(input: &DesignInputs, opts: &ClusterOptions) -> Clustering
         design,
         &placement_area,
         &design_metrics,
-        opts.base_halo,
+        opts.min_channel,
         macro_with_halo_area,
         unfixed.len(),
         input.manufacturing_grid,
@@ -475,10 +475,9 @@ fn resolve_halos(
             continue;
         }
         let halo = crate::halo::build_macro_halo(
-            opts.macro_halos.get(&i).copied(),
-            g.inst_halo,
-            opts.base_halo,
-            opts.use_full_halo,
+            g.inst_halo.map(|(h, _soft)| h),
+            opts.min_channel,
+            opts.pin_aware_channels,
             &g.pins,
             g.master_width,
             g.master_height,

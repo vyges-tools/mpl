@@ -30,7 +30,8 @@ fn every_default_matches_upstreams_tcl() {
     assert_eq!(d.min_ar, 0.33);
     assert_eq!(d.report_directory, "hier_rtlmp");
     assert_eq!((d.fence_lx, d.fence_ly, d.fence_ux, d.fence_uy), (0.0, 0.0, 0.0, 0.0));
-    assert!(!d.keep_clustering_data && !d.use_full_halo);
+    assert!(!d.keep_clustering_data && !d.pin_aware_channels);
+    assert_eq!(d.min_channel_from_flags, None, "no channel unless one is asked for");
 }
 
 #[test]
@@ -83,8 +84,18 @@ fn every_key_actually_arrives() {
 
 #[test]
 fn both_flags_arrive() {
-    let p = parse_placer_args(&["-keep_clustering_data", "-use_full_halo"]).unwrap();
-    assert!(p.options.keep_clustering_data && p.options.use_full_halo);
+    let p = parse_placer_args(&[
+        "-keep_clustering_data", "-pin_aware_channels", "-min_channel_size", "24 12",
+    ])
+    .unwrap();
+    assert!(p.options.keep_clustering_data && p.options.pin_aware_channels);
+}
+
+#[test]
+fn the_removed_full_halo_flag_is_now_an_unknown_key() {
+    // `-use_full_halo` left the command with the minimum-channel rework; full halos are the
+    // default now. Upstream's `parse_key_args` rejects it, so must we.
+    assert!(parse_placer_args(&["-use_full_halo"]).is_err());
 }
 
 #[test]
@@ -143,12 +154,10 @@ fn giving_both_blockage_weights_is_mpl69() {
 #[test]
 fn halo_width_alone_sets_height_to_it_and_warns_mpl74() {
     // Upstream: `set halo_height $halo_width` when only -halo_width is given, then
-    // `mpl::set_base_halo $halo_width $halo_height $halo_width $halo_height`.
+    // `mpl::set_min_channel [expr 2 * $halo_width] [expr 2 * $halo_height]` -- a halo is HALF a
+    // channel, so the deprecated key doubles.
     let p = parse_placer_args(&["-halo_width", "5"]).unwrap();
-    assert_eq!(
-        p.options.base_halo_from_flags,
-        Some(Halo { left: 5, bottom: 5, right: 5, top: 5 })
-    );
+    assert_eq!(p.options.min_channel_from_flags, Some((10.0, 10.0)));
     assert!(p.warnings.iter().any(|w| w.code == 74));
 }
 
@@ -157,20 +166,57 @@ fn halo_height_alone_sets_width_to_it() {
     // The mirror case, which upstream spells out separately -- and which an implementation
     // that only handled -halo_width would silently get wrong.
     let p = parse_placer_args(&["-halo_height", "9"]).unwrap();
-    assert_eq!(
-        p.options.base_halo_from_flags,
-        Some(Halo { left: 9, bottom: 9, right: 9, top: 9 })
-    );
+    assert_eq!(p.options.min_channel_from_flags, Some((18.0, 18.0)));
 }
 
 #[test]
 fn halo_width_and_height_together_keep_both() {
     let p = parse_placer_args(&["-halo_width", "5", "-halo_height", "9"]).unwrap();
     assert_eq!(
-        p.options.base_halo_from_flags,
-        Some(Halo { left: 5, bottom: 9, right: 5, top: 9 }),
-        "left/right take the width, bottom/top the height"
+        p.options.min_channel_from_flags,
+        Some((10.0, 18.0)),
+        "the channel width takes the halo width, the height the halo height"
     );
+}
+
+#[test]
+fn halo_keys_take_fractional_microns() {
+    // Tcl `expr` arithmetic: a halo is any number of microns, not an integer.
+    let p = parse_placer_args(&["-halo_width", "0.5"]).unwrap();
+    assert_eq!(p.options.min_channel_from_flags, Some((1.0, 1.0)));
+}
+
+// ---------------------------------------------------------------- minimum channel
+
+#[test]
+fn one_channel_value_is_square_and_two_are_width_then_height() {
+    let p = parse_placer_args(&["-min_channel_size", "24"]).unwrap();
+    assert_eq!(p.options.min_channel_from_flags, Some((24.0, 24.0)));
+    let p = parse_placer_args(&["-min_channel_size", "24 12"]).unwrap();
+    assert_eq!(p.options.min_channel_from_flags, Some((24.0, 12.0)));
+}
+
+#[test]
+fn a_channel_of_three_values_is_mpl80() {
+    let e = parse_placer_args(&["-min_channel_size", "1 2 3"]).unwrap_err();
+    assert_eq!(e.code, 80);
+}
+
+#[test]
+fn the_channel_key_wins_over_the_deprecated_halo_keys() {
+    // Both call `set_min_channel`; `-min_channel_size` is handled second, so it is what stays.
+    let p = parse_placer_args(&["-min_channel_size", "4", "-halo_width", "5"]).unwrap();
+    assert_eq!(p.options.min_channel_from_flags, Some((4.0, 4.0)));
+}
+
+#[test]
+fn pin_aware_channels_without_a_channel_size_is_mpl79() {
+    let e = parse_placer_args(&["-pin_aware_channels"]).unwrap_err();
+    assert_eq!(e.code, 79);
+    // ⛔ The deprecated halo keys set a channel too, and still do not satisfy the check: it reads
+    // `-min_channel_size` itself.
+    let e = parse_placer_args(&["-pin_aware_channels", "-halo_width", "5"]).unwrap_err();
+    assert_eq!(e.code, 79);
 }
 
 // ---------------------------------------------------------------- halo list

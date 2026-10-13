@@ -22,7 +22,7 @@ pub struct DesignReport {
     pub num_macro: i32,
     pub macros_to_place: usize,
     pub macro_area: i64,
-    pub base_halo: crate::options::Halo,
+    pub min_channel: crate::options::Channel,
     pub macro_with_halo_area: i64,
     pub floorplan_area: i64,
     pub manufacturing_grid: i32,
@@ -52,7 +52,7 @@ impl DesignReport {
              \tNumber of macros: {}\n\
              \tMacros to be placed: {}\n\
              \tArea of macros: {:.2}\n\
-             \tBase halo (L, B, R, T): ({:.2}, {:.2}, {:.2}, {:.2})\n\
+             \tMinimum channel (Width, Height): ({:.2}, {:.2})\n\
              \tArea of macros with halos: {:.2}\n\
              \tArea of std cell instances + Area of macros: {:.2}\n\
              \tFloorplan area: {:.2}\n\
@@ -67,8 +67,7 @@ impl DesignReport {
             self.num_macro,
             self.macros_to_place,
             a(self.macro_area),
-            u(self.base_halo.left), u(self.base_halo.bottom),
-            u(self.base_halo.right), u(self.base_halo.top),
+            u(self.min_channel.width), u(self.min_channel.height),
             a(self.macro_with_halo_area),
             a(self.std_cell_area + self.macro_area),
             a(self.floorplan_area),
@@ -84,7 +83,7 @@ pub fn design_report(
     design: &Design,
     floorplan: &Rect,
     metrics: &crate::design::ModuleMetrics,
-    base_halo: crate::options::Halo,
+    min_channel: crate::options::Channel,
     macro_with_halo_area: i64,
     macros_to_place: usize,
     manufacturing_grid: i32,
@@ -97,7 +96,7 @@ pub fn design_report(
         num_macro: metrics.num_macro,
         macros_to_place,
         macro_area: metrics.macro_area,
-        base_halo,
+        min_channel,
         macro_with_halo_area,
         floorplan_area: floorplan.area(),
         manufacturing_grid,

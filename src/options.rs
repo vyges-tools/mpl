@@ -39,6 +39,18 @@ pub struct MplWarning {
     pub message: String,
 }
 
+/// The minimum channel between two macros, in DBU — upstream's `Channel`.
+///
+/// 🔑 **A channel is SHARED by the macros either side of it**, so each macro's halo is floored to
+/// HALF of it (`floored_to_channel`). It replaced the per-side "base halo": an asymmetric base halo
+/// cannot be expressed any more, and the deprecated spellings that still take one fold it into a
+/// width (`left + right`) and a height (`bottom + top`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct Channel {
+    pub width: i64,
+    pub height: i64,
+}
+
 /// A halo, in upstream's order.
 ///
 /// 🔑 Upstream rule (`mpl::parse_halo`): a halo is a list of **2 or 4** values ordered
@@ -101,10 +113,12 @@ pub struct PlacerOptions {
     pub report_directory: String,
     pub write_macro_placement: Option<String>,
     pub keep_clustering_data: bool,
-    pub use_full_halo: bool,
-    /// Set by the deprecated `-halo_width`/`-halo_height`, which call `set_base_halo`
-    /// during argument parsing — i.e. before the engine runs.
-    pub base_halo_from_flags: Option<Halo>,
+    /// `-pin_aware_channels`. ⛔ MPL-79 without `-min_channel_size`.
+    pub pin_aware_channels: bool,
+    /// The minimum channel `(width, height)` in MICRONS, as `mpl::set_min_channel` receives it —
+    /// from `-min_channel_size`, or from the deprecated `-halo_width`/`-halo_height` at TWICE
+    /// their value. Both are applied during argument parsing, before the engine runs.
+    pub min_channel_from_flags: Option<(f64, f64)>,
 }
 
 impl Default for PlacerOptions {
@@ -135,8 +149,8 @@ impl Default for PlacerOptions {
             report_directory: "hier_rtlmp".to_string(),
             write_macro_placement: None,
             keep_clustering_data: false,
-            use_full_halo: false,
-            base_halo_from_flags: None,
+            pin_aware_channels: false,
+            min_channel_from_flags: None,
         }
     }
 }
@@ -181,8 +195,10 @@ pub struct Parsed {
 pub fn parse_placer_args(args: &[&str]) -> Result<Parsed, MplError> {
     let mut o = PlacerOptions::default();
     let mut warnings = Vec::new();
-    let mut halo_width: Option<i64> = None;
-    let mut halo_height: Option<i64> = None;
+    let mut halo_width: Option<f64> = None;
+    let mut halo_height: Option<f64> = None;
+    let mut min_channel_size: Option<Vec<f64>> = None;
+    let mut saw_min_channel_size = false;
     let mut saw_macro_blockage_weight = false;
     let mut saw_soft_blockage_weight = false;
 
@@ -196,8 +212,8 @@ pub fn parse_placer_args(args: &[&str]) -> Result<Parsed, MplError> {
                 i += 1;
                 continue;
             }
-            "-use_full_halo" => {
-                o.use_full_halo = true;
+            "-pin_aware_channels" => {
+                o.pin_aware_channels = true;
                 i += 1;
                 continue;
             }
@@ -258,8 +274,14 @@ pub fn parse_placer_args(args: &[&str]) -> Result<Parsed, MplError> {
                 });
                 o.soft_blockage_weight = num(value)?;
             }
-            "-halo_width" => halo_width = Some(int(value)?),
-            "-halo_height" => halo_height = Some(int(value)?),
+            "-halo_width" => halo_width = Some(num(value)?),
+            "-halo_height" => halo_height = Some(num(value)?),
+            // A Tcl LIST: one value means a square channel.
+            "-min_channel_size" => {
+                saw_min_channel_size = true;
+                min_channel_size =
+                    Some(value.split_whitespace().map(num).collect::<Result<Vec<_>, _>>()?)
+            }
             other => {
                 return Err(MplError::new(
                     0,
@@ -278,17 +300,34 @@ pub fn parse_placer_args(args: &[&str]) -> Result<Parsed, MplError> {
     }
 
     // 🔑 Upstream applies the deprecated halo keys DURING argument parsing, calling
-    // `set_base_halo w h w h`. Giving only one sets the other to it.
+    // `set_min_channel 2w 2h` — a halo is half a channel. Giving only one sets the other to it.
     if halo_width.is_some() || halo_height.is_some() {
         warnings.push(MplWarning {
             code: 74,
-            message: "-halo_width/-halo_height are deprecated, use the set_macro_base_halo \
-                      command instead."
+            message: "-halo_width/-halo_height are deprecated, use -min_channel_size instead."
                 .to_string(),
         });
-        let w = halo_width.or(halo_height).unwrap_or(0);
-        let h = halo_height.or(halo_width).unwrap_or(0);
-        o.base_halo_from_flags = Some(Halo { left: w, bottom: h, right: w, top: h });
+        let w = halo_width.or(halo_height).unwrap_or(0.0);
+        let h = halo_height.or(halo_width).unwrap_or(0.0);
+        o.min_channel_from_flags = Some((2.0 * w, 2.0 * h));
+    }
+
+    // ⚠️ Applied AFTER the deprecated keys, so when both are given `-min_channel_size` wins.
+    if let Some(v) = min_channel_size {
+        o.min_channel_from_flags = Some(match v.as_slice() {
+            [w] => (*w, *w),
+            [w, h] => (*w, *h),
+            _ => return Err(MplError::new(80, "-min_channel_size must have 1 or 2 values.")),
+        });
+    }
+
+    // ⛔ Keyed on `-min_channel_size` itself: the deprecated `-halo_width` sets a channel too, and
+    // still does not satisfy this check.
+    if o.pin_aware_channels && !saw_min_channel_size {
+        return Err(MplError::new(
+            79,
+            "-pin_aware_channels requires -min_channel_size to be set.",
+        ));
     }
 
     Ok(Parsed { options: o, warnings })

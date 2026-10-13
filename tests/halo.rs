@@ -1,56 +1,48 @@
 // SPDX-License-Identifier: Apache-2.0
-//! Halo resolution. Every case pins a rule read from `ClusteringEngine::buildMacroHalo`.
+//! Halo resolution. Every case pins a rule read from `ClusteringEngine::buildMacroHalo` and
+//! `buildPinAwareHalo`, at the pin that took the minimum-channel rework (`VYGMPL halo` trace).
 //!
 //! ⚠️ Deliberately asymmetric everywhere. A halo bug that swaps two sides is invisible on a
 //! symmetric halo, and symmetric halos are the common case -- so a test using one proves nothing.
 use vyges_mpl::halo::{
-    build_macro_halo, closest_boundary, full_halo, pin_aware_halo, Boundary, LayerDir, Orient,
-    PinBox,
+    build_macro_halo, closest_boundary, floored_to_channel, floored_to_halo, pin_aware_halo,
+    Boundary, LayerDir, Orient, PinBox,
 };
-use vyges_mpl::options::Halo;
+use vyges_mpl::options::{Channel, Halo};
 
 fn h(left: i64, bottom: i64, right: i64, top: i64) -> Halo {
     Halo { left, bottom, right, top }
+}
+
+fn ch(width: i64, height: i64) -> Channel {
+    Channel { width, height }
 }
 
 fn pin(x_min: i64, y_min: i64, x_max: i64, y_max: i64, layer_dir: LayerDir) -> PinBox {
     PinBox { x_min, y_min, x_max, y_max, layer_dir }
 }
 
-// ------------------------------------------------------------------ full_halo
+// ------------------------------------------------------------------ the two floors
 
 #[test]
-fn an_explicit_halo_wins_outright() {
-    // set_macro_halo beats both the instance halo and the base halo.
-    assert_eq!(
-        full_halo(Some(h(1, 2, 3, 4)), Some((h(9, 9, 9, 9), false)), h(8, 8, 8, 8)),
-        h(1, 2, 3, 4)
-    );
+fn floored_to_halo_raises_each_side_independently() {
+    // max() per side, NOT "whichever halo is bigger" -- the result takes two sides from each.
+    assert_eq!(floored_to_halo(h(10, 1, 10, 1), h(2, 20, 2, 20)), h(10, 20, 10, 20));
 }
 
 #[test]
-fn a_hard_instance_halo_is_raised_to_the_base_componentwise() {
-    // max() per side, NOT "whichever rect is bigger" -- the result can take two sides from each.
-    assert_eq!(
-        full_halo(None, Some((h(10, 1, 10, 1), false)), h(2, 20, 2, 20)),
-        h(10, 20, 10, 20)
-    );
+fn floored_to_channel_takes_half_the_width_sideways_and_half_the_height_vertically() {
+    // 🔑 A channel is shared by the macros either side of it, so each takes HALF. Width feeds
+    // left/right, height bottom/top -- swapping them is invisible on a square channel.
+    assert_eq!(floored_to_channel(h(1, 1, 1, 1), ch(48, 24)), h(24, 12, 24, 12));
+    // A side already wider than half the channel keeps its own value.
+    assert_eq!(floored_to_channel(h(30, 1, 1, 1), ch(48, 24)), h(30, 12, 24, 12));
 }
 
 #[test]
-fn a_soft_instance_halo_is_taken_as_is_and_is_not_floored() {
-    // 🔑 The asymmetry that matters: a soft halo is NOT raised to the base halo. Other tools
-    // already respect it, so upstream declines to enlarge it. Flooring it here would silently
-    // grow every macro that carries a soft halo.
-    assert_eq!(
-        full_halo(None, Some((h(1, 1, 1, 1), true)), h(50, 50, 50, 50)),
-        h(1, 1, 1, 1)
-    );
-}
-
-#[test]
-fn no_instance_halo_means_the_base_halo() {
-    assert_eq!(full_halo(None, None, h(1, 2, 3, 4)), h(1, 2, 3, 4));
+fn an_odd_channel_truncates_as_integer_division_does() {
+    // Upstream's `width / 2` on `int`: 7 / 2 == 3, never 4.
+    assert_eq!(floored_to_channel(h(0, 0, 0, 0), ch(7, 5)), h(3, 2, 3, 2));
 }
 
 // ------------------------------------------------------------------ closest_boundary
@@ -124,41 +116,39 @@ fn a_centred_pin_prefers_bottom_over_top() {
 
 #[test]
 fn a_side_with_no_pin_keeps_the_minimum_spacing() {
-    // 🔑 The whole point of pin-aware mode. One pin on the left: left widens, the other three
-    // sides stay at the minimum spacing.
+    // 🔑 The whole point of pin-aware mode. One pin on the left: left takes half the channel, the
+    // other three sides stay at the minimum spacing.
     let pins = [pin(1, 40, 5, 60, LayerDir::Horizontal)];
-    assert_eq!(
-        pin_aware_halo(&pins, 100, 100, h(70, 80, 90, 100), 7),
-        h(70, 7, 7, 7)
-    );
+    assert_eq!(pin_aware_halo(&pins, 100, 100, ch(140, 160), 7), h(70, 7, 7, 7));
 }
 
 #[test]
 fn each_pin_widens_only_its_own_side() {
+    // The reference on `halos3` (`-min_channel_size {24 12} -pin_aware_channels`, 2000 DBU/um,
+    // minimum spacing 140): pins I1 on the left edge and O1 on the right give
+    // `out 24000 140 24000 140` -- left/right at half of 48000, bottom/top at the spacing.
     let pins = [
-        pin(1, 40, 5, 60, LayerDir::Horizontal),   // L
-        pin(95, 40, 99, 60, LayerDir::Horizontal), // R
+        pin(0, 150000, 280, 150140, LayerDir::Horizontal),
+        pin(199720, 150000, 200000, 150140, LayerDir::Horizontal),
     ];
     assert_eq!(
-        pin_aware_halo(&pins, 100, 100, h(70, 80, 90, 100), 7),
-        h(70, 7, 90, 7),
-        "left and right widen; bottom and top do not"
+        pin_aware_halo(&pins, 200000, 300000, ch(48000, 24000), 140),
+        h(24000, 140, 24000, 140)
     );
 }
 
 #[test]
 fn no_pins_at_all_leaves_the_minimum_spacing_on_every_side() {
     // A macro with only power pins reaches here with an empty list.
-    assert_eq!(pin_aware_halo(&[], 100, 100, h(70, 80, 90, 100), 7), h(7, 7, 7, 7));
+    assert_eq!(pin_aware_halo(&[], 100, 100, ch(140, 160), 7), h(7, 7, 7, 7));
 }
 
 #[test]
-fn the_widened_side_takes_that_sides_full_halo_value_not_another() {
-    // If the sides were mixed up, a symmetric full halo would hide it. This one is all different.
+fn a_widened_side_is_never_narrower_than_the_minimum_spacing() {
+    // The widened value is the channel floor OF the spacing: a channel smaller than twice the
+    // spacing leaves the side at the spacing, not at half the channel.
     let pins = [pin(40, 1, 60, 5, LayerDir::Vertical)]; // closest to B
-    let got = pin_aware_halo(&pins, 100, 100, h(11, 22, 33, 44), 1);
-    assert_eq!(got.bottom, 22, "bottom takes the FULL halo's bottom");
-    assert_eq!((got.left, got.right, got.top), (1, 1, 1));
+    assert_eq!(pin_aware_halo(&pins, 100, 100, ch(4, 4), 9), h(9, 9, 9, 9));
 }
 
 // ------------------------------------------------------------------ reorientation
@@ -168,9 +158,8 @@ fn a_fixed_macro_has_its_halo_reoriented() {
     // Upstream does this ONLY for fixed macros: unfixed ones are adjusted later by the
     // orientation-improve pass, which fixed macros skip.
     let pins = [pin(40, 1, 60, 5, LayerDir::Vertical)]; // bottom
-    let flipped = build_macro_halo(
-        None, None, h(11, 22, 33, 44), false, &pins, 100, 100, 1, true, Orient::Mx,
-    );
+    let flipped =
+        build_macro_halo(None, ch(0, 44), true, &pins, 100, 100, 1, true, Orient::Mx);
     assert_eq!(flipped.top, 22, "MX swaps bottom and top");
     assert_eq!(flipped.bottom, 1);
 }
@@ -178,53 +167,73 @@ fn a_fixed_macro_has_its_halo_reoriented() {
 #[test]
 fn r180_swaps_both_axes_and_my_swaps_only_left_right() {
     let pins = [pin(1, 40, 5, 60, LayerDir::Horizontal)]; // left
-    let my = build_macro_halo(
-        None, None, h(11, 22, 33, 44), false, &pins, 100, 100, 1, true, Orient::My,
-    );
-    assert_eq!(my.right, 11, "MY swaps left and right");
+    let my = build_macro_halo(None, ch(22, 0), true, &pins, 100, 100, 1, true, Orient::My);
+    assert_eq!((my.left, my.right), (1, 11), "MY swaps left and right");
 
     let pins = [pin(40, 1, 60, 5, LayerDir::Vertical)]; // bottom
-    let r180 = build_macro_halo(
-        None, None, h(11, 22, 33, 44), false, &pins, 100, 100, 1, true, Orient::R180,
-    );
-    assert_eq!(r180.top, 22, "R180 swaps both axes, so bottom lands on top");
+    let r180 = build_macro_halo(None, ch(0, 44), true, &pins, 100, 100, 1, true, Orient::R180);
+    assert_eq!((r180.bottom, r180.top), (1, 22), "R180 swaps both axes, so bottom lands on top");
 }
 
 #[test]
 fn an_unfixed_macro_is_not_reoriented() {
     // Same inputs as the MX case above but unfixed: no swap.
     let pins = [pin(40, 1, 60, 5, LayerDir::Vertical)];
+    let got = build_macro_halo(None, ch(0, 44), true, &pins, 100, 100, 1, false, Orient::Mx);
+    assert_eq!((got.bottom, got.top), (22, 1), "unfixed keeps the halo where the pins put it");
+}
+
+#[test]
+fn a_def_halo_on_a_fixed_macro_is_reoriented_too() {
+    // ⚠️ Reorientation is on EVERY path now, the DEF-halo one included.
     let got = build_macro_halo(
-        None, None, h(11, 22, 33, 44), false, &pins, 100, 100, 1, false, Orient::Mx,
+        Some(h(1, 2, 3, 4)), ch(0, 0), false, &[], 100, 100, 0, true, Orient::R180,
     );
-    assert_eq!(got.bottom, 22, "unfixed keeps the halo where the pins put it");
-    assert_eq!(got.top, 1);
+    assert_eq!(got, h(3, 4, 1, 2));
 }
 
 // ------------------------------------------------------------------ the whole rule
 
 #[test]
-fn use_full_halo_skips_the_pin_analysis_entirely() {
+fn by_default_every_side_gets_the_spacing_floored_to_half_the_channel() {
+    // The reference on `boundary_push1` (no channel, spacing 140): `out 140 140 140 140` for every
+    // macro, pins ignored. Before the rework the default was pin-aware.
     let pins = [pin(1, 40, 5, 60, LayerDir::Horizontal)];
     assert_eq!(
-        build_macro_halo(
-            None, None, h(11, 22, 33, 44), true, &pins, 100, 100, 1, false, Orient::R0
-        ),
-        h(11, 22, 33, 44),
-        "every side gets the full halo, pins ignored"
+        build_macro_halo(None, ch(0, 0), false, &pins, 100, 100, 140, false, Orient::R0),
+        h(140, 140, 140, 140)
+    );
+    assert_eq!(
+        build_macro_halo(None, ch(400, 600), false, &pins, 100, 100, 140, false, Orient::R0),
+        h(200, 300, 200, 300)
     );
 }
 
 #[test]
-fn an_explicit_halo_bypasses_use_full_halo_and_reorientation() {
-    // ⚠️ Upstream returns the explicit halo before either is consulted. A fixed, MX-oriented
-    // macro with an explicit halo keeps it exactly as written.
-    let pins = [pin(1, 40, 5, 60, LayerDir::Horizontal)];
+fn a_def_halo_floors_the_default_per_side_and_its_soft_flag_is_not_read() {
+    // The reference on `halos1` (hard DEF halo 5000 10000 15000 20000): taken as is above the
+    // spacing. On `halos2` (SOFT 16000 8000 4000 2000) the same: buildMacroHalo never asks.
     assert_eq!(
         build_macro_halo(
-            Some(h(1, 2, 3, 4)), Some((h(9, 9, 9, 9), false)), h(8, 8, 8, 8),
-            false, &pins, 100, 100, 5, true, Orient::Mx,
+            Some(h(5000, 10000, 15000, 20000)), ch(0, 0), false, &[], 100, 100, 140, false,
+            Orient::R0,
         ),
-        h(1, 2, 3, 4)
+        h(5000, 10000, 15000, 20000)
+    );
+    // A side below the floor is raised to it.
+    assert_eq!(
+        build_macro_halo(Some(h(1, 500, 1, 1)), ch(0, 0), false, &[], 100, 100, 140, false, Orient::R0),
+        h(140, 500, 140, 140)
+    );
+}
+
+#[test]
+fn a_def_halo_turns_pin_awareness_off_for_that_macro() {
+    // `if (inst->getHalo()) ... else if (pin_aware_channels_)` -- the DEF halo wins, so a pin on
+    // the left does NOT leave the other sides at the spacing.
+    let pins = [pin(1, 40, 5, 60, LayerDir::Horizontal)];
+    assert_eq!(
+        build_macro_halo(Some(h(0, 0, 0, 0)), ch(40, 40), true, &pins, 100, 100, 7, false, Orient::R0),
+        h(20, 20, 20, 20)
     );
 }
