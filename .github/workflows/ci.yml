@@ -42,6 +42,10 @@ jobs:
         with:
           repository: vyges-tools/loom
           path: vyges-tools-loom
+      - uses: actions/checkout@v7
+        with:
+          repository: vyges-tools/layout
+          path: vyges-tools-layout
 
       - name: Toolchain
         # Boost (headers) + zlib only; fmt/spdlog/abseil are built from source by libodb's build.
