@@ -42,4 +42,3 @@
 # the default is that an upstream test is applicable until shown otherwise, not the reverse.
 
 helpers                             not-a-case       Not a test case. A shared Tcl library the other cases `source`; listed in BUILD as a data dependency, absent from the case list in both BUILD and CMakeLists.
-place_macro_right_angle_rotation    needs-feature    Exercises the `place_macro` command (manual placement at an explicit location and orientation), not `rtl_macro_placer`. The scoping row measured `place_macro` at exactly this one case, which is why splitting the deterministic commands off was rejected for mpl.

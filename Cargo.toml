@@ -29,6 +29,9 @@ vyges-opendb-lib = { path = "../vyges-tools-opendb-lib" }
 [patch."https://github.com/vyges-tools/loom"]
 vyges-loom = { path = "../vyges-tools-loom" }
 
+[patch."https://github.com/vyges-tools/layout"]
+vyges-layout = { path = "../vyges-tools-layout" }
+
 [[bin]]
 name = "vyges-mpl"
 path = "src/main.rs"

@@ -31,6 +31,13 @@ shipped = {f[:-4] for f in os.listdir(up_dir) if f.endswith(".tcl")}
 if not shipped:
     sys.exit(f"no .tcl cases in {up_dir} — wrong directory?")
 scored = {f[:-4] for f in os.listdir(odb_dir) if f.endswith(".odb")}
+# The `place_macro` cases are scored by `compare-place-macro.py`, not through the clustering corpus.
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+import importlib.util as _iu
+_spec = _iu.spec_from_file_location("compare_place_macro", os.path.join(os.path.dirname(os.path.abspath(__file__)), "compare-place-macro.py"))
+_pm = _iu.module_from_spec(_spec)
+_spec.loader.exec_module(_pm)
+scored |= set(_pm.place_macro_cases(up_dir))
 
 CODES = {
     "needs-feature",
