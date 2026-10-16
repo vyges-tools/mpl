@@ -6,6 +6,25 @@
 use std::process::ExitCode;
 use vyges_mpl::pipeline::ORDER;
 
+/// A diagnostic as a structured event (`MPL-ERROR`, `vyges-events/1.0`) instead of a bare stderr
+/// line; text after a blank line (the usage) stays plain help.
+fn diag_line(msg: String) {
+    let (head, help) = match msg.split_once("\n\n") {
+        Some((h, rest)) => (h.to_string(), Some(rest.to_string())),
+        None => (msg, None),
+    };
+    let text = head.strip_prefix("vyges-mpl place-macro: ").or_else(|| head.strip_prefix("vyges-mpl: ")).unwrap_or(&head).to_string();
+    vyges_events::emit(&vyges_events::Event::new("vyges-mpl", vyges_events::Severity::Error, text).with_code("MPL-ERROR"));
+    if let Some(h) = help {
+        eprintln!("{h}");
+    }
+}
+
+macro_rules! diag {
+    ($($t:tt)*) => { diag_line(format!($($t)*)) };
+}
+
+
 const USAGE: &str = "\
 vyges physical mpl — hierarchical macro placement
 
@@ -216,14 +235,14 @@ fn place_macro_main(args: &[String]) -> ExitCode {
     // ⛔ **No macros named is VACUOUS, not success.** A pass word must never come from a run that
     // did nothing -- the convention every engine in this suite reserves status 3 for.
     if specs.is_empty() {
-        eprintln!("vyges-mpl place-macro: no --macro given; nothing was placed.");
+        diag!("vyges-mpl place-macro: no --macro given; nothing was placed.");
         return ExitCode::from(3);
     }
 
     let mut db = match vyges_opendb::Db::open(path) {
         Ok(d) => d,
         Err(e) => {
-            eprintln!("vyges-mpl place-macro: cannot read {path}: {e}");
+            diag!("vyges-mpl place-macro: cannot read {path}: {e}");
             return ExitCode::from(2);
         }
     };
@@ -232,7 +251,7 @@ fn place_macro_main(args: &[String]) -> ExitCode {
     // where microns are expected turned an 8 um halo into 8 DBU once; the same trap is here.
     let dbu = db.dbu_per_micron();
     if dbu <= 0 {
-        eprintln!("vyges-mpl place-macro: {path} has no DBU scale");
+        diag!("vyges-mpl place-macro: {path} has no DBU scale");
         return ExitCode::from(2);
     }
     let known: std::collections::HashSet<String> = db.inst_names().into_iter().collect();
@@ -240,7 +259,7 @@ fn place_macro_main(args: &[String]) -> ExitCode {
     let mut placed = Vec::new();
     for (name, x, y, orient) in &specs {
         if !known.contains(name) {
-            eprintln!("vyges-mpl place-macro: no instance named {name}");
+            diag!("vyges-mpl place-macro: no instance named {name}");
             return ExitCode::from(1);
         }
         let (xd, yd) = if in_dbu {
@@ -250,11 +269,11 @@ fn place_macro_main(args: &[String]) -> ExitCode {
         };
         // Orientation first -- `placeMacro`'s ordering.
         if let Err(e) = db.set_inst_orient(name, orient) {
-            eprintln!("vyges-mpl place-macro: {name}: cannot set orientation {orient}: {e}");
+            diag!("vyges-mpl place-macro: {name}: cannot set orientation {orient}: {e}");
             return ExitCode::from(1);
         }
         if let Err(e) = db.set_inst_location(name, xd, yd) {
-            eprintln!("vyges-mpl place-macro: {name}: cannot set location: {e}");
+            diag!("vyges-mpl place-macro: {name}: cannot set location: {e}");
             eprintln!("  ⚠️ a macro that is already LOCKED cannot be relocated; this step expects\n\
                             macros to arrive UNPLACED, as a harden flow hands them.");
             return ExitCode::from(1);
@@ -262,7 +281,7 @@ fn place_macro_main(args: &[String]) -> ExitCode {
         // 🔑 **FIXED, not PLACED.** LibreLane's step leaves macros fixed so later placement cannot
         // move them; our own taped-out `user_project_wrapper.def` records every macro as `+ FIXED`.
         if let Err(e) = db.inst_set_placement_status(name, "FIRM") {
-            eprintln!("vyges-mpl place-macro: {name}: cannot set placement status: {e}");
+            diag!("vyges-mpl place-macro: {name}: cannot set placement status: {e}");
             return ExitCode::from(1);
         }
         // 🔑 **Upstream's own line, verbatim** — `MacroPlacer::placeMacro` closes with MPL-35
@@ -293,7 +312,7 @@ fn place_macro_main(args: &[String]) -> ExitCode {
 
     let dest = out.unwrap_or(path);
     if let Err(e) = db.write(dest) {
-        eprintln!("vyges-mpl place-macro: cannot write {dest}: {e}");
+        diag!("vyges-mpl place-macro: cannot write {dest}: {e}");
         return ExitCode::from(2);
     }
 
@@ -309,7 +328,7 @@ fn place_macro_main(args: &[String]) -> ExitCode {
 }
 
 fn usage_err(msg: &str) -> ExitCode {
-    eprintln!("vyges-mpl place-macro: {msg}");
+    diag!("vyges-mpl place-macro: {msg}");
     ExitCode::from(2)
 }
 
@@ -393,7 +412,7 @@ fn main() -> ExitCode {
             // ⚠️ **`--describe` still advertises `args_template: ["run", "{design}"]`.** That is a
             // promise this binary does not yet keep, and it is stated here rather than left for a
             // caller to discover at runtime.
-            eprintln!(
+            diag!(
                 "vyges-mpl: `run` is not wired yet.\n\
                  The placement pipeline IS implemented and correlated against the reference -- it is\n\
                  driven by the `cluster-dump` binary, which every correlation gate uses. What is\n\
