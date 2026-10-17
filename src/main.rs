@@ -57,6 +57,9 @@ LIMITS:
   This engine does not implement TritonPart partitioning. A FLAT cluster -- one with no
   module children -- whose leaf standard cells exceed the level threshold is REFUSED rather
   than approximated. Upstream's own mpl suite never reaches that path; a large flat block does.
+
+THREADS:
+  Runs on one thread; there is no thread option. Several runs can go side by side, one core each.
 ";
 
 /// The machine-readable contract. ⚠️ **An assertion must name a field the engine actually
@@ -139,6 +142,8 @@ fn describe() -> String {
         "produces": ["odb"],
         "artifacts": [{"role": "odb", "field": "out_odb"}],
         "reports": ["status", "macros_placed", "blockages_created", "refusal"],
+        // The suite's shared block (`vyges_loom::threads`), so an agent reads one rule everywhere.
+        "threads": serde_json::from_str::<serde_json::Value>(vyges_loom::threads::DESCRIBE_SINGLE_THREADED).expect("loom's block is JSON"),
         "assertion": {"id": "macros-placed", "field": "status", "pass_when": {"eq": "applied"}},
         "stages": ORDER.iter().map(|s| s.upstream_name()).collect::<Vec<_>>(),
         "limits": {
