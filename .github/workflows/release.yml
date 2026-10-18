@@ -66,6 +66,11 @@ jobs:
         with:
           repository: vyges-tools/loom
           path: vyges-tools-loom
+      # opendb depends on layout, and Cargo.toml patches it to this sibling (as ci.yml does).
+      - uses: actions/checkout@v7
+        with:
+          repository: vyges-tools/layout
+          path: vyges-tools-layout
 
       - name: Toolchain (Linux)
         # Boost (headers) + zlib only; fmt/spdlog/abseil are built from source by libodb's build.
