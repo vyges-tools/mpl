@@ -54,6 +54,7 @@ fn a_fixed_cell_does_not_refuse_a_design_with_nothing_to_place() {
         blocked_regions_for_pins: &[],
         minimum_spacing: 0,
         manufacturing_grid: 0,
+        dbu_per_micron: 1000,
     };
     let c = run_clustering(&input, &ClusterOptions::default());
     assert_eq!(c.status, Status::Vacuous, "refusal: {:?}", c.refusal);

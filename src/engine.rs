@@ -58,6 +58,9 @@ pub struct Clustering {
     /// rebuilds the association by walking — as `rebuildConnections` does — has to re-apply this,
     /// or every net reaching a pad loses its second endpoint and is dropped.
     pub pad_assoc: Vec<(usize, crate::cluster::ClusterId)>,
+    /// Every flat-cluster partitioner call, in order — kept on a refusal too, so the call that
+    /// could not be answered can still be compared.
+    pub partition_calls: Vec<crate::flatpart::PartitionCall>,
 }
 
 /// Everything `runCoarseShaping` reads that the clustering stage has already worked out.
@@ -141,6 +144,8 @@ pub struct DesignInputs<'a> {
     pub minimum_spacing: i64,
     /// Reported verbatim; the engine does not use it.
     pub manufacturing_grid: i32,
+    /// Weights a flat-cluster partitioner sees are areas in square microns.
+    pub dbu_per_micron: i32,
 }
 
 /// Everything the stage takes from the command line.
@@ -186,6 +191,16 @@ impl Default for ClusterOptions {
 /// **IO clusters are created BEFORE the macro clusters**, so they take the lower ids —
 /// `ios_1` precedes `MACRO_4` in a real dump.
 pub fn run_clustering(input: &DesignInputs, opts: &ClusterOptions) -> Clustering {
+    run_clustering_with(input, opts, None)
+}
+
+/// [`run_clustering`] with a partitioner for large flat clusters. ⛔ Without one, a cluster that
+/// needs it is refused by id.
+pub fn run_clustering_with(
+    input: &DesignInputs,
+    opts: &ClusterOptions,
+    partitioner: Option<&mut dyn crate::flatpart::FlatPartitioner>,
+) -> Clustering {
     let design = input.design;
 
     // ---- setFloorplanShape
@@ -219,6 +234,7 @@ pub fn run_clustering(input: &DesignInputs, opts: &ClusterOptions) -> Clustering
         return Clustering {
             pad_assoc: Vec::new(),
             pin_cluster: Vec::new(),
+            partition_calls: Vec::new(),
             root: Cluster::new(0, "root"),
             status: Status::Vacuous,
             refusal: None,
@@ -347,6 +363,8 @@ pub fn run_clustering(input: &DesignInputs, opts: &ClusterOptions) -> Clustering
     for c in io.bundles.iter().chain(io.pin_clusters.iter()) {
         root.children.push(c.clone());
     }
+    let pad_clusters: Vec<(usize, ClusterId)> = pads.iter().copied().zip(io_first_id..).collect();
+    builder.register_clusters(root.children.iter().map(|c| c.id), &pad_clusters);
 
     // Block ports reach the netlist through the IO cluster they were assigned to.
     //
@@ -371,6 +389,7 @@ pub fn run_clustering(input: &DesignInputs, opts: &ClusterOptions) -> Clustering
         return Clustering {
             pad_assoc: Vec::new(),
             pin_cluster: bterm_to_cluster,
+            partition_calls: Vec::new(),
             root,
             status: Status::Applied,
             refusal: None,
@@ -394,6 +413,16 @@ pub fn run_clustering(input: &DesignInputs, opts: &ClusterOptions) -> Clustering
     }
 
     // ---- the mixed path: descend the levels, then split the mixed leaves
+    // ⛔ Without a partitioner the first large flat cluster is refused — its call still recorded.
+    let mut none = crate::flatpart::NoPartitioner;
+    let mut builder = builder.with_flat_split(crate::tree::FlatSplit {
+        nets: input.nets,
+        bterm_to_cluster: bterm_to_cluster.clone(),
+        large_net_threshold: opts.large_net_threshold,
+        dbu_per_micron: input.dbu_per_micron,
+        partitioner: partitioner.unwrap_or(&mut none),
+        calls: Vec::new(),
+    });
     let out = builder.multilevel_autocluster(
         &mut root,
         true,
@@ -404,8 +433,18 @@ pub fn run_clustering(input: &DesignInputs, opts: &ClusterOptions) -> Clustering
     );
 
     // ⛔ A flat cluster needing TritonPart. Refused, never approximated.
-    if !out.needs_partitioning.is_empty() {
-        return refuse(Refusal::NeedsPartitioner(out.needs_partitioning));
+    let partition_calls = builder.take_partition_calls();
+    let refused = match out.refused {
+        Some(crate::tree::FlatRefusal::Unavailable(id, _)) => Some(Refusal::NeedsPartitioner(vec![id])),
+        Some(crate::tree::FlatRefusal::Mpl(e)) => Some(Refusal::Mpl(e)),
+        Some(crate::tree::FlatRefusal::Error(e)) => Some(Refusal::Error(e)),
+        None if !out.needs_partitioning.is_empty() => Some(Refusal::NeedsPartitioner(out.needs_partitioning)),
+        None => None,
+    };
+    if let Some(r) = refused {
+        let mut c = refuse(r);
+        c.partition_calls = partition_calls;
+        return c;
     }
 
     // `fetchMixedLeaves` retypes as it walks, so it must run before anything reads the types.
@@ -435,6 +474,7 @@ pub fn run_clustering(input: &DesignInputs, opts: &ClusterOptions) -> Clustering
     Clustering {
         pin_cluster,
         pad_assoc,
+        partition_calls,
         root,
         status: Status::Applied,
         refusal: None,
@@ -578,6 +618,7 @@ fn refuse(r: Refusal) -> Clustering {
     Clustering {
         pad_assoc: Vec::new(),
         pin_cluster: Vec::new(),
+        partition_calls: Vec::new(),
         root: Cluster::new(0, "root"),
         status: Status::Refused,
         refusal: Some(r),

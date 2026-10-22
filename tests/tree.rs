@@ -574,6 +574,145 @@ fn a_flat_cluster_needing_the_partitioner_is_reported_up_the_descent() {
     assert!(!out.needs_partitioning.is_empty(), "the refusal reached the caller");
 }
 
+// ------------------------------------------------------------------ breakLargeFlatCluster
+
+use vyges_mpl::flatpart::{FlatPartitioner, PartitionCall};
+use vyges_mpl::tree::{FlatRefusal, FlatSplit};
+
+/// A partitioner that answers by script: `unbalanced` all-one-block answers first, then the
+/// first half of the instance vertices in block 0 and the rest in block 1.
+struct Halves {
+    unbalanced: usize,
+}
+
+impl FlatPartitioner for Halves {
+    fn partition_k_way_simple(&mut self, c: &PartitionCall) -> Result<Vec<usize>, String> {
+        let n = c.vertex_weights.len();
+        // Instance vertices are the ones with weight; cluster vertices weigh 0.
+        let first = c.vertex_weights.iter().position(|&w| w > 0.0).unwrap_or(n);
+        if self.unbalanced > 0 {
+            self.unbalanced -= 1;
+            return Ok(vec![0; n]);
+        }
+        let half = first + (n - first) / 2;
+        Ok((0..n).map(|v| usize::from(v >= half)).collect())
+    }
+}
+
+fn flat_fixture() -> Design {
+    let insts: Vec<_> = (0..30).map(|i| inst(&format!("i{i}"), false)).collect();
+    design(insts, vec![m("top", (0..30).collect(), vec![])])
+}
+
+fn flat_split_with<'a>(d: &'a Design, p: &'a mut dyn FlatPartitioner) -> TreeBuilder<'a> {
+    let mut b = TreeBuilder::new(d, vec![metrics(30, 0)]).with_next_id(1);
+    b.register_clusters([0], &[]);
+    b.with_flat_split(FlatSplit {
+        nets: &[],
+        bterm_to_cluster: vec![],
+        large_net_threshold: 50,
+        dbu_per_micron: 1,
+        partitioner: p,
+        calls: vec![],
+    })
+}
+
+#[test]
+fn a_large_flat_cluster_splits_by_binary_name_depth_first() {
+    // 🔑 Upstream: the cluster keeps its id as `<name>_0`, the other half takes the next id as
+    // `<name>_1`, and each half still large is split AT ONCE, `_0` first — so ids follow that
+    // depth-first order while the new halves are appended to the parent in creation order.
+    let d = flat_fixture();
+    let mut p = Halves { unbalanced: 0 };
+    let mut b = flat_split_with(&d, &mut p);
+    let mut root = holding(0, "root", 0, 30, 0);
+    let out = b.multilevel_autocluster(&mut root, true, 0, t(5, 1, 5, 1), 1, 10.0);
+    assert!(out.refused.is_none() && out.needs_partitioning.is_empty());
+    let got: Vec<(i32, String, usize)> =
+        root.children.iter().map(|c| (c.id, c.name.clone(), c.leaf_std_cells.len())).collect();
+    let g = "(root)_glue_logic";
+    let want = vec![
+        (1, format!("{g}_0_0_0"), 3),
+        (2, format!("{g}_1_0_0"), 3),
+        (3, format!("{g}_0_1_0"), 4),
+        (4, format!("{g}_0_0_1"), 4),
+        (5, format!("{g}_0_1_1"), 4),
+        (6, format!("{g}_1_1_0"), 4),
+        (7, format!("{g}_1_0_1"), 4),
+        (8, format!("{g}_1_1_1"), 4),
+    ];
+    assert_eq!(got, want);
+    assert_eq!(b.take_partition_calls().len(), 7);
+}
+
+#[test]
+fn every_live_cluster_is_a_zero_weight_vertex() {
+    // The root (registered) and the flat cluster itself: 2 cluster vertices before 30 instances.
+    let d = flat_fixture();
+    let mut p = Halves { unbalanced: 0 };
+    let mut b = flat_split_with(&d, &mut p);
+    let mut root = holding(0, "root", 0, 30, 0);
+    b.multilevel_autocluster(&mut root, true, 0, t(5, 1, 5, 1), 1, 10.0);
+    let first = &b.take_partition_calls()[0];
+    assert_eq!(first.vertex_weights.len(), 32);
+    assert_eq!(&first.vertex_weights[..2], &[0.0, 0.0]);
+    assert_eq!((first.num_parts, first.seed), (2, 0));
+}
+
+#[test]
+fn a_cluster_dissolved_by_the_level_collapse_is_no_vertex() {
+    // top -> s1 (no instances of its own) -> s2 (30 cells, flat). At level 1 s1 is broken into
+    // s2, which absorbs its leaves; the collapse then DISSOLVES s1 and splits s2. Upstream erases
+    // s1 from `id_to_cluster` first, so the call sees the root and s2 only.
+    let insts: Vec<_> = (0..30).map(|i| inst(&format!("i{i}"), false)).collect();
+    let d = design(
+        insts,
+        vec![m("top", vec![], vec![1]), m("s1", vec![], vec![2]), m("s2", (0..30).collect(), vec![])],
+    );
+    let mut p = Halves { unbalanced: 0 };
+    let mut b = TreeBuilder::new(&d, vec![metrics(30, 0), metrics(30, 0), metrics(30, 0)]).with_next_id(1);
+    b.register_clusters([0], &[]);
+    let mut b = b.with_flat_split(FlatSplit {
+        nets: &[],
+        bterm_to_cluster: vec![],
+        large_net_threshold: 50,
+        dbu_per_micron: 1,
+        partitioner: &mut p,
+        calls: vec![],
+    });
+    let mut root = holding(0, "root", 0, 30, 0);
+    let out = b.multilevel_autocluster(&mut root, true, 0, t(5, 1, 5, 1), 1, 10.0);
+    assert_eq!(out.dissolved, vec![1]);
+    assert_eq!(b.take_partition_calls()[0].vertex_weights.len(), 2 + 30);
+}
+
+#[test]
+fn a_fully_unbalanced_answer_relaxes_the_balance_by_ten() {
+    let d = flat_fixture();
+    let mut p = Halves { unbalanced: 2 };
+    let mut b = flat_split_with(&d, &mut p);
+    let mut root = holding(0, "root", 0, 30, 0);
+    b.multilevel_autocluster(&mut root, true, 0, t(5, 1, 5, 1), 1, 10.0);
+    let balances: Vec<f32> = b.take_partition_calls().iter().take(4).map(|c| c.balance).collect();
+    // ⚠️ The relaxation is per CLUSTER: the next split starts again at 1.
+    assert_eq!(balances, vec![1.0, 11.0, 21.0, 1.0]);
+}
+
+#[test]
+fn a_balance_reaching_ninety_is_mpl_45() {
+    // ⛔ Upstream checks BEFORE the call: 1, 11, …, 81 are tried; 91 is the error.
+    let d = flat_fixture();
+    let mut p = Halves { unbalanced: usize::MAX };
+    let mut b = flat_split_with(&d, &mut p);
+    let mut root = holding(0, "root", 0, 30, 0);
+    let out = b.multilevel_autocluster(&mut root, true, 0, t(5, 1, 5, 1), 1, 10.0);
+    match out.refused {
+        Some(FlatRefusal::Mpl(e)) => assert_eq!(e.code, 45),
+        other => panic!("expected MPL-45, got {other:?}"),
+    }
+    assert_eq!(b.take_partition_calls().len(), 9);
+}
+
 #[test]
 fn merge_candidates_are_reported_per_parent() {
     let d = design(

@@ -18,7 +18,18 @@ use std::collections::HashMap;
 /// exit status and the message the binary prints (1 refused, 2 usage/read, 3 vacuous, 4 shaping
 /// refused).
 pub fn run(args: &[String], out: &mut dyn std::io::Write) -> Result<(), Exit> {
+    run_with(args, out, None)
+}
+
+/// [`run`] with a partitioner for large flat clusters; without one they are refused.
+pub fn run_with(
+    args: &[String],
+    out: &mut dyn std::io::Write,
+    partitioner: Option<&mut dyn crate::flatpart::FlatPartitioner>,
+) -> Result<(), Exit> {
     let mut path = None;
+    // One JSON line per flat-cluster partitioner call, written even when clustering refuses.
+    let mut partition_calls: Option<String> = None;
     let mut want_report = false;
     let mut want_shaping = false;
     let mut pin_aware_channels = false;
@@ -53,6 +64,10 @@ pub fn run(args: &[String], out: &mut dyn std::io::Write) -> Result<(), Exit> {
             "--nets" => {}
             "--cost" => {}
             "--pin-aware-channels" => pin_aware_channels = true,
+            "--partition-calls" => {
+                let Some(f) = it.next() else { return Err(usage("--partition-calls needs a FILE")) };
+                partition_calls = Some(f.clone());
+            }
             "--min-channel" => {
                 let Some(spec) = it.next() else { return Err(usage("--min-channel needs w,h in microns")) };
                 let v: Vec<f64> =
@@ -148,9 +163,18 @@ pub fn run(args: &[String], out: &mut dyn std::io::Write) -> Result<(), Exit> {
         blocked_regions_for_pins: &blocked_for_pins,
         minimum_spacing: crate::read::minimum_spacing(&db, &design),
         manufacturing_grid: db.manufacturing_grid().unwrap_or(None).unwrap_or(0),
+        dbu_per_micron: dbu,
     };
 
-    let r = crate::engine::run_clustering(&input, &opts);
+    let r = crate::engine::run_clustering_with(&input, &opts, partitioner);
+    if let Some(f) = &partition_calls {
+        let mut text = String::new();
+        for c in &r.partition_calls {
+            text.push_str(&c.to_json().to_string());
+            text.push('\n');
+        }
+        std::fs::write(f, text).map_err(|e| Exit::new(2, format!("cannot write {f}: {e}")))?;
+    }
     if let Some(refusal) = &r.refusal {
         // ⛔ **OUR refusal, not an upstream message — so it does not borrow an upstream code.**
         // Upstream never refuses here: it calls TritonPart and errors MPL-45 only when the

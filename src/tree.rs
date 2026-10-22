@@ -10,6 +10,8 @@
 
 use crate::cluster::{Cluster, ClusterId, ClusterType};
 use crate::design::{is_ignored_inst, Design, ModuleMetrics};
+use crate::flatpart::{FlatPartitioner, PartitionCall};
+use std::collections::BTreeSet;
 
 /// Builds the tree, handing out ids in creation order.
 ///
@@ -21,25 +23,90 @@ pub struct TreeBuilder<'a> {
     /// Metrics per module index, computed once.
     module_metrics: Vec<ModuleMetrics>,
     next_id: ClusterId,
+    /// Upstream `id_to_cluster`'s keys: every cluster alive now.
+    live: BTreeSet<ClusterId>,
+    /// Upstream `inst_to_cluster_id`, updated at the reference's own `updateInstancesAssociation`
+    /// sites. ⚠️ Read only by the flat-cluster split; later stages rebuild theirs by walking.
+    inst_to_cluster: Vec<Option<ClusterId>>,
+    /// `None`: a large flat cluster is reported, not split.
+    flat: Option<FlatSplit<'a>>,
+}
+
+/// What splitting a large flat cluster needs beyond the tree.
+pub struct FlatSplit<'a> {
+    pub nets: &'a [crate::netlist::DbNet],
+    pub bterm_to_cluster: Vec<Option<ClusterId>>,
+    pub large_net_threshold: usize,
+    pub dbu_per_micron: i32,
+    pub partitioner: &'a mut dyn FlatPartitioner,
+    /// Every partitioner call made, in order, answered or not.
+    pub calls: Vec<PartitionCall>,
+}
+
+/// Why a large flat cluster was not split.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum FlatRefusal {
+    /// The partitioner gave no answer.
+    Unavailable(ClusterId, String),
+    /// An upstream error, by its MPL code.
+    Mpl(crate::options::MplError),
+    /// Input upstream would have thrown on.
+    Error(String),
 }
 
 impl<'a> TreeBuilder<'a> {
     pub fn new(design: &'a Design, module_metrics: Vec<ModuleMetrics>) -> Self {
-        Self { design, module_metrics, next_id: 0 }
+        Self {
+            design,
+            module_metrics,
+            next_id: 0,
+            live: BTreeSet::new(),
+            inst_to_cluster: vec![None; design.instances.len()],
+            flat: None,
+        }
     }
 
+    /// Split large flat clusters with this context's partitioner instead of reporting them.
+    pub fn with_flat_split(mut self, flat: FlatSplit<'a>) -> Self {
+        self.flat = Some(flat);
+        self
+    }
+
+    /// The partitioner calls made so far.
+    pub fn take_partition_calls(&mut self) -> Vec<PartitionCall> {
+        self.flat.as_mut().map(|f| std::mem::take(&mut f.calls)).unwrap_or_default()
+    }
+
+    /// Clusters made outside the builder (the IO clusters) join the live set; a pad joins its
+    /// cluster as upstream's `createIOPadCluster` maps it.
+    pub fn register_clusters(&mut self, ids: impl IntoIterator<Item = ClusterId>, pads: &[(usize, ClusterId)]) {
+        self.live.extend(ids);
+        for &(pad, id) in pads {
+            self.inst_to_cluster[pad] = Some(id);
+        }
+    }
+
+    /// Every id taken is incorporated at once, so it is live from here.
     fn take_id(&mut self) -> ClusterId {
         let id = self.next_id;
         self.next_id += 1;
+        self.live.insert(id);
         id
+    }
+
+    /// Upstream `updateInstancesAssociation(Cluster*)`: this cluster alone, not its children.
+    pub fn update_instances_association(&mut self, cluster: &Cluster) {
+        associate_one(cluster, self.design, &mut self.inst_to_cluster);
     }
 
     /// The root: owns the top module and nothing else.
     ///
-    /// Upstream also maps every instance in the block to the root's id here. That mapping is
-    /// rebuilt by `updateInstancesAssociation` at every step, so it is not carried in the tree.
+    /// ⚠️ Upstream maps every instance to `id_` AFTER the root took its id — so to the NEXT id,
+    /// not the root's. Kept as the reference has it; only an instance no later cluster claims
+    /// would ever show it.
     pub fn create_root(&mut self) -> Cluster {
         let id = self.take_id();
+        self.inst_to_cluster.fill(Some(id + 1));
         let mut root = Cluster::new(id, "root");
         root.db_modules.push(self.design.top);
         root.metrics = to_cluster_metrics(self.module_metrics[self.design.top]);
@@ -63,6 +130,7 @@ impl<'a> TreeBuilder<'a> {
         let mut c = Cluster::new(id, self.design.modules[module].hierarchical_name.clone());
         c.db_modules.push(module);
         c.metrics = to_cluster_metrics(self.module_metrics[module]);
+        self.update_instances_association(&c);
         Some(c)
     }
 
@@ -81,6 +149,7 @@ impl<'a> TreeBuilder<'a> {
             return None;
         }
         c.id = self.take_id();
+        self.update_instances_association(&c);
         self.set_cluster_metrics(&mut c);
         Some(c)
     }
@@ -94,6 +163,7 @@ impl<'a> TreeBuilder<'a> {
         let mut c = Cluster::new(id, format!("({})_glue_logic", parent.name));
         c.leaf_std_cells = parent.leaf_std_cells.clone();
         c.leaf_macros = parent.leaf_macros.clone();
+        self.update_instances_association(&c);
         self.set_cluster_metrics(&mut c);
         c
     }
@@ -256,6 +326,7 @@ impl TreeBuilder<'_> {
                     // what later makes it a candidate for flat partitioning.
                     self.add_module_leaf_insts(parent, module);
                     parent.db_modules.clear();
+                    self.update_instances_association(parent);
                 }
                 return BreakOutcome::default();
             }
@@ -306,6 +377,9 @@ impl TreeBuilder<'_> {
             }
         }
 
+        // ⏸️ Upstream merges the small ones here; see `BreakOutcome::merge_candidates`.
+        self.update_instances_association(parent);
+
         // Collect the small ones, in child order.
         BreakOutcome {
             merge_candidates: parent
@@ -327,6 +401,8 @@ pub struct AutoclusterOutcome {
     pub merge_candidates: Vec<(ClusterId, Vec<ClusterId>)>,
     /// Cluster ids dissolved by the level collapse, so the id map can be pruned.
     pub dissolved: Vec<ClusterId>,
+    /// ⛔ The first flat split that could not be made. The walk stops there.
+    pub refused: Option<FlatRefusal>,
 }
 
 impl AutoclusterOutcome {
@@ -334,6 +410,9 @@ impl AutoclusterOutcome {
         self.needs_partitioning.extend(other.needs_partitioning);
         self.merge_candidates.extend(other.merge_candidates);
         self.dissolved.extend(other.dissolved);
+        if self.refused.is_none() {
+            self.refused = other.refused;
+        }
     }
 }
 
@@ -392,8 +471,28 @@ impl TreeBuilder<'_> {
             }
 
             let sub = crate::cluster::update_sub_tree(parent, t.max_std_cell, t.max_macro);
+            for id in &sub.dissolved {
+                self.live.remove(id);
+            }
             outcome.dissolved.extend(sub.dissolved);
-            outcome.needs_partitioning.extend(sub.needs_partitioning);
+            if self.flat.is_none() {
+                outcome.needs_partitioning.extend(sub.needs_partitioning);
+            } else {
+                // 🔑 The end of upstream's `updateSubTree`: each child of the collapse — the list
+                // as it stood, not the halves appended while splitting — split if large and flat.
+                for i in 0..parent.children.len() {
+                    if crate::cluster::is_large_flat_cluster(&parent.children[i], t.max_std_cell, t.max_macro) {
+                        if let Err(e) = self.break_large_flat_cluster(&mut parent.children, i, t.max_std_cell, t.max_macro) {
+                            outcome.refused = Some(e);
+                            return outcome;
+                        }
+                    }
+                }
+            }
+
+            for child in &parent.children {
+                self.update_instances_association(child);
+            }
 
             for child in &mut parent.children {
                 // ⚠️ Children are never the root, whatever the parent was.
@@ -406,6 +505,9 @@ impl TreeBuilder<'_> {
                     cluster_size_ratio,
                 );
                 outcome.absorb(child_outcome);
+                if outcome.refused.is_some() {
+                    return outcome;
+                }
             }
         } else {
             // 🔑 The same cluster, one level down. NOT its children.
@@ -418,9 +520,108 @@ impl TreeBuilder<'_> {
                 cluster_size_ratio,
             );
             outcome.absorb(same);
+            if outcome.refused.is_some() {
+                return outcome;
+            }
         }
 
+        self.update_instances_association(parent);
         outcome
+    }
+
+    /// Upstream `breakLargeFlatCluster`, on `siblings[index]`; the new half is appended to
+    /// `siblings`, as upstream adds it to the parent's parent.
+    ///
+    /// 🔑 **Binary naming**: the cluster keeps its id and becomes `<name>_0`; the other half takes
+    /// the next id as `<name>_1`. Each half still large and flat is split again at once — the
+    /// `_0` half first — so the ids follow that depth-first order.
+    ///
+    /// 🔑 **The balance is relaxed while every instance lands in ONE block**: 1, then +10 per
+    /// retry; MPL-45 when it reaches 90. The seed is 0 on every call.
+    fn break_large_flat_cluster(
+        &mut self,
+        siblings: &mut Vec<Cluster>,
+        index: usize,
+        max_std_cell: i32,
+        max_macro: i32,
+    ) -> Result<(), FlatRefusal> {
+        use crate::flatpart::*;
+        self.update_instances_association(&siblings[index]);
+        let flat = self.flat.as_mut().expect("only called with a partitioner context");
+        let g = build_flat_hypergraph(
+            &siblings[index],
+            &FlatInputs {
+                design: self.design,
+                nets: flat.nets,
+                live: &self.live,
+                inst_to_cluster: &self.inst_to_cluster,
+                bterm_to_cluster: &flat.bterm_to_cluster,
+                large_net_threshold: flat.large_net_threshold,
+                dbu_per_micron: flat.dbu_per_micron,
+            },
+        )
+        .map_err(FlatRefusal::Error)?;
+
+        let mut call = PartitionCall {
+            num_parts: 2,
+            balance: DEFAULT_BALANCE_CONSTRAINT,
+            seed: 0,
+            hyperedge_weights: vec![1.0; g.hyperedges.len()],
+            hyperedges: g.hyperedges,
+            vertex_weights: g.vertex_weights,
+            solution: None,
+        };
+        let solution = loop {
+            if call.balance >= BALANCE_CONSTRAINT_LIMIT {
+                return Err(FlatRefusal::Mpl(crate::options::MplError::new(
+                    45,
+                    "Cannot find a balanced partitioning for the clusters.",
+                )));
+            }
+            let answer = flat.partitioner.partition_k_way_simple(&call);
+            let mut recorded = call.clone();
+            recorded.solution = answer.as_ref().ok().cloned();
+            flat.calls.push(recorded);
+            let solution = answer.map_err(|e| FlatRefusal::Unavailable(siblings[index].id, e))?;
+            call.balance += BALANCE_CONSTRAINT_RELAXATION_FACTOR;
+            if !is_fully_unbalanced(&solution, g.num_other_cluster_vertices) {
+                break solution;
+            }
+        };
+
+        let parent = &mut siblings[index];
+        parent.leaf_std_cells.clear();
+        parent.leaf_macros.clear();
+        let name = std::mem::take(&mut parent.name);
+        parent.name = format!("{name}_0");
+        let id = self.take_id();
+        let mut part_1 = Cluster::new(id, format!("{name}_1"));
+        for (k, &inst) in g.insts.iter().enumerate() {
+            let target = if solution[g.num_other_cluster_vertices + k] == 0 {
+                &mut siblings[index]
+            } else {
+                &mut part_1
+            };
+            if self.design.instances[inst].is_block {
+                target.leaf_macros.push(inst);
+            } else {
+                target.leaf_std_cells.push(inst);
+            }
+        }
+        self.update_instances_association(&siblings[index]);
+        self.set_cluster_metrics(&mut siblings[index]);
+        self.update_instances_association(&part_1);
+        self.set_cluster_metrics(&mut part_1);
+        siblings.push(part_1);
+        let part_1 = siblings.len() - 1;
+
+        if crate::cluster::is_large_flat_cluster(&siblings[index], max_std_cell, max_macro) {
+            self.break_large_flat_cluster(siblings, index, max_std_cell, max_macro)?;
+        }
+        if crate::cluster::is_large_flat_cluster(&siblings[part_1], max_std_cell, max_macro) {
+            self.break_large_flat_cluster(siblings, part_1, max_std_cell, max_macro)?;
+        }
+        Ok(())
     }
 }
 
@@ -724,6 +925,14 @@ fn associate_cluster(
     design: &crate::design::Design,
     assoc: &mut [Option<ClusterId>],
 ) {
+    associate_one(cluster, design, assoc);
+    for child in &cluster.children {
+        associate_cluster(child, design, assoc);
+    }
+}
+
+/// One cluster's claims, without its children.
+fn associate_one(cluster: &Cluster, design: &crate::design::Design, assoc: &mut [Option<ClusterId>]) {
     let t = cluster.cluster_type;
     if t == ClusterType::HardMacro || t == ClusterType::Mixed {
         for &i in &cluster.leaf_macros {
@@ -744,9 +953,6 @@ fn associate_cluster(
         for &m in &cluster.db_modules {
             associate_module(m, cluster.id, include_macro, design, assoc);
         }
-    }
-    for child in &cluster.children {
-        associate_cluster(child, design, assoc);
     }
 }
 
