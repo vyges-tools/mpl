@@ -16,7 +16,8 @@ Both are pinned by unit tests in `src/commit.rs` instead.
 A refused case is reported refused; a vacuous one (no unfixed macros) is compared all the same,
 since writing nothing is then the right answer and the golden should equal the input.
 
-Usage:  python3 scripts/compare-run-def.py <odb-dir> [defok-dir] [tcl-dir] [--mpl PATH]
+Usage:  python3 scripts/compare-run-def.py <odb-dir> [defok-dir] [tcl-dir] [--mpl PATH] [--opendb PATH]
+`--opendb` writes the input's DEF for a vacuous case; give it a path where the binary is not on PATH.
 Prints one line per case and `run-def: N/M exact`; exit 0 iff every comparable case is exact.
 """
 import os
@@ -27,11 +28,13 @@ import tempfile
 from _mplflags import case_flags
 
 args = [a for a in sys.argv[1:]]
-mpl = "./target/debug/vyges-mpl"
-if "--mpl" in args:
-    i = args.index("--mpl")
-    mpl = args[i + 1]
-    del args[i:i + 2]
+tools = {"--mpl": "./target/debug/vyges-mpl", "--opendb": "vyges-opendb"}
+for flag in tools:
+    if flag in args:
+        i = args.index(flag)
+        tools[flag] = args[i + 1]
+        del args[i:i + 2]
+mpl, opendb = tools["--mpl"], tools["--opendb"]
 odb_dir = args[0] if args else "/tmp/mplodb"
 defok_dir = args[1] if len(args) > 1 else os.path.join(odb_dir, "defok")
 tcl_dir = args[2] if len(args) > 2 else odb_dir
@@ -62,7 +65,7 @@ for case in cases:
             continue
         if r.returncode == 3:
             # Nothing written: the input is the answer.
-            subprocess.run(["vyges-opendb", "write-def", "--input", os.path.join(odb_dir, case + ".odb"),
+            subprocess.run([opendb, "write-def", "--input", os.path.join(odb_dir, case + ".odb"),
                             "--output", out_def], capture_output=True, check=True)
         elif r.returncode != 0:
             other += 1
