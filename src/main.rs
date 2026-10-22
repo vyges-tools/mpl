@@ -29,17 +29,24 @@ const USAGE: &str = "\
 vyges physical mpl — hierarchical macro placement
 
 USAGE:
+  vyges physical mpl run <design.odb> [--out-odb FILE] [--out-def FILE]
+                         [--min-channel W,H] [--pin-aware-channels]
+                         [--macro-guide NAME=LX,LY,UX,UY ...]
+                         [--boundary-weight W] [--notch-weight W] [--guidance-weight W]
+                         [--target-util U] [--max-num-inst N] [--min-num-inst N]
+                         [--max-num-macro N] [--min-num-macro N]
   vyges physical mpl place-macro <design.odb> --macro NAME=X,Y[,ORIENT] [--macro ...]
                                  [--dbu] [--out-odb FILE]
   vyges physical mpl --describe
   vyges physical mpl --help
 
-NOT WIRED:
-  `run` -- the automatic hierarchical placement -- is NOT reachable from this command line and
-  exits 2 if you ask for it. The pipeline IS implemented and correlated against the reference; it is
-  driven by the `cluster-dump` binary, which every correlation gate uses. What is missing is the
-  entry point, not the algorithm. It is listed here rather than in USAGE because a usage line is
-  a promise.
+RUN:
+  Automatic hierarchical macro placement: clustering, coarse shaping, annealed placement,
+  boundary push, orientation, snapping. Each movable macro is left LOCKED, each macro not given a
+  soft halo is guarded by a soft placement blockage over its haloed box, and standard cells get
+  the temporary PLACED positions the placer used. Lengths are MICRONS. Halos come from the
+  database; the channel, guidance, weight and threshold options are command state a database
+  cannot carry, so they are passed here. --out-odb defaults to writing the design in place.
 
 PLACE-MACRO:
   LibreLane `Classic` step 16, `Odb.ManualMacroPlacement` -- the manual placement a real harden
@@ -49,7 +56,7 @@ PLACE-MACRO:
 
 STATUS:
   0 applied   macros placed and committed
-  1 refused   the design cannot be processed as asked (see LIMITS)
+  1 refused   the design cannot be processed as asked (see LIMITS); nothing is written
   2 usage     bad arguments, or the design could not be read or written
   3 vacuous   nothing to do -- no unfixed macros
 
@@ -57,6 +64,7 @@ LIMITS:
   This engine does not implement TritonPart partitioning. A FLAT cluster -- one with no
   module children -- whose leaf standard cells exceed the level threshold is REFUSED rather
   than approximated. Upstream's own mpl suite never reaches that path; a large flat block does.
+  Clustering data is not kept as database groups; `run` has no --keep-clustering-data.
 
 THREADS:
   Runs on one thread; there is no thread option. Several runs can go side by side, one core each.
@@ -100,31 +108,47 @@ fn describe() -> String {
         // of one upstream commit; this field is what lets a reader tell which.
         "openroad_pin": vyges_opendb::OPENROAD_PIN,
         "version": env!("CARGO_PKG_VERSION"),
-        // ⛔ **`place-macro`, because it is the command that RUNS.** This read
-        // `["run", "{design}"]` while `run` was unwired and exited 2 — so an MCP client built
-        // exactly that command and got a usage error. A contract's whole job is to say how to
-        // invoke the tool; naming a command that refuses is worse than naming none.
-        //
-        // ⚠️ The auto-placement pipeline IS implemented and correlated — see the limitations —
-        // but it is driven by `cluster-dump`, not by this entry point. When `run` is wired, this
-        // is the line that moves, together with the first limitation below.
+        // ⛔ **The contract names a command that RUNS.** This read `["run", "{design}"]` while
+        // `run` was unwired and exited 2 — an MCP client built exactly that command and got a
+        // usage error — and then `place-macro` until `run` was wired (2026-10-22). Every option
+        // below is one `run` accepts; `place-macro` stays in `--help`.
         "invocation": {
-            "args_template": ["place-macro", "{design}"],
+            "args_template": ["run", "{design}"],
             "optional": [
-                {"arg": "macro", "flag": "--macro"},
-                {"arg": "dbu", "flag": "--dbu"},
-                {"arg": "out_odb", "flag": "--out-odb"}
+                {"arg": "out_odb", "flag": "--out-odb"},
+                {"arg": "out_def", "flag": "--out-def"},
+                {"arg": "min_channel", "flag": "--min-channel"},
+                {"arg": "pin_aware_channels", "flag": "--pin-aware-channels"},
+                {"arg": "macro_guide", "flag": "--macro-guide"},
+                {"arg": "boundary_weight", "flag": "--boundary-weight"},
+                {"arg": "notch_weight", "flag": "--notch-weight"},
+                {"arg": "guidance_weight", "flag": "--guidance-weight"},
+                {"arg": "target_util", "flag": "--target-util"},
+                {"arg": "max_num_inst", "flag": "--max-num-inst"},
+                {"arg": "min_num_inst", "flag": "--min-num-inst"},
+                {"arg": "max_num_macro", "flag": "--max-num-macro"},
+                {"arg": "min_num_macro", "flag": "--min-num-macro"}
             ],
             "emits_json": true
         },
         "inputs": {
             "type": "object",
-            "required": ["design", "macro"],
+            "required": ["design"],
             "properties": {
                 "design": {"type": "string", "description": "path to the design database (.odb)"},
-                "macro": {"type": "string", "description": "NAME=X,Y[,ORIENT] — repeatable; X,Y is the macro ORIGIN in microns unless --dbu"},
-                "dbu": {"type": "boolean", "description": "read --macro coordinates as database units, not microns"},
-                "out_odb": {"type": "string", "description": "write the database here instead of in place"}
+                "out_odb": {"type": "string", "description": "write the database here instead of in place"},
+                "out_def": {"type": "string", "description": "also write the placed design as DEF"},
+                "min_channel": {"type": "string", "description": "W,H minimum channel between macros, microns"},
+                "pin_aware_channels": {"type": "boolean", "description": "size channels from the macros' pin access"},
+                "macro_guide": {"type": "string", "description": "NAME=LX,LY,UX,UY guidance region in microns — repeatable"},
+                "boundary_weight": {"type": "number"},
+                "notch_weight": {"type": "number"},
+                "guidance_weight": {"type": "number"},
+                "target_util": {"type": "number", "description": "target utilization, default 0.25"},
+                "max_num_inst": {"type": "integer"},
+                "min_num_inst": {"type": "integer"},
+                "max_num_macro": {"type": "integer"},
+                "min_num_macro": {"type": "integer"}
             }
         },
         // ⛔ **`odb`, not an engine list.** This previously read `["ifp", "pad", "ppl"]`, which
@@ -141,22 +165,22 @@ fn describe() -> String {
         "consumes": ["odb"],
         "produces": ["odb"],
         "artifacts": [{"role": "odb", "field": "out_odb"}],
-        "reports": ["status", "macros_placed", "blockages_created", "refusal"],
+        "reports": ["status", "macros_placed", "blockages_created", "cells_placed", "refusal"],
         // The suite's shared block (`vyges_loom::threads`), so an agent reads one rule everywhere.
         "threads": serde_json::from_str::<serde_json::Value>(vyges_loom::threads::DESCRIBE_SINGLE_THREADED).expect("loom's block is JSON"),
         "assertion": {"id": "macros-placed", "field": "status", "pass_when": {"eq": "applied"}},
         "stages": ORDER.iter().map(|s| s.upstream_name()).collect::<Vec<_>>(),
         "limits": {
             "par_partitioning": "not implemented; a flat cluster over the level threshold is refused",
-            "run_command": "the auto-placement pipeline is not reachable from this CLI; `run` is unwired",
+            "clustering_groups": "not written; `run` has no --keep-clustering-data",
         },
         // ⛔ **REQUIRED, and it is where the gaps go.** The maturity word is a rung on a
         // three-value ladder and cannot carry nuance; this can.
         "provenance_limitations": [
             "input_hash covers the argument vector, not the content of the .odb it names.",
-            "THE `run` COMMAND IS NOT WIRED. This binary exposes `place-macro` only -- LibreLane `Classic` step 16, `Odb.ManualMacroPlacement`, the manual placement a real harden flow uses. The automatic hierarchical pipeline IS implemented and correlated, but it is driven by the `cluster-dump` binary, which is what every correlation gate uses. `place-macro` places the macros it is told to place and asserts nothing about where they should go.",
+            "`run` writes what the commit gate scores: the commit stage's rows (macro corner and orientation, halo blockages, temporary standard-cell positions) applied to the database, so the database and the scored output are one derivation. Clustering groups (-keep_clustering_data) are not written. `place-macro` is LibreLane `Classic` step 16, `Odb.ManualMacroPlacement`, and asserts nothing about where macros should go.",
             "TritonPart partitioning is NOT implemented. A FLAT cluster -- one with no module children -- whose leaf standard cells exceed the level threshold is REFUSED rather than approximated. Upstream's own mpl suite never reaches that path; a large flat block does, so a refusal here is a real design shape and not a corner case.",
-            "Correlation is measured against upstream's own 36-design regression suite at the pin above, per stage rather than on the final output: physical hierarchy and design report 33 of 33 byte-exact each; coarse shaping, boundary push and orientation byte-exact on every case that emits a trace; golden DEFs -- macro positions, temporary standard cells, halo blockages and clustering groups -- 33 of 33 exact. Those gates drive `cluster-dump`, not `place-macro`.",
+            "Correlation is measured against upstream's own 36-design regression suite at the pin above, per stage rather than on the final output: physical hierarchy and design report 33 of 33 byte-exact each; coarse shaping, boundary push and orientation byte-exact on every case that emits a trace; golden DEFs -- macro positions, temporary standard cells, halo blockages and clustering groups -- 33 of 33 exact. Those gates drive `cluster-dump`, which runs the same driver as `run`.",
             "Every score is true of ONE upstream commit, named in `openroad_pin`. The reference moves: a score quoted without its pin says nothing.",
             "`consumes` is the generic `odb` on purpose. mpl supports running BEFORE or AFTER pin placement and the two give DIFFERENT placements, so a fixed predecessor list would be the wrong shape of claim rather than merely the wrong list.",
         ],
@@ -332,6 +356,136 @@ fn place_macro_main(args: &[String]) -> ExitCode {
     ExitCode::SUCCESS
 }
 
+/// The driver's options that `run` passes through, each with a value: command state a database
+/// cannot carry.
+const RUN_VALUED: [&str; 10] = [
+    "--min-channel", "--macro-guide", "--boundary-weight", "--notch-weight", "--guidance-weight",
+    "--target-util", "--max-num-inst", "--min-num-inst", "--max-num-macro", "--min-num-macro",
+];
+
+/// Whether `run` takes `flag` — what the descriptor may advertise.
+#[cfg(test)]
+fn run_main_accepts(flag: &str) -> bool {
+    matches!(flag, "--out-odb" | "--out-def" | "--pin-aware-channels") || RUN_VALUED.contains(&flag)
+}
+
+/// `run`: the automatic placement — the driver's commit stage, written to the database.
+///
+/// 🔑 **One derivation.** The driver under `--shaping --commit` prints the rows the commit gate
+/// scores against the golden DEFs; `run` applies exactly those rows ([`vyges_mpl::commit`]), so
+/// what is written is what was scored.
+///
+/// ⛔ **A refusal writes nothing.** The driver runs to completion before the database is opened
+/// for writing, so a refused or vacuous run leaves the design as it was.
+fn run_main(args: &[String]) -> ExitCode {
+    let mut out_odb: Option<String> = None;
+    let mut out_def: Option<String> = None;
+    let mut path: Option<String> = None;
+    let mut pass: Vec<String> = Vec::new();
+    let mut i = 0;
+    while i < args.len() {
+        let a = args[i].as_str();
+        match a {
+            "--out-odb" | "--out-def" => {
+                i += 1;
+                let Some(v) = args.get(i) else { return run_usage_err(&format!("{a} needs a FILE")) };
+                if a == "--out-odb" { out_odb = Some(v.clone()) } else { out_def = Some(v.clone()) }
+            }
+            "--pin-aware-channels" => pass.push(a.to_string()),
+            "--keep-clustering-data" => {
+                diag!("vyges-mpl run: --keep-clustering-data is not supported: clustering groups are not written");
+                return ExitCode::from(1);
+            }
+            _ if RUN_VALUED.contains(&a) => {
+                i += 1;
+                let Some(v) = args.get(i) else { return run_usage_err(&format!("{a} needs a value")) };
+                pass.extend([a.to_string(), v.clone()]);
+            }
+            _ if a.starts_with("--") => return run_usage_err(&format!("unknown option {a}")),
+            _ if path.is_some() => return run_usage_err(&format!("one design only, got {a:?} too")),
+            _ => path = Some(a.to_string()),
+        }
+        i += 1;
+    }
+    let Some(path) = path else { return run_usage_err("run needs <design.odb>") };
+
+    let mut driver_args = vec!["--shaping".to_string(), "--commit".to_string()];
+    driver_args.extend(pass);
+    driver_args.push(path.clone());
+    let mut dump = Vec::new();
+    if let Err(e) = vyges_mpl::driver::run(&driver_args, &mut dump) {
+        diag!("vyges-mpl run: {}", e.message);
+        // The driver's 4 is a shaping refusal; to a caller it is a refusal like any other.
+        let (code, status) = match e.code {
+            1 | 4 => (1, "refused"),
+            3 => (3, "vacuous"),
+            c => (c, "error"),
+        };
+        // `refusal` names a refusal only; a vacuous run or an error gives its `reason`.
+        let key = if status == "refused" { "refusal" } else { "reason" };
+        println!("{}", serde_json::json!({
+            "tool": "vyges-mpl", "command": "run", "status": status, key: e.message,
+        }));
+        return ExitCode::from(code);
+    }
+    let rows = match std::str::from_utf8(&dump).map_err(|e| e.to_string()).and_then(vyges_mpl::commit::parse) {
+        Ok(r) => r,
+        Err(e) => {
+            diag!("vyges-mpl run: the commit stage's output is unreadable: {e}");
+            return ExitCode::from(2);
+        }
+    };
+
+    let mut db = match vyges_opendb::Db::open(&path) {
+        Ok(d) => d,
+        Err(e) => {
+            diag!("vyges-mpl run: cannot read {path}: {e}");
+            return ExitCode::from(2);
+        }
+    };
+    let done = match vyges_mpl::commit::apply(&mut db, &rows) {
+        Ok(d) => d,
+        Err(e) => {
+            diag!("vyges-mpl run: {e}");
+            return ExitCode::from(1);
+        }
+    };
+    // ⛔ Zero macros written is not `applied`, whatever else was.
+    let status = vyges_mpl::status::settle_status(done.macros, None);
+    if status != vyges_mpl::status::Status::Applied {
+        diag!("vyges-mpl run: no macro was placed; nothing was written");
+        println!("{}", serde_json::json!({"tool": "vyges-mpl", "command": "run", "status": status.as_str()}));
+        return ExitCode::from(status.exit_code());
+    }
+    let dest = out_odb.unwrap_or_else(|| path.clone());
+    if let Err(e) = db.write(&dest) {
+        diag!("vyges-mpl run: cannot write {dest}: {e}");
+        return ExitCode::from(2);
+    }
+    if let Some(def) = &out_def {
+        if let Err(e) = db.write_def(def) {
+            diag!("vyges-mpl run: cannot write {def}: {e}");
+            return ExitCode::from(2);
+        }
+    }
+    println!("{}", serde_json::json!({
+        "tool": "vyges-mpl",
+        "command": "run",
+        "status": status.as_str(),
+        "macros_placed": done.macros,
+        "blockages_created": done.blockages,
+        "cells_placed": done.cells,
+        "odb_written": dest,
+        "def_written": out_def,
+    }));
+    ExitCode::SUCCESS
+}
+
+fn run_usage_err(msg: &str) -> ExitCode {
+    diag!("vyges-mpl run: {msg}");
+    ExitCode::from(2)
+}
+
 fn usage_err(msg: &str) -> ExitCode {
     diag!("vyges-mpl place-macro: {msg}");
     ExitCode::from(2)
@@ -407,23 +561,9 @@ fn main() -> ExitCode {
             ExitCode::SUCCESS
         }
         Some("place-macro") => place_macro_main(&args[1..]),
-        _ => {
-            // ⛔ **The ALGORITHM is written and correlated; this CLI PATH is not wired.** Those are
-            // different claims and the old message conflated them, saying "the placement algorithm
-            // is not written" long after it was. The pipeline runs under `cluster-dump`, which is
-            // what all nine correlation gates drive, and its output is byte-exact against the
-            // reference's golden DEFs.
-            //
-            // ⚠️ **`--describe` still advertises `args_template: ["run", "{design}"]`.** That is a
-            // promise this binary does not yet keep, and it is stated here rather than left for a
-            // caller to discover at runtime.
-            diag!(
-                "vyges-mpl: `run` is not wired yet.\n\
-                 The placement pipeline IS implemented and correlated against the reference -- it is\n\
-                 driven by the `cluster-dump` binary, which every correlation gate uses. What is\n\
-                 missing is this command-line entry point, not the algorithm.\n\
-                 See `--describe` for the published contract and its limits."
-            );
+        Some("run") => run_main(&args[1..]),
+        Some(other) => {
+            diag!("vyges-mpl: unknown command {other:?}\n\n{USAGE}");
             ExitCode::from(2)
         }
     }
@@ -452,20 +592,21 @@ mod descriptor_tests {
 
     /// ⛔ **The contract must name a command that RUNS.** This descriptor advertised
     /// `args_template: ["run", "{design}"]` while `run` was unwired and exited 2 — so an MCP
-    /// client built exactly that command and got a usage error. A contract's whole job is to say
-    /// how to invoke the tool; naming a command that refuses is worse than naming none.
+    /// client built exactly that command and got a usage error. Every advertised flag must be one
+    /// `run` accepts, and `--help` must show the command.
     #[test]
     fn the_advertised_command_is_one_this_binary_dispatches() {
         let v: serde_json::Value =
             serde_json::from_str(&describe()).expect("the descriptor is valid JSON");
         let cmd = v["invocation"]["args_template"][0].as_str().expect("a subcommand");
-        assert_eq!(cmd, "place-macro",
-                   "`{cmd}` is advertised but `place-macro` is the only wired command");
-        // ⚠️ And `--help` must not promise it either: a usage line is a promise.
-        assert!(!super::USAGE.contains("mpl run "),
-                "USAGE advertises `run`, which this binary refuses");
-        assert!(super::USAGE.contains("NOT WIRED"),
-                "an unwired command must be named as unwired rather than omitted silently");
+        assert_eq!(cmd, "run");
+        assert!(super::USAGE.contains("mpl run <design.odb>"), "USAGE must show `run`");
+        assert!(!super::USAGE.contains("NOT WIRED"), "`run` is wired");
+        for o in v["invocation"]["optional"].as_array().expect("optional flags") {
+            let flag = o["flag"].as_str().expect("a flag");
+            assert!(super::USAGE.contains(flag), "{flag} is advertised but not in USAGE");
+            assert!(super::run_main_accepts(flag), "{flag} is advertised but `run` refuses it");
+        }
     }
 
     /// ⛔ **`maturity` is a closed enum of three** — `discovered`, `structured`,

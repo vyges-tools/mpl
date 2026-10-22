@@ -19,7 +19,9 @@
 pub mod anneal;
 pub mod apply;
 pub mod cluster;
+pub mod commit;
 pub mod design;
+pub mod driver;
 pub mod engine;
 pub mod feasibility;
 pub mod dump;
