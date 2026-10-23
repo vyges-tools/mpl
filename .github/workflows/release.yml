@@ -42,12 +42,13 @@ jobs:
           # Apple Silicon on macos-15 (Xcode 16 — new enough for cxx, stable for fmt 11.0.2;
           # macos-latest/Xcode 26.5 breaks fmt consteval). Intel Mac is unsupported.
           #
-          # 🔑 Only x86_64 Linux links the partitioner (`--features par`): its exact stages need the
-          # solver bundle, which is built for that target alone. The other two refuse a large flat
-          # cluster by name, and their `--describe` says so.
+          # 🔑 Every target links the partitioner (`--features par`): its exact stages need the
+          # solver bundle, published per target (Linux x86_64/arm64, macOS arm64) and fetched for
+          # the checked-out ortools-lib. Each target's par trace matches the reference's on the flat
+          # synthesized design, solutions included.
           - { os: ubuntu-latest,    target: x86_64-unknown-linux-gnu,  features: "--features par" }
-          - { os: ubuntu-24.04-arm, target: aarch64-unknown-linux-gnu, features: "" }
-          - { os: macos-15,         target: aarch64-apple-darwin,      features: "" }
+          - { os: ubuntu-24.04-arm, target: aarch64-unknown-linux-gnu, features: "--features par" }
+          - { os: macos-15,         target: aarch64-apple-darwin,      features: "--features par" }
     steps:
       # Sibling layout: <ws>/vyges-tools-mpl + <ws>/vyges-tools-opendb + <ws>/vyges-tools-opendb-lib,
       # so both `[patch]` path entries in Cargo.toml resolve on CI. Every patched dependency needs

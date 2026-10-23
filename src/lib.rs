@@ -10,8 +10,8 @@
 //! Upstream's clustering calls TritonPart (`par`) from `breakLargeFlatCluster` to split a **flat**
 //! cluster — one with no `dbModule` children — whose leaf standard cells exceed `max_std_cell_`.
 //! This crate builds that call's hypergraph and applies the answer ([`flatpart`]); the answer
-//! comes from [`vyges_par`] when built with the `par` feature ([`par`], Linux x86_64, which the
-//! partitioner's exact stages need). ⛔ Without it — or when the partitioner refuses a stage —
+//! comes from [`vyges_par`] when built with the `par` feature ([`par`]: Linux x86_64/arm64 and macOS
+//! arm64, where the solver bundle its exact stages need is published). ⛔ Without it — or when the partitioner refuses a stage —
 //! the cluster is **refused, never approximated**, and `--describe` says which build this is.
 //!
 //! 🔑 Measured at pin `945a9f4`: that path is reached by **0 of upstream's 36 `rtl_macro_placer`
