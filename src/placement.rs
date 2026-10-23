@@ -5313,6 +5313,22 @@ pub struct ParentContext<'a> {
     pub guide_of: &'a dyn Fn(i32) -> Option<(i32, i32, i32, i32)>,
     /// The fixed terminals, from `fixed_terminal_walk` up the tree.
     pub terminals: &'a [(String, crate::anneal::SoftMacro)],
+    /// A cluster's NAME by id, over the whole tree — upstream `id_to_cluster.at(id)->getName()`.
+    ///
+    /// ⛔ **A connection's target is resolved BY NAME**, through the same map the children and
+    /// the terminals were entered in (`soft_macro_id_map`). Looking the id up among the parent's
+    /// children alone drops every net to a terminal, so a nested parent was annealed as if
+    /// nothing outside it existed.
+    pub name_of: &'a dyn Fn(i32) -> Option<String>,
+    /// The CLUSTER behind a fixed terminal, by its name — `None` for a conventional one.
+    ///
+    /// ⛔ **`createFixedTerminal` keeps the cluster pointer for a cluster of UNPLACED IO PINS**,
+    /// and only for that kind. The annealer reads the macro's cluster to decide how a net to it is
+    /// measured — to the nearest available region, not to a point — so a terminal stripped of its
+    /// cluster scores every such net against the wrong geometry. It is invisible at the root,
+    /// where the IO cluster is a CHILD, and fires on every nested parent of a design with
+    /// unplaced pins.
+    pub terminal_cluster_of: &'a dyn Fn(&str) -> Option<&'a crate::cluster::Cluster>,
     pub root: Root,
     pub die_margin: i64,
     /// ⛔ **OUTLINE-RELATIVE — the caller must rebase these**, unlike `constraint_region_of`
@@ -5410,7 +5426,7 @@ pub fn build_parent_problem(
         .macros
         .iter()
         .enumerate()
-        .map(|(id, _)| attributes_for(parent, &assembly, id))
+        .map(|(id, _)| attributes_for(parent, &assembly, id, ctx))
         .collect();
 
     let nets = parent_nets(parent, &assembly, ctx);
@@ -5601,12 +5617,19 @@ fn attributes_for(
     parent: &crate::cluster::Cluster,
     assembly: &Assembly,
     id: usize,
+    ctx: &ParentContext,
 ) -> MacroAttributes {
     let Some((name, _)) = assembly.id_of.iter().find(|(_, i)| *i == id) else {
         // ⚠️ A blockage has an id but no name; it has no cluster behind it either.
         return MacroAttributes::default();
     };
-    let Some(child) = parent.children.iter().find(|c| &c.name == name) else {
+    // A child, or else a terminal that kept its cluster — see `ParentContext::terminal_cluster_of`.
+    let Some(child) = parent
+        .children
+        .iter()
+        .find(|c| &c.name == name)
+        .or_else(|| (ctx.terminal_cluster_of)(name))
+    else {
         return MacroAttributes::default();
     };
     let kind = area_kind_of(child);
@@ -5631,13 +5654,9 @@ fn parent_nets(
     assembly: &Assembly,
     ctx: &ParentContext,
 ) -> Vec<BundledNet> {
-    let id_of_cluster = |cluster_id: i32| -> Option<usize> {
-        parent
-            .children
-            .iter()
-            .find(|c| c.id == cluster_id)
-            .and_then(|c| assembly.id(&c.name))
-    };
+    // ⛔ By NAME, children and fixed terminals alike — see [`ParentContext::name_of`].
+    let id_of_cluster =
+        |cluster_id: i32| -> Option<usize> { (ctx.name_of)(cluster_id).and_then(|n| assembly.id(&n)) };
     let mut nets = Vec::new();
     for &(a, b) in ctx.virtual_connections {
         if let (Some(x), Some(y)) = (id_of_cluster(a), id_of_cluster(b)) {

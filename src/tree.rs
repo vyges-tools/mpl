@@ -980,8 +980,12 @@ fn associate_cluster(
     }
 }
 
-/// One cluster's claims, without its children.
-fn associate_one(cluster: &Cluster, design: &crate::design::Design, assoc: &mut [Option<ClusterId>]) {
+/// One cluster's claims, without its children — upstream `updateInstancesAssociation(cluster)`.
+///
+/// 🔑 **Not recursive over children.** Called on a NON-leaf cluster it still claims everything
+/// beneath it, through its own leaf lists and modules, which is how `placeChildren` maps each
+/// child's whole subtree onto that child before it rebuilds the connections.
+pub fn associate_one(cluster: &Cluster, design: &crate::design::Design, assoc: &mut [Option<ClusterId>]) {
     let t = cluster.cluster_type;
     if t == ClusterType::HardMacro || t == ClusterType::Mixed {
         for &i in &cluster.leaf_macros {

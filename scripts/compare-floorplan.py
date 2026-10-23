@@ -80,18 +80,42 @@ if not cases:
     print(f"ERROR: no reference floorplans in {fp_dir} -- run run_hmp_fp.sh")
     raise SystemExit(2)
 
-def compare(case, artifact, flag, label):
-    """One stage dump, ours against upstream's. Returns 'match', 'differ' or None if absent."""
-    ref_path = os.path.join(fp_dir, case, artifact)
-    if not os.path.exists(ref_path):
-        return None
+def ref_file_name(parent):
+    """`writeNetFile`'s name: the parent's name with `":<>|*?/` each replaced by `--`."""
+    return re.sub(r'[":<>\|\*\?/]', "--", parent)
+
+
+def compare_nets(case):
+    """Every parent's bundled nets, ours against upstream's file for THAT parent.
+
+    ⛔ Upstream writes one `<parent>.net.txt` per parent it places; ours heads each parent's block
+    with `# parent <name>`. Comparing only `root.net.txt` scored the first block and silently
+    passed every nested parent — the multi-level problems a hierarchical design produces."""
+    case_dir = os.path.join(fp_dir, case)
+    refs = {f[:-len(".net.txt")]: f for f in os.listdir(case_dir) if f.endswith(".net.txt")}
+    if not refs:
+        return None, []
     odb = os.path.join(odb_dir, case + ".odb")
     if not os.path.exists(odb):
-        return "no-odb"
-    want = io.open(ref_path, encoding="utf-8").read().split()
-    r = subprocess.run(["./target/debug/cluster-dump", "--shaping", flag]
+        return "no-odb", []
+    r = subprocess.run(["./target/debug/cluster-dump", "--shaping", "--nets"]
                        + flags(case) + [odb], capture_output=True, text=True)
-    return "match" if r.stdout.split() == want else "differ"
+    blocks, current = {}, None
+    for line in r.stdout.splitlines():
+        if line.startswith("# parent "):
+            current = ref_file_name(line[len("# parent "):])
+            blocks[current] = []
+        elif current is not None:
+            blocks[current] += line.split()
+    problems = []
+    for key in sorted(set(refs) | set(blocks)):
+        if key not in blocks:
+            problems.append(f"{key}: upstream only")
+        elif key not in refs:
+            problems.append(f"{key}: ours only")
+        elif blocks[key] != io.open(os.path.join(case_dir, refs[key]), encoding="utf-8").read().split():
+            problems.append(f"{key}: differ")
+    return ("differ" if problems else "match"), problems
 
 
 nets_ok = nets_differ = 0
@@ -99,36 +123,49 @@ ok = differ = macro_path = refused = 0
 for case in cases:
     # 🔑 The BUNDLED NETS are written before the anneal, so they are the earliest artifact this
     # stage produces — a wirelength difference is explained here or it is not an input problem.
-    n = compare(case, "root.net.txt", "--nets", "nets")
+    n, problems = compare_nets(case)
     if n == "match":
         nets_ok += 1
     elif n == "differ":
         nets_differ += 1
-        print(f"  {case:32} NETS DIFFER")
+        print(f"  {case:32} NETS DIFFER  {'; '.join(problems[:3])}{' …' if len(problems) > 3 else ''}")
     ref_path = os.path.join(fp_dir, case, "root.fp.txt")
     if not os.path.exists(ref_path):
         print(f"  {case:32} macro-path (no floorplan written)"); macro_path += 1; continue
     odb = os.path.join(odb_dir, case + ".odb")
     if not os.path.exists(odb):
         print(f"  {case:32} NO ODB"); refused += 1; continue
-    want = rows(io.open(ref_path, encoding="utf-8").read())
+    # ⛔ Per PARENT, like the nets: one `<parent>.fp.txt` upstream, one `# parent` block ours.
+    case_dir = os.path.join(fp_dir, case)
+    refs = {f[:-len(".fp.txt")]: f for f in os.listdir(case_dir) if f.endswith(".fp.txt")}
     r = subprocess.run(["./target/debug/cluster-dump", "--shaping", "--floorplan"]
                        + flags(case) + [odb], capture_output=True, text=True)
-    got = rows(r.stdout)
-    if got == want:
-        print(f"  {case:32} match ({len(got)} clusters)"); ok += 1
+    blocks, current = {}, None
+    for line in r.stdout.splitlines():
+        if line.startswith("# parent "):
+            current = ref_file_name(line[len("# parent "):])
+            blocks[current] = []
+        elif current is not None:
+            blocks[current] += rows(line)
+    first, total = None, 0
+    for key in sorted(set(refs) | set(blocks)):
+        want = rows(io.open(os.path.join(case_dir, refs[key]), encoding="utf-8").read()) if key in refs else None
+        got = blocks.get(key)
+        if got is None or want is None:
+            first = first or f"{key}: {'upstream' if got is None else 'ours'} only"
+            continue
+        total += len(got)
+        if got != want:
+            by_name = dict(want)
+            diff = next((f"{name}: {geom} != {by_name.get(name)}" for name, geom in got
+                         if by_name.get(name) != geom), f"{len(got)} clusters, upstream has {len(want)}")
+            first = first or f"{key}: {diff}"
+    if first is None:
+        print(f"  {case:32} match ({total} clusters, {len(refs)} parents)"); ok += 1
         continue
     differ += 1
-    by_name = dict(want)
-    first = None
-    for name, geom in got:
-        if by_name.get(name) != geom:
-            first = f"{name}: {geom} != {by_name.get(name)}"
-            break
-    if first is None:
-        first = f"{len(got)} clusters, upstream has {len(want)}"
     print(f"  {case:32} DIFFERS  {first}")
 
 print(f"\nfloorplan: {ok} match, {differ} differ, {macro_path} macro-path, {refused} refused, of {len(cases)}")
 print(f"nets:      {nets_ok} match, {nets_differ} differ")
-raise SystemExit(1 if differ or refused else 0)
+raise SystemExit(1 if differ or refused or nets_differ else 0)

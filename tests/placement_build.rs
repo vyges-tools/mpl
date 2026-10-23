@@ -10,10 +10,15 @@ use vyges_mpl::shaping::Tiling;
 
 const OUTLINE: (i32, i32, i32, i32) = (1000, 1000, 3000, 3000);
 
+/// ⚠️ Names are resolved from the PARENT's children, as the tree's `id_to_cluster` would — a
+/// connection's target is looked up by name, so a context without them drops every net.
 fn ctx<'a>(
+    parent: &Cluster,
     connections: &'a dyn Fn(i32) -> Vec<(i32, f32)>,
     virtual_connections: &'a [(i32, i32)],
 ) -> ParentContext<'a> {
+    let names: std::collections::HashMap<i32, String> =
+        parent.children.iter().map(|c| (c.id, c.name.clone())).collect();
     ParentContext {
         connections_of: connections,
         virtual_connections,
@@ -22,6 +27,8 @@ fn ctx<'a>(
         fence_of: &|_| None,
         guide_of: &|_| None,
         terminals: &[],
+        name_of: Box::leak(Box::new(move |id| names.get(&id).cloned())),
+        terminal_cluster_of: &|_| None,
         root: Root { x: 0, y: 0, width: 4000, height: 4000 },
         die_margin: 16_000,
         available_regions: &[],
@@ -74,7 +81,7 @@ fn a_fixed_macro_is_clipped_and_rebased_into_the_problem() {
     parent.children.push(fixed);
 
     let conn = |_: i32| Vec::new();
-    let got = build_parent_problem(&parent, OUTLINE, &ctx(&conn, &[]));
+    let got = build_parent_problem(&parent, OUTLINE, &ctx(&parent, &conn, &[]));
     let m = got.macros[0];
     assert_eq!((m.x, m.y), (0, 500), "rebased onto the outline");
     assert_eq!((m.width, m.height), (900, 1000), "and clipped to it");
@@ -95,7 +102,7 @@ fn an_io_cluster_is_rebased_but_not_clipped() {
     parent.children.push(io);
 
     let conn = |_: i32| Vec::new();
-    let got = build_parent_problem(&parent, OUTLINE, &ctx(&conn, &[]));
+    let got = build_parent_problem(&parent, OUTLINE, &ctx(&parent, &conn, &[]));
     let m = got.macros[0];
     assert_eq!((m.x, m.y), (-1000, 500), "rebased, and outside the outline");
     assert_eq!(m.height, 4000, "not clipped to the outline's 2000");
@@ -111,7 +118,7 @@ fn an_ordinary_cluster_starts_from_its_first_tiling() {
     parent.children.push(m);
 
     let conn = |_: i32| Vec::new();
-    let got = build_parent_problem(&parent, OUTLINE, &ctx(&conn, &[]));
+    let got = build_parent_problem(&parent, OUTLINE, &ctx(&parent, &conn, &[]));
     assert_eq!((got.macros[0].width, got.macros[0].height), (200, 400));
     assert!(got.macros[0].is_macro_cluster);
 }
@@ -130,7 +137,7 @@ fn virtual_connections_lead_and_the_pairs_are_halved() {
         2 => vec![(1, 4.0)],
         _ => Vec::new(),
     };
-    let got = build_parent_problem(&parent, OUTLINE, &ctx(&conn, &[(1, 2)]));
+    let got = build_parent_problem(&parent, OUTLINE, &ctx(&parent, &conn, &[(1, 2)]));
 
     assert_eq!(got.inputs.nets.len(), 2, "one virtual, one real");
     assert_eq!(got.inputs.nets[0].weight, VIRTUAL_CONNECTION_WEIGHT, "the virtual one leads");
@@ -148,7 +155,7 @@ fn only_fixed_macros_reach_the_fixed_penalty() {
     parent.children.push(macro_child(2, "MACRO_2", 100, 100));
 
     let conn = |_: i32| Vec::new();
-    let got = build_parent_problem(&parent, OUTLINE, &ctx(&conn, &[]));
+    let got = build_parent_problem(&parent, OUTLINE, &ctx(&parent, &conn, &[]));
     assert_eq!(got.fixed_bboxes, vec![(100, 100, 300, 300)], "rebased, and only the fixed one");
 }
 
@@ -165,7 +172,7 @@ fn the_attributes_follow_the_macro_ids() {
     parent.children.push(cells);
 
     let conn = |_: i32| Vec::new();
-    let got = build_parent_problem(&parent, OUTLINE, &ctx(&conn, &[]));
+    let got = build_parent_problem(&parent, OUTLINE, &ctx(&parent, &conn, &[]));
     assert_eq!(got.inputs.attributes[0].num_macro, 3);
     assert_eq!(got.inputs.attributes[0].kind, Some(AreaKind::HardMacroCluster));
     assert_eq!(got.inputs.attributes[1].num_macro, 0, "a cell cluster holds none");
@@ -177,7 +184,7 @@ fn the_attributes_follow_the_macro_ids() {
 fn the_outline_is_split_into_a_size_and_an_origin() {
     let parent = Cluster::new(0, "root");
     let conn = |_: i32| Vec::new();
-    let got = build_parent_problem(&parent, OUTLINE, &ctx(&conn, &[]));
+    let got = build_parent_problem(&parent, OUTLINE, &ctx(&parent, &conn, &[]));
     assert_eq!(got.outline, (2000, 2000));
     assert_eq!(got.inputs.outline_origin, (1000, 1000));
 }
@@ -204,7 +211,7 @@ fn a_constrained_io_clusters_region_reaches_the_problem_by_cluster_id() {
     parent.children.push(macro_child(8, "MACRO_1", 200, 200));
 
     let no_conn: &dyn Fn(i32) -> Vec<(i32, f32)> = &|_| Vec::new();
-    let mut c = ctx(no_conn, &[]);
+    let mut c = ctx(&parent, no_conn, &[]);
     let by_id: &dyn Fn(i32) -> Option<vyges_mpl::placement::Region> =
         &|id| (id == 7).then_some(region);
     c.constraint_region_of = by_id;
@@ -225,7 +232,7 @@ fn a_constrained_io_clusters_region_reaches_the_problem_by_cluster_id() {
 
     // ⚠️ The control: without the lookup the list is empty, so the assertion above is about the
     // cluster-id translation and not about the list being filled unconditionally.
-    let empty = build_parent_problem(&parent, OUTLINE, &ctx(no_conn, &[]));
+    let empty = build_parent_problem(&parent, OUTLINE, &ctx(&parent, no_conn, &[]));
     assert!(empty.inputs.constraint_regions.is_empty());
 }
 
@@ -251,7 +258,7 @@ fn a_fixed_macro_is_a_macro_cluster_to_the_annealer() {
     parent.children.push(macro_child(3, "MACRO_2", 200, 200));
 
     let no_conn: &dyn Fn(i32) -> Vec<(i32, f32)> = &|_| Vec::new();
-    let problem = build_parent_problem(&parent, OUTLINE, &ctx(no_conn, &[]));
+    let problem = build_parent_problem(&parent, OUTLINE, &ctx(&parent, no_conn, &[]));
 
     let placed = &problem.macros[0];
     assert!(placed.fixed, "it is still fixed");
@@ -310,7 +317,7 @@ fn a_blockage_proxy_counts_as_a_fixed_macro() {
     parent.children.push(macro_child(8, "MACRO_1", 200, 200));
 
     let no_conn: &dyn Fn(i32) -> Vec<(i32, f32)> = &|_| Vec::new();
-    let mut c = ctx(no_conn, &[]);
+    let mut c = ctx(&parent, no_conn, &[]);
     // ℹ️ Already clipped and rebased — that is what `ParentContext::blockages` documents, and the
     // harness applies `find_offset_intersections` before handing them over.
     let one_blockage = [(100, 100, 500, 400)];
@@ -325,4 +332,77 @@ fn a_blockage_proxy_counts_as_a_fixed_macro() {
     // ⚠️ The control: the IO cluster is fixed too but sits past the sequence pair, so exactly one
     // entry is right — two would mean the bound was ignored.
     assert_eq!(problem.fixed_bboxes[0], (100, 100, 500, 400), "the proxy's own box");
+}
+
+/// ⛔ **A connection to a FIXED TERMINAL is a net**, its target found BY NAME among the terminals
+/// (`soft_macro_id_map.at(target->getName())`). Looking targets up among the parent's children
+/// alone dropped every one, so a nested parent annealed as if nothing outside it existed.
+///
+/// 🔑 **And the `child > target` id test still applies to a terminal** — a terminal is never a
+/// source, so a connection to one with a HIGHER id than the child is never emitted at all.
+#[test]
+fn a_connection_to_a_fixed_terminal_is_a_net_found_by_name() {
+    let mut parent = Cluster::new(3, "parent");
+    parent.cluster_type = ClusterType::Mixed;
+    parent.children.push(macro_child(5, "A", 100, 100));
+    parent.children.push(macro_child(6, "B", 100, 100));
+    let conn: &dyn Fn(i32) -> Vec<(i32, f32)> = &|id| match id {
+        5 => vec![(1, 3.0)],  // A -> a terminal of LOWER id: kept
+        6 => vec![(9, 4.0)],  // B -> a terminal of HIGHER id: dropped
+        _ => Vec::new(),
+    };
+    let point = vyges_mpl::anneal::SoftMacro {
+        x: 0, y: 0, width: 0, height: 0, fixed: true, area: 0, is_macro_cluster: false,
+    };
+    let terminals = [("T_low".to_string(), point), ("T_high".to_string(), point)];
+    let mut c = ctx(&parent, conn, &[]);
+    c.terminals = &terminals;
+    c.name_of = &|id| match id {
+        1 => Some("T_low".into()),
+        9 => Some("T_high".into()),
+        5 => Some("A".into()),
+        6 => Some("B".into()),
+        _ => None,
+    };
+    let got = build_parent_problem(&parent, OUTLINE, &c);
+    let named: Vec<(&str, &str, f32)> = got
+        .inputs
+        .nets
+        .iter()
+        .map(|n| (got.names[n.source].as_str(), got.names[n.target].as_str(), n.weight))
+        .collect();
+    assert_eq!(named, vec![("A", "T_low", 3.0)]);
+}
+
+/// ⛔ **A terminal that is a cluster of UNPLACED IO PINS keeps its cluster's attributes**; a
+/// conventional terminal is a bare point with none. `createFixedTerminal` keeps the pointer for
+/// that one kind, and the annealer reads it to measure such a net to the nearest available region.
+/// Every terminal used to get default attributes, which a nested parent of a design with unplaced
+/// pins scores against the wrong geometry.
+#[test]
+fn an_unplaced_io_terminal_keeps_its_clusters_attributes() {
+    let mut parent = Cluster::new(3, "parent");
+    parent.cluster_type = ClusterType::Mixed;
+    parent.children.push(macro_child(5, "A", 100, 100));
+    let mut ios = Cluster::new(1, "ios_1");
+    ios.set_as_cluster_of_unplaced_io_pins((0, 0), 4000, 4000, false);
+    let region = vyges_mpl::anneal::SoftMacro {
+        x: -1000, y: -1000, width: 4000, height: 4000, fixed: true, area: 0, is_macro_cluster: false,
+    };
+    let point = vyges_mpl::anneal::SoftMacro { width: 0, height: 0, ..region };
+    let terminals = [("ios_1".to_string(), region), ("B".to_string(), point)];
+    let no_conn: &dyn Fn(i32) -> Vec<(i32, f32)> = &|_| Vec::new();
+    let mut c = ctx(&parent, no_conn, &[]);
+    c.terminals = &terminals;
+    let by_name = |name: &str| -> Option<&Cluster> {
+        match name {
+            "ios_1" => Some(Box::leak(Box::new(ios.clone()))),
+            _ => None,
+        }
+    };
+    c.terminal_cluster_of = Box::leak(Box::new(by_name));
+    let got = build_parent_problem(&parent, OUTLINE, &c);
+    let at = |name: &str| got.names.iter().position(|n| n == name).expect("named");
+    assert!(got.inputs.attributes[at("ios_1")].is_cluster_of_unplaced_io_pins);
+    assert_eq!(got.inputs.attributes[at("B")], Default::default(), "a bare point");
 }

@@ -474,6 +474,8 @@ fn report_placement(
                 // mode the penalty tables are read from and the one that wires them.
                 guide_of: &|_| None,
                 terminals: &[],
+                name_of: &|id| sibling_of(root, id).map(|c| c.name.clone()),
+                terminal_cluster_of: &|_| None,
                 root: p::Root {
                     x: outline.0,
                     y: outline.1,
@@ -557,25 +559,34 @@ fn print_placement_summaries(
     // ⚠️ The merge happens BEFORE the outline clip and the `area() > 0` test, both of which
     // `merged_region` applies downstream — merging after clipping would drop a guide that reaches
     // the outline only through another macro's half of the union.
-    let mut guide_of_cluster: std::collections::BTreeMap<i32, (i32, i32, i32, i32)> =
-        std::collections::BTreeMap::new();
-    for &(inst, r) in guide_regions {
-        let Some(cluster) = assoc.get(inst).copied().flatten() else { continue };
+    // ⛔ **Both are read from the association AS IT STANDS at each parent**, so they are
+    // functions of it rather than values computed once: `placeChildren` re-associates every child
+    // before `rebuildConnections`, and a non-leaf child's macros belong to IT at that level, not
+    // to the leaves beneath it.
+    let guides_of = |assoc: &[Option<i32>]| {
+        let mut guide_of_cluster: std::collections::BTreeMap<i32, (i32, i32, i32, i32)> =
+            std::collections::BTreeMap::new();
+        for &(inst, r) in guide_regions {
+            let Some(cluster) = assoc.get(inst).copied().flatten() else { continue };
+            guide_of_cluster
+                .entry(cluster)
+                .and_modify(|m| {
+                    *m = (m.0.min(r.0), m.1.min(r.1), m.2.max(r.2), m.3.max(r.3));
+                })
+                .or_insert(r);
+        }
         guide_of_cluster
-            .entry(cluster)
-            .and_modify(|m| {
-                *m = (m.0.min(r.0), m.1.min(r.1), m.2.max(r.2), m.3.max(r.3));
-            })
-            .or_insert(r);
-    }
-    let connections = crate::netlist::build_connections(
-        nets,
-        design,
-        &|i| assoc.get(i).copied().flatten(),
-        pin_cluster_of,
-        has_io_pads,
-        50,
-    );
+    };
+    let connections_of = |assoc: &[Option<i32>]| {
+        crate::netlist::build_connections(
+            nets,
+            design,
+            &|i| assoc.get(i).copied().flatten(),
+            pin_cluster_of,
+            has_io_pads,
+            50,
+        )
+    };
 
     let floorplan = h.floorplan;
     let outline = (
@@ -584,6 +595,7 @@ fn print_placement_summaries(
         floorplan.x_max as i32,
         floorplan.y_max as i32,
     );
+    let floorplan_outline = outline;
     let die = h.die;
     let margin = 2 * ((die.x_max - die.x_min) + (die.y_max - die.y_min));
     // ⚠️ `has_std_cells` decides whether the reset fires, so it is not a detail the harness may
@@ -614,9 +626,6 @@ fn print_placement_summaries(
         .iter()
         .map(|b| (b.x_min as i32, b.y_min as i32, b.x_max as i32, b.y_max as i32))
         .collect();
-    let blockages = p::find_offset_intersections(&raw_hard, outline);
-    let soft = p::find_offset_intersections(&raw_soft, outline);
-
     // The die-edge stretches an unconstrained IO pin may land on.
     //
     // ⛔ **REBASED onto the outline, and the constraint regions are NOT.** That asymmetry is
@@ -646,7 +655,6 @@ fn print_placement_summaries(
             .map(|r| p::Region { x0: r.x0 - ox, y0: r.y0 - oy, x1: r.x1 - ox, y1: r.y1 - oy, ..*r })
             .collect()
     };
-    let available: Vec<p::Region> = rebase(&available_abs, (outline.0, outline.1));
 
     // 🔑 **A CONSTRAINED IO cluster measures against its OWN region, not the available ones.**
     // Both paths were stubbed, and the constrained one is the commoner of the two: every
@@ -693,21 +701,38 @@ fn print_placement_summaries(
     let flip_mode = commit_mode || args.iter().any(|a| a == "--flip");
     // Returns the winning run's macros and their names, so the caller can do the write-back that
     // `updateChildrenShapesAndLocations` does on the tree.
-    let emit = |out: &mut dyn std::io::Write, parent: &crate::cluster::Cluster|
+    //
+    // 🔑 **Everything outline-relative is taken against THIS parent's outline** — `placeChildren`
+    // reads `parent->getBBox()` and clips both blockage lists to it, and the annealer rebases the
+    // available regions onto it. The root's is the floorplan; a nested parent's is the box its
+    // own parent's placement just gave it. Using the floorplan for every parent was invisible on a
+    // one-level tree, where the root is the only parent with cluster children.
+    let emit = |out: &mut dyn std::io::Write,
+                parent: &crate::cluster::Cluster,
+                level: &Level|
      -> Option<(Vec<String>, Vec<crate::anneal::SoftMacro>)> {
+        let outline = level.outline;
+        let blockages = p::find_offset_intersections(&raw_hard, outline);
+        let soft = p::find_offset_intersections(&raw_soft, outline);
+        let available = rebase(&available_abs, (outline.0, outline.1));
         let ctx = p::ParentContext {
-            connections_of: &|id| connections.of(id),
+            connections_of: &|id| level.connections.of(id),
             virtual_connections: &parent.virtual_connections,
             blockages: &blockages,
             soft_blockages: &soft,
             fence_of: &|_| None,
-            guide_of: &|id| guide_of_cluster.get(&id).copied(),
-            terminals: &[],
+            guide_of: &|id| level.guides.get(&id).copied(),
+            terminals: &level.terminals,
+            name_of: &|id| sibling_of(root, id).map(|c| c.name.clone()),
+            terminal_cluster_of: &|name| {
+                level.terminals.iter().any(|(n, _)| n == name).then(|| by_name(root, name)).flatten()
+                    .filter(|c| c.is_cluster_of_unplaced_io_pins)
+            },
             root: p::Root {
-                x: outline.0,
-                y: outline.1,
-                width: outline.2 - outline.0,
-                height: outline.3 - outline.1,
+                x: floorplan_outline.0,
+                y: floorplan_outline.1,
+                width: floorplan_outline.2 - floorplan_outline.0,
+                height: floorplan_outline.3 - floorplan_outline.1,
             },
             die_margin: margin,
             available_regions: &available,
@@ -733,10 +758,17 @@ fn print_placement_summaries(
             // earliest artifact this stage produces and the one that explains a wirelength
             // difference without the placement in the way.
             let name = |i: usize| problem.names.get(i).map(String::as_str).unwrap_or("");
+            // ⚠️ One file PER PARENT upstream (`<report_dir>/<parent name>.net.txt`); here every
+            // parent the walk reaches is written to one stream, so each block is headed by its
+            // parent's name for the scorer to split on. Scoring only the first block hid every
+            // nested parent.
+            writeln!(out, "# parent {}", parent.name).expect("write the dump");
             for n in &problem.inputs.nets {
                 writeln!(out, "{}   {}   {}", name(n.source), name(n.target), n.weight).expect("write the dump");
             }
-            return None;
+            // ⛔ **And then the anneal still runs**, silently. A nested parent's net file is
+            // written only after ITS parent was placed and wrote its box back; returning here left
+            // every nested parent without an outline, so its nets were never produced at all.
         }
 
         // ⚠️ The same two steps `run_hierarchical_macro_placement` applies around its own call:
@@ -778,6 +810,8 @@ fn print_placement_summaries(
             );
             if floorplan_mode {
                 // `writeFloorplanFile`: name, x, y, width, height — three spaces between.
+                // ⚠️ One file per parent upstream, so each block is headed like the net file's.
+                writeln!(out, "# parent {}", parent.name).expect("write the dump");
                 for (i, m) in search.macros.iter().enumerate() {
                     writeln!(out, 
                         "{}   {}   {}   {}   {}",
@@ -789,7 +823,7 @@ fn print_placement_summaries(
                     ).expect("write the dump");
                 }
             }
-            if !floorplan_mode && !push_mode && !flip_mode {
+            if !floorplan_mode && !nets_mode && !push_mode && !flip_mode {
                 writeln!(out, "Cluster Placement Summary").expect("write the dump");
                 write!(out, 
                     "{}",
@@ -845,12 +879,61 @@ fn print_placement_summaries(
         })
         .collect();
 
-    let mut stack = vec![root];
-    while let Some(c) = stack.pop() {
+    // Upstream `placeChildren`, recursive: VISIT a parent, place it, descend into its children in
+    // order, then LEAVE it — the `updateInstancesAssociation(parent)` after the recursion, which
+    // hands the parent's subtree back to it before its next sibling is placed.
+    enum Step<'a> {
+        Visit(&'a crate::cluster::Cluster),
+        Leave(&'a crate::cluster::Cluster),
+    }
+    let mut stack = vec![Step::Visit(root)];
+    while let Some(step) = stack.pop() {
+        let c = match step {
+            Step::Visit(c) => c,
+            Step::Leave(c) => {
+                crate::tree::associate_one(c, design, &mut assoc);
+                continue;
+            }
+        };
         let action = p::placement_action(p::area_kind_of(c), c.is_fixed_macro, c.children.is_empty());
         match action {
             p::PlacementAction::PlaceChildren => {
-                if let Some((names, macros)) = emit(out, c) {
+                // `placeChildren`'s opening loop: each child claims its whole subtree.
+                for k in &c.children {
+                    crate::tree::associate_one(k, design, &mut assoc);
+                }
+                // `parent->getBBox()`: the floorplan for the root, its placed box below. A nested
+                // parent its own parent never placed has no box, and nothing to place against.
+                let Some(level_outline) = (if c.id == root.id {
+                    Some(floorplan_outline)
+                } else {
+                    placed.get(&c.id).copied()
+                }) else {
+                    continue;
+                };
+                // `createFixedTerminals`: every sibling at every level above, none for the root.
+                let terminals: Vec<(String, crate::anneal::SoftMacro)> = p::fixed_terminal_walk(
+                    c.id as usize,
+                    &|id| parent_of(root, id as i32).map(|k| k.id as usize),
+                    &|id| {
+                        sibling_of(root, id as i32)
+                            .map_or(Vec::new(), |k| k.children.iter().map(|g| g.id as usize).collect())
+                    },
+                )
+                .into_iter()
+                .filter_map(|id| {
+                    let k = sibling_of(root, id as i32)?;
+                    let t = terminal_cluster(k, &placed)?;
+                    Some((k.name.clone(), p::fixed_terminal(&t, (level_outline.0, level_outline.1))))
+                })
+                .collect();
+                let level = Level {
+                    outline: level_outline,
+                    connections: connections_of(&assoc),
+                    terminals,
+                    guides: guides_of(&assoc),
+                };
+                if let Some((names, macros)) = emit(out, c, &level) {
                     // `updateChildrenShapesAndLocations`, then `updateChildrenRealLocation`.
                     let children: Vec<(String, p::AreaKind)> = c
                         .children
@@ -883,8 +966,9 @@ fn print_placement_summaries(
                         }
                     }
                 }
+                stack.push(Step::Leave(c));
                 for child in c.children.iter().rev() {
-                    stack.push(child);
+                    stack.push(Step::Visit(child));
                 }
             }
             p::PlacementAction::PlaceMacros => {
@@ -895,7 +979,10 @@ fn print_placement_summaries(
                     // distance by the difference between the two corners.
                     c, &placed, design, h, dbu, weights, probabilities, root, geometry,
                     &available_abs, nets, &assoc,
-                    pin_cluster_of, has_io_pads, push_mode || flip_mode, guide_regions,
+                    // ⚠️ Quiet in every mode that dumps something ELSE: the summary would land
+                    // inside the parent block the per-parent scorers split on.
+                    pin_cluster_of, has_io_pads, push_mode || flip_mode || nets_mode || floorplan_mode,
+                    guide_regions,
                 )?;
                 for (inst, location) in located {
                     macro_location.insert(inst, location);
@@ -1617,6 +1704,63 @@ fn sibling_of(
     root.children.iter().find_map(|c| sibling_of(c, id))
 }
 
+/// A cluster by its name — names are unique in the tree, as `soft_macro_id_map` relies on.
+fn by_name<'a>(root: &'a crate::cluster::Cluster, name: &str) -> Option<&'a crate::cluster::Cluster> {
+    if root.name == name {
+        return Some(root);
+    }
+    root.children.iter().find_map(|c| by_name(c, name))
+}
+
+/// `Cluster::getParent`, by search.
+fn parent_of(root: &crate::cluster::Cluster, id: i32) -> Option<&crate::cluster::Cluster> {
+    if root.children.iter().any(|c| c.id == id) {
+        return Some(root);
+    }
+    root.children.iter().find_map(|c| parent_of(c, id))
+}
+
+/// One placement level's state, as `placeChildren` holds it for one parent.
+struct Level {
+    /// `parent->getBBox()`, absolute.
+    outline: (i32, i32, i32, i32),
+    /// `rebuildConnections` over the association as this parent left it.
+    connections: crate::netlist::Connections,
+    /// `createFixedTerminals`, in the order the walk found them.
+    terminals: Vec<(String, crate::anneal::SoftMacro)>,
+    guides: std::collections::BTreeMap<i32, (i32, i32, i32, i32)>,
+}
+
+/// A cluster as `createFixedTerminal` reads it: `getCenter()` / `getX()` off its soft macro.
+///
+/// ⛔ **An IO cluster is NOT in the placed map** — `updateChildrenShapesAndLocations` skips it on
+/// purpose, because its position is already absolute and must not be overwritten. So a terminal's
+/// geometry comes from the cluster's OWN soft macro when it has one, and from the placed box
+/// otherwise. Reading only the map drops every net to an IO cluster. Shared by both callers so the
+/// cluster and macro paths cannot disagree about where a terminal sits.
+fn terminal_cluster(
+    c: &crate::cluster::Cluster,
+    placed: &std::collections::HashMap<i32, (i32, i32, i32, i32)>,
+) -> Option<crate::placement::TerminalCluster> {
+    let (x0, y0, x1, y1, is_unplaced_ios) = match c
+        .soft_macro
+        .map(|m| (m.x, m.y, m.x + m.width, m.y + m.height, c.is_cluster_of_unplaced_io_pins))
+    {
+        Some(v) => v,
+        None => {
+            let &(a, b, c2, d) = placed.get(&c.id)?;
+            (a, b, c2, d, false)
+        }
+    };
+    Some(crate::placement::TerminalCluster {
+        center: ((x0 + x1) / 2, (y0 + y1) / 2),
+        origin: (x0, y0),
+        width: x1 - x0,
+        height: y1 - y0,
+        is_cluster_of_unplaced_io_pins: is_unplaced_ios,
+    })
+}
+
 /// A hard macro placed by its cluster's search: the instance and its location.
 type Located = (usize, (i32, i32));
 
@@ -1738,29 +1882,19 @@ fn emit_macro_summary(
         // a terminal's geometry comes from the cluster's OWN soft macro when it has one, and from
         // the placed box otherwise. Reading only the map drops every net to an IO cluster, which
         // scores wirelength zero on any design whose macros talk to the outside world.
-        let sibling = sibling_of(root, *id);
-        let (tx0, ty0, tx1, ty1, is_unplaced_ios) = match sibling.and_then(|c| {
-            c.soft_macro.map(|m| {
-                (m.x, m.y, m.x + m.width, m.y + m.height, c.is_cluster_of_unplaced_io_pins)
-            })
-        }) {
-            Some(v) => v,
-            None => match placed.get(id) {
-                Some(&(a, b, c2, d)) => (a, b, c2, d, false),
-                None => continue,
-            },
+        let t = match sibling_of(root, *id) {
+            Some(c) => terminal_cluster(c, placed),
+            None => placed.get(id).map(|&(a, b, c2, d)| p::TerminalCluster {
+                center: ((a + c2) / 2, (b + d) / 2),
+                origin: (a, b),
+                width: c2 - a,
+                height: d - b,
+                is_cluster_of_unplaced_io_pins: false,
+            }),
         };
+        let Some(t) = t else { continue };
         macro_of.insert(*id, macros.len());
-        macros.push(p::fixed_terminal(
-            &p::TerminalCluster {
-                center: ((tx0 + tx1) / 2, (ty0 + ty1) / 2),
-                origin: (tx0, ty0),
-                width: tx1 - tx0,
-                height: ty1 - ty0,
-                is_cluster_of_unplaced_io_pins: is_unplaced_ios,
-            },
-            (x0, y0),
-        ));
+        macros.push(p::fixed_terminal(&t, (x0, y0)));
     }
 
     let per_cluster: Vec<(i32, Vec<(i32, f32)>)> = (0..n)
