@@ -366,9 +366,9 @@ fn a_child_that_fits_is_left_alone() {
 }
 
 #[test]
-fn small_children_are_reported_in_child_order_and_not_merged() {
-    // ⚠️ Identified, not merged: merging consults net connectivity, a separate stage. Reporting
-    // them keeps the decision visible instead of silently skipped.
+fn small_children_are_merged_at_the_end_of_the_break() {
+    // Upstream `breakCluster` ends with `mergeChildrenBelowThresholds(small_children)` and only
+    // then `updateInstancesAssociation(parent)`. Two one-cell children are dust: type 3 joins them.
     let d = design(
         vec![inst("a", false), inst("b", false)],
         vec![m("top", vec![], vec![1, 2]), m("s1", vec![0], vec![]), m("s2", vec![1], vec![])],
@@ -376,13 +376,13 @@ fn small_children_are_reported_in_child_order_and_not_merged() {
     let mut b = TreeBuilder::new(&d, vec![metrics(2, 0), metrics(1, 0), metrics(1, 0)]);
     let mut root = holding(99, "root", 0, 2, 0);
     let out = b.break_cluster(&mut root, true, 100, 100, 5, 5);
-    assert_eq!(out.merge_candidates.len(), 2, "both children are below the minimum");
-    assert_eq!(
-        out.merge_candidates,
-        root.children.iter().map(|c| c.id).collect::<Vec<_>>(),
-        "in child order"
-    );
-    assert_eq!(root.children.len(), 2, "and nothing was actually merged away");
+    let (parent, report) = out.merges.last().expect("the break merged");
+    assert_eq!(*parent, 99);
+    assert_eq!(report.candidates.len(), 2, "both children are below the minimum, in child order");
+    assert_eq!(report.merged.len(), 1, "dust absorbs dust");
+    assert_eq!(root.children.len(), 1, "one cluster left");
+    assert!(root.children[0].name.contains("||"), "named receiver||incomer: {}", root.children[0].name);
+    assert_eq!(root.children[0].num_std_cell(), 2, "metrics recomputed over both");
 }
 
 #[test]
@@ -394,7 +394,7 @@ fn a_child_above_the_minimum_is_not_a_merge_candidate() {
     let mut b = TreeBuilder::new(&d, vec![metrics(2, 0), metrics(9, 0), metrics(1, 0)]);
     let mut root = holding(99, "root", 0, 2, 0);
     let out = b.break_cluster(&mut root, true, 100, 100, 5, 5);
-    assert_eq!(out.merge_candidates.len(), 1, "only the small one");
+    assert_eq!(out.merges.last().unwrap().1.candidates.len(), 1, "only the small one");
 }
 
 // ------------------------------------------------------------------ the autocluster descent
@@ -461,9 +461,9 @@ fn force_split_measures_against_the_LEAF_maximum_not_the_base_one() {
     let out = b.multilevel_autocluster(&mut root, true, 0, t(5000, 1000, 5000, 1000), 3, 10.0);
     assert!(!root.children.is_empty(), "it is broken -- the question is at which level");
     assert!(
-        out.merge_candidates.is_empty(),
+        out.merges.iter().all(|(_, r)| r.candidates.is_empty()),
         "broken at the DEEP level, where 200 cells clear the minimum: {:?}",
-        out.merge_candidates
+        out.merges
     );
 }
 
@@ -611,6 +611,7 @@ fn flat_split_with<'a>(d: &'a Design, p: &'a mut dyn FlatPartitioner) -> TreeBui
         nets: &[],
         bterm_to_cluster: vec![],
         large_net_threshold: 50,
+        design_has_io_pads: false,
         dbu_per_micron: 1,
         partitioner: p,
         calls: vec![],
@@ -676,6 +677,7 @@ fn a_cluster_dissolved_by_the_level_collapse_is_no_vertex() {
         nets: &[],
         bterm_to_cluster: vec![],
         large_net_threshold: 50,
+        design_has_io_pads: false,
         dbu_per_micron: 1,
         partitioner: &mut p,
         calls: vec![],
@@ -714,7 +716,7 @@ fn a_balance_reaching_ninety_is_mpl_45() {
 }
 
 #[test]
-fn merge_candidates_are_reported_per_parent() {
+fn merges_are_reported_per_parent() {
     let d = design(
         vec![inst("a", false), inst("b", false)],
         vec![
@@ -726,8 +728,9 @@ fn merge_candidates_are_reported_per_parent() {
     let mut b = TreeBuilder::new(&d, vec![metrics(2, 0), metrics(1, 0), metrics(1, 0)]);
     let mut root = holding(0, "root", 0, 2, 0);
     let out = b.multilevel_autocluster(&mut root, true, 1, t(10, 50, 10, 50), 2, 10.0);
-    assert!(!out.merge_candidates.is_empty(), "both children are below the minimum");
-    assert_eq!(out.merge_candidates[0].0, 0, "reported against their parent");
+    let (parent, report) = &out.merges[0];
+    assert_eq!(*parent, 0, "reported against their parent");
+    assert_eq!(report.candidates.len(), 2, "both children are below the minimum");
 }
 
 

@@ -60,3 +60,52 @@ fn a_fixed_cell_does_not_refuse_a_design_with_nothing_to_place() {
     assert_eq!(c.status, Status::Vacuous, "refusal: {:?}", c.refusal);
     assert!(c.refusal.is_none());
 }
+
+/// ⛔ **The shaping handoff counts EVERY block instance**, because the tiny-cluster threshold is
+/// a thousandth of the reference's `block_->getInsts().size()`. It was a placeholder `0`: every
+/// upstream suite design has under 1000 instances and scores the same either way, so only a
+/// generated witness of 7609 showed it — a 5-cell and a 7-cell cluster the reference collapsed to
+/// a unit square were shaped instead.
+#[test]
+fn the_shaping_handoff_carries_the_block_instance_count() {
+    let mut instances = vec![inst("U1", true, false, r(0, 0, 200, 200))];
+    for i in 0..1500 {
+        instances.push(inst(&format!("c{i}"), false, false, r(0, 0, 10, 10)));
+    }
+    let n = instances.len();
+    let d = Design {
+        instances,
+        modules: vec![Module {
+            name: "top".into(),
+            hierarchical_name: "top".into(),
+            insts: (0..n).collect(),
+            children: vec![],
+        }],
+        top: 0,
+        core_area: r(0, 0, 10_000, 10_000),
+        die_area: r(0, 0, 10_000, 10_000),
+    };
+    let mut geometry: Vec<Option<vyges_mpl::read::MacroGeometry>> = vec![None; n];
+    geometry[0] = Some(vyges_mpl::read::MacroGeometry {
+        master_width: 200,
+        master_height: 200,
+        pins: vec![],
+        inst_halo: None,
+        orient: vyges_mpl::halo::Orient::R0,
+    });
+    let input = DesignInputs {
+        design: &d,
+        pins: &[],
+        nets: &[],
+        geometry: &geometry,
+        blockages: &[],
+        blocked_regions_for_pins: &[],
+        minimum_spacing: 0,
+        manufacturing_grid: 0,
+        dbu_per_micron: 1000,
+    };
+    let c = run_clustering(&input, &ClusterOptions::default());
+    let h = c.shaping.unwrap_or_else(|| panic!("no handoff: {:?} {:?}", c.status, c.refusal));
+    assert_eq!(h.block_instance_count, 1501, "macros count too, not just the std cells");
+    assert_eq!(vyges_mpl::placement::tiny_cluster_max_number_of_std_cells(h.block_instance_count), 1);
+}

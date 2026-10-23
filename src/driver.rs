@@ -431,7 +431,7 @@ fn report_placement(
     let (weights, tiny, probabilities) = p::placement_setup(
         h.max_level,
         overrides.weights(),
-        0,
+        h.block_instance_count,
         h.has_std_cells,
     );
     let utilizations = p::utilization_list(overrides.target_util, 10);
@@ -594,7 +594,7 @@ fn print_placement_summaries(
     let (weights, tiny, probabilities) = p::placement_setup(
         h.max_level,
         overrides.weights(),
-        0,
+        h.block_instance_count,
         h.has_std_cells,
     );
     let utilizations = p::utilization_list(overrides.target_util, 10);

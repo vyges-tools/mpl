@@ -22,6 +22,7 @@ log_dir = sys.argv[2] if len(sys.argv) > 2 else os.path.join(odb_dir, "cslogs")
 tcl_dir = sys.argv[3] if len(sys.argv) > 3 else odb_dir
 
 from _mplchannel import channel_flags
+from _mplflags import THRESH
 from _mplrefusal import both_skip, same_error
 
 # ⛔ Same list as compare-report.py, for the same reason: an mpl command that changes what the
@@ -49,6 +50,12 @@ def halo_args(case):
     text = io.open(path, encoding="utf-8").read()
     out = []
     out += channel_flags(text)
+    # ⛔ The clustering thresholds too: shaping reads the tree they build. Without them
+    # `keep_clustering_data2` clusters on derived thresholds — harmless only while no merge ran.
+    for tcl_opt, flag in THRESH.items():
+        m = re.search(re.escape(tcl_opt) + r"\s+(\d+)", text)
+        if m:
+            out += [flag, m.group(1)]
     return out
 
 

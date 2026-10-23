@@ -131,14 +131,17 @@ pub fn find_single_well_formed_connected_cluster(
     }
 }
 
-/// Merge `incomer` into `receiver`.
+/// Upstream `Cluster::attemptMerge`, past its parent check: merge `incomer` into `receiver`.
 ///
 /// 🔑 **The receiver's name becomes `receiver||incomer`.** That is observable in upstream's own
 /// hierarchy dump, so it is reproduced rather than tidied.
 ///
-/// ⚠️ **If the receiver has children, the incomer becomes one of them instead of dissolving.**
-/// A cluster with children cannot absorb another's leaves without losing the structure its own
-/// children describe.
+/// ⛔ **The incomer's leaves and modules are appended to the receiver UNCONDITIONALLY — and then,
+/// if the receiver has children, the incomer is ALSO adopted as one of them.** Both, not either:
+/// the receiver's association (and so its connections next round) claims the incomer's
+/// instances, while the tree keeps the incomer as a child. An earlier reading here skipped the
+/// append on adoption — inferred, never read — and nothing could catch it until the merge had
+/// a witness.
 ///
 /// Returns whether the incomer was dissolved (rather than adopted).
 pub fn merge_into(receiver: &mut Cluster, incomer: Cluster) -> bool {
@@ -148,15 +151,28 @@ pub fn merge_into(receiver: &mut Cluster, incomer: Cluster) -> bool {
     receiver.metrics.macro_area += incomer.metrics.macro_area;
     receiver.name = format!("{}||{}", receiver.name, incomer.name);
 
+    receiver.leaf_macros.extend(incomer.leaf_macros.iter().copied());
+    receiver.leaf_std_cells.extend(incomer.leaf_std_cells.iter().copied());
+    receiver.db_modules.extend(incomer.db_modules.iter().copied());
+
     if !receiver.children.is_empty() {
         receiver.children.push(incomer);
         return false;
     }
-
-    receiver.leaf_macros.extend(incomer.leaf_macros);
-    receiver.leaf_std_cells.extend(incomer.leaf_std_cells);
-    receiver.db_modules.extend(incomer.db_modules);
     true
+}
+
+/// What the merge loop needs from the clustering engine around it — the state upstream's
+/// `ClusteringEngine` holds and the merge reads or updates at its own sites.
+pub trait MergeCtx {
+    /// `clearConnections(); buildNetListConnections()` — over the WHOLE tree, from the current
+    /// instance association, not just the parent's children.
+    fn rebuild_connections(&mut self) -> Connections;
+    /// `id_to_cluster.at(id)->isIOCluster()`, for any live cluster.
+    fn is_io_cluster(&self, id: ClusterId) -> bool;
+    /// The tail of `ClusteringEngine::attemptMerge` after a successful merge: erase a dissolved
+    /// incomer's id, then `updateInstancesAssociation(receiver)` and `setClusterMetrics(receiver)`.
+    fn merged(&mut self, receiver: &mut Cluster, incomer: ClusterId, incomer_dissolved: bool);
 }
 
 /// Is this cluster "dust"?
@@ -181,9 +197,27 @@ pub enum ImpossibleMerge {
     Dust { receiver: ClusterId, incomer: ClusterId },
 }
 
+impl ImpossibleMerge {
+    /// The upstream message, by its MPL code. ⚠️ Ids, where upstream names the clusters.
+    pub fn to_mpl_error(&self) -> crate::options::MplError {
+        match *self {
+            ImpossibleMerge::SameSignature { receiver, incomer } => crate::options::MplError::new(
+                23,
+                format!("Merge attempt between siblings {receiver} and {incomer} with same connection signature failed!"),
+            ),
+            ImpossibleMerge::Dust { receiver, incomer } => crate::options::MplError::new(
+                24,
+                format!("Merge attempt between dust siblings {receiver} and {incomer} failed!"),
+            ),
+        }
+    }
+}
+
 /// What the merge loop did.
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub struct MergeReport {
+    /// The small children the merge started from, in child order — upstream's debug list.
+    pub candidates: Vec<ClusterId>,
     pub rounds: usize,
     /// `(receiver, incomer)` in the order the merges happened.
     pub merged: Vec<(ClusterId, ClusterId)>,
@@ -194,28 +228,52 @@ fn index_of(parent: &Cluster, id: ClusterId) -> Option<usize> {
     parent.children.iter().position(|c| c.id == id)
 }
 
-/// Fold `incomer_id` into `receiver_id`, both children of `parent`.
+/// Upstream `ClusteringEngine::attemptMerge`: fold `incomer_id` into `receiver_id`, both children
+/// of `parent`, and update the live connection map in place.
+///
+/// 🔑 **The connections are edited, not rebuilt.** When the incomer dissolves, every cluster it was
+/// connected to (as the incomer's own map lists them, cached before the merge) forgets it and
+/// gains the same weight towards the receiver — ONE way: the receiver's map gains nothing, and
+/// the receiver itself only forgets the incomer. The rest of the round reads that state.
+/// An adopted incomer keeps its id and its connections.
 ///
 /// ⚠️ Uses `remove`, not `swap_remove`: sibling ORDER is observable downstream, and swapping
 /// would silently reorder the tree.
-fn merge_siblings(parent: &mut Cluster, receiver_id: ClusterId, incomer_id: ClusterId) -> bool {
+fn attempt_merge(
+    parent: &mut Cluster,
+    conns: &mut Connections,
+    ctx: &mut dyn MergeCtx,
+    receiver_id: ClusterId,
+    incomer_id: ClusterId,
+) -> bool {
     let (Some(ri), Some(ii)) = (index_of(parent, receiver_id), index_of(parent, incomer_id)) else {
-        // Not siblings — upstream's `attemptMerge` returns false on differing parents.
+        // Not siblings — upstream's `Cluster::attemptMerge` returns false on differing parents.
         return false;
     };
     if ri == ii {
         return false;
     }
+    let incomer_connections = conns.of(incomer_id);
     let incomer = parent.children.remove(ii);
     let ri = index_of(parent, receiver_id).expect("receiver survives removing another child");
-    merge_into(&mut parent.children[ri], incomer);
+    let dissolved = merge_into(&mut parent.children[ri], incomer);
+    if dissolved {
+        for (id, weight) in incomer_connections {
+            conns.remove_one_way(id, incomer_id);
+            // Connected to each other: forgotten, or the receiver would connect to itself.
+            if id != receiver_id {
+                conns.add_one_way(id, receiver_id, weight);
+            }
+        }
+    }
+    ctx.merged(&mut parent.children[ri], incomer_id, dissolved);
     true
 }
 
 /// Upstream `mergeChildrenBelowThresholds`: absorb children too small to stand alone.
 ///
-/// `rebuild_connections` is called **once per round**, because cluster ids change as clusters
-/// merge and a stale map would connect clusters that no longer exist.
+/// Connections are rebuilt **once per round** and edited in place by each merge within it
+/// (see [`attempt_merge`]).
 ///
 /// 🔑 **Three merge types, in order, and the order is the algorithm** — a cluster absorbed by
 /// type 1 is no longer available to type 2:
@@ -230,21 +288,20 @@ fn merge_siblings(parent: &mut Cluster, receiver_id: ClusterId, incomer_id: Clus
 pub fn merge_children_below_thresholds(
     parent: &mut Cluster,
     mut small: Vec<ClusterId>,
-    rebuild_connections: &mut dyn FnMut(&Cluster) -> Connections,
-    is_io_cluster: &dyn Fn(ClusterId) -> bool,
+    ctx: &mut dyn MergeCtx,
     min_std_cell: i32,
     min_macro: i32,
     max_std_cell: i32,
     max_macro: i32,
 ) -> MergeReport {
-    let mut report = MergeReport::default();
+    let mut report = MergeReport { candidates: small.clone(), ..Default::default() };
     if small.is_empty() {
         return report;
     }
 
     loop {
         report.rounds += 1;
-        let conns = rebuild_connections(parent);
+        let mut conns = ctx.rebuild_connections();
 
         let count_at_round_start = small.len();
         // `None` = still unmerged. Upstream's `cluster_class`.
@@ -252,9 +309,12 @@ pub fn merge_children_below_thresholds(
 
         // ---- Type 1: a single well-formed connected neighbour.
         for i in 0..small.len() {
-            let Some(close) =
-                find_single_well_formed_connected_cluster(&conns, small[i], &small, is_io_cluster)
-            else {
+            let Some(close) = find_single_well_formed_connected_cluster(
+                &conns,
+                small[i],
+                &small,
+                &|id| ctx.is_io_cluster(id),
+            ) else {
                 continue;
             };
             let (Some(ci), Some(si)) = (index_of(parent, close), index_of(parent, small[i])) else {
@@ -274,7 +334,7 @@ pub fn merge_children_below_thresholds(
             // non-sibling, so this call only ever sees siblings. Behaviourally identical; noted
             // because a mutation adding an error report here cannot fail, the guard having
             // short-circuited first.
-            if merge_siblings(parent, close, small[i]) {
+            if attempt_merge(parent, &mut conns, ctx, close, small[i]) {
                 absorbed[i] = true;
                 report.merged.push((close, small[i]));
             }
@@ -302,7 +362,7 @@ pub fn merge_children_below_thresholds(
                 {
                     continue;
                 }
-                if merge_siblings(parent, small[i], small[j]) {
+                if attempt_merge(parent, &mut conns, ctx, small[i], small[j]) {
                     absorbed[j] = true;
                     report.merged.push((small[i], small[j]));
                 } else {
@@ -334,7 +394,7 @@ pub fn merge_children_below_thresholds(
                     continue;
                 }
                 // ⚠️ No threshold check here — dust merges regardless of the maximums.
-                if merge_siblings(parent, small[i], small[j]) {
+                if attempt_merge(parent, &mut conns, ctx, small[i], small[j]) {
                     absorbed[j] = true;
                     report.merged.push((small[i], small[j]));
                 } else {

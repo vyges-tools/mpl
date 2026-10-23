@@ -12,7 +12,8 @@
 ///
 /// ⚠️ **A thousandth of the block's instance count, TRUNCATED.** The product is computed in `f32`
 /// and assigned to an `int`, so a block with fewer than 1000 instances gets a threshold of zero —
-/// and a threshold of zero means no cluster is ever "tiny", because the test is a strict `<`.
+/// and a threshold of zero leaves only an EMPTY std-cell cluster "tiny", because the shaping test
+/// is `<=`.
 ///
 /// ⚠️ It counts **every instance in the block**, not the standard cells among them, despite naming
 /// standard cells. A macro-heavy block therefore gets a larger threshold than its cell count alone
@@ -1432,11 +1433,16 @@ pub struct DeadSpaceMacro {
 /// ⚠️ **A zero-AREA macro contributes no edges.** Fixed terminals and IO clusters carry zero area
 /// by construction, so they neither cut the grid nor occupy it — the filler expands straight
 /// through them.
+///
+/// ⛔ **"Zero" is `getArea`'s zero, which includes an area of ONE.** Every test in upstream's
+/// `fillDeadSpace` reads `getArea()`, not the field, so a tiny cluster `applyUtilization` collapsed
+/// to a 1×1 square neither cuts the grid, nor occupies it, nor grows — it stays one DBU square in
+/// the floorplan. Testing the raw area grew it into whatever space surrounded it.
 pub fn dead_space_grid(macros: &[DeadSpaceMacro], outline: (i32, i32)) -> (Vec<i32>, Vec<i32>) {
     let mut xs = std::collections::BTreeSet::new();
     let mut ys = std::collections::BTreeSet::new();
     for m in macros {
-        if m.area == 0 {
+        if soft_macro_area(m.area) == 0 {
             continue;
         }
         xs.insert(m.x);
@@ -1486,7 +1492,7 @@ pub fn fill_dead_space(macros: &mut [DeadSpaceMacro], outline: (i32, i32)) {
     };
 
     for (id, m) in macros.iter().enumerate() {
-        if m.area == 0 {
+        if soft_macro_area(m.area) == 0 {
             continue;
         }
         let (x0, x1, y0, y1) = span(m);
@@ -1499,7 +1505,7 @@ pub fn fill_dead_space(macros: &mut [DeadSpaceMacro], outline: (i32, i32)) {
 
     for order in 0..=1 {
         for id in 0..macros.len() {
-            if macros[id].area == 0 {
+            if soft_macro_area(macros[id].area) == 0 {
                 continue;
             }
             let wanted = if order == 0 {

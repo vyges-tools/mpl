@@ -28,6 +28,8 @@ pub struct TreeBuilder<'a> {
     /// Upstream `inst_to_cluster_id`, updated at the reference's own `updateInstancesAssociation`
     /// sites. ⚠️ Read only by the flat-cluster split; later stages rebuild theirs by walking.
     inst_to_cluster: Vec<Option<ClusterId>>,
+    /// The IO clusters, for the merge's `isIOCluster` on any cluster id.
+    io: BTreeSet<ClusterId>,
     /// `None`: a large flat cluster is reported, not split.
     flat: Option<FlatSplit<'a>>,
 }
@@ -37,6 +39,8 @@ pub struct FlatSplit<'a> {
     pub nets: &'a [crate::netlist::DbNet],
     pub bterm_to_cluster: Vec<Option<ClusterId>>,
     pub large_net_threshold: usize,
+    /// With IO pads, the pads carry the connectivity and block ports are ignored (`buildNet`).
+    pub design_has_io_pads: bool,
     pub dbu_per_micron: i32,
     pub partitioner: &'a mut dyn FlatPartitioner,
     /// Every partitioner call made, in order, answered or not.
@@ -62,6 +66,7 @@ impl<'a> TreeBuilder<'a> {
             next_id: 0,
             live: BTreeSet::new(),
             inst_to_cluster: vec![None; design.instances.len()],
+            io: BTreeSet::new(),
             flat: None,
         }
     }
@@ -80,6 +85,8 @@ impl<'a> TreeBuilder<'a> {
     /// Clusters made outside the builder (the IO clusters) join the live set; a pad joins its
     /// cluster as upstream's `createIOPadCluster` maps it.
     pub fn register_clusters(&mut self, ids: impl IntoIterator<Item = ClusterId>, pads: &[(usize, ClusterId)]) {
+        let ids: Vec<ClusterId> = ids.into_iter().collect();
+        self.io.extend(ids.iter().copied());
         self.live.extend(ids);
         for &(pad, id) in pads {
             self.inst_to_cluster[pad] = Some(id);
@@ -272,14 +279,42 @@ pub fn all_module_metrics(
     (metrics, errors)
 }
 
-/// What `break_cluster` left for the caller to deal with.
+/// What `break_cluster` did beyond reshaping the tree.
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub struct BreakOutcome {
-    /// Children small enough to be merge candidates, by id, in the order upstream collects them.
-    ///
-    /// ⚠️ Identified but **not merged** — merging consults net connectivity, which is a separate
-    /// stage. Reporting them keeps the decision visible rather than silently skipped.
-    pub merge_candidates: Vec<ClusterId>,
+    /// Every small-children merge this break ran, `(parent, report)` in the order they ran —
+    /// the recursive breaks' first, as each finishes before its parent merges.
+    pub merges: Vec<(ClusterId, crate::merge::MergeReport)>,
+}
+
+impl crate::merge::MergeCtx for TreeBuilder<'_> {
+    fn rebuild_connections(&mut self) -> crate::netlist::Connections {
+        // ℹ️ Without a flat-split context there is no netlist: no connections, so only dust can
+        // merge. Every engine path supplies one; this is for tree-only tests.
+        let Some(flat) = self.flat.as_ref() else { return crate::netlist::Connections::new() };
+        let assoc = &self.inst_to_cluster;
+        let bterm = &flat.bterm_to_cluster;
+        crate::netlist::build_connections(
+            flat.nets,
+            self.design,
+            &|i| assoc.get(i).copied().flatten(),
+            &|b| bterm.get(b).copied().flatten(),
+            flat.design_has_io_pads,
+            flat.large_net_threshold,
+        )
+    }
+
+    fn is_io_cluster(&self, id: ClusterId) -> bool {
+        self.io.contains(&id)
+    }
+
+    fn merged(&mut self, receiver: &mut Cluster, incomer: ClusterId, incomer_dissolved: bool) {
+        if incomer_dissolved {
+            self.live.remove(&incomer);
+        }
+        self.update_instances_association(receiver);
+        self.set_cluster_metrics(receiver);
+    }
 }
 
 impl TreeBuilder<'_> {
@@ -359,6 +394,7 @@ impl TreeBuilder<'_> {
             }
         }
 
+        let mut outcome = BreakOutcome::default();
         // Recurse into children that still hold a module AND are too big.
         //
         // ⛔ **The module check is what makes this recursion TERMINATE.** It reads like a mere
@@ -373,22 +409,31 @@ impl TreeBuilder<'_> {
             if !child.db_modules.is_empty()
                 && crate::cluster::should_break(child, max_std_cell, max_macro)
             {
-                self.break_cluster(child, false, max_std_cell, max_macro, min_std_cell, min_macro);
+                let nested =
+                    self.break_cluster(child, false, max_std_cell, max_macro, min_std_cell, min_macro);
+                outcome.merges.extend(nested.merges);
             }
         }
 
-        // ⏸️ Upstream merges the small ones here; see `BreakOutcome::merge_candidates`.
+        // The small ones, in child order, merged where they can be — then the association.
+        let small: Vec<ClusterId> = parent
+            .children
+            .iter()
+            .filter(|c| crate::cluster::is_merge_candidate(c, min_std_cell, min_macro))
+            .map(|c| c.id)
+            .collect();
+        let merge = crate::merge::merge_children_below_thresholds(
+            parent,
+            small,
+            self,
+            min_std_cell,
+            min_macro,
+            max_std_cell,
+            max_macro,
+        );
         self.update_instances_association(parent);
-
-        // Collect the small ones, in child order.
-        BreakOutcome {
-            merge_candidates: parent
-                .children
-                .iter()
-                .filter(|c| crate::cluster::is_merge_candidate(c, min_std_cell, min_macro))
-                .map(|c| c.id)
-                .collect(),
-        }
+        outcome.merges.push((parent.id, merge));
+        outcome
     }
 }
 
@@ -397,8 +442,8 @@ impl TreeBuilder<'_> {
 pub struct AutoclusterOutcome {
     /// Clusters that need TritonPart. ⛔ **Stage 1 refuses on a non-empty list.**
     pub needs_partitioning: Vec<ClusterId>,
-    /// Merge candidates reported per parent, in visit order.
-    pub merge_candidates: Vec<(ClusterId, Vec<ClusterId>)>,
+    /// Every small-children merge, `(parent, report)`, in the order they ran.
+    pub merges: Vec<(ClusterId, crate::merge::MergeReport)>,
     /// Cluster ids dissolved by the level collapse, so the id map can be pruned.
     pub dissolved: Vec<ClusterId>,
     /// ⛔ The first flat split that could not be made. The walk stops there.
@@ -408,7 +453,7 @@ pub struct AutoclusterOutcome {
 impl AutoclusterOutcome {
     fn absorb(&mut self, other: AutoclusterOutcome) {
         self.needs_partitioning.extend(other.needs_partitioning);
-        self.merge_candidates.extend(other.merge_candidates);
+        self.merges.extend(other.merges);
         self.dissolved.extend(other.dissolved);
         if self.refused.is_none() {
             self.refused = other.refused;
@@ -466,8 +511,12 @@ impl TreeBuilder<'_> {
                 t.min_std_cell,
                 t.min_macro,
             );
-            if !breaks.merge_candidates.is_empty() {
-                outcome.merge_candidates.push((parent.id, breaks.merge_candidates));
+            // ⛔ An impossible merge is `logger_->critical` upstream — the run ends there.
+            let impossible = breaks.merges.iter().flat_map(|(_, r)| r.impossible.iter()).next().cloned();
+            outcome.merges.extend(breaks.merges);
+            if let Some(e) = impossible {
+                outcome.refused = Some(FlatRefusal::Mpl(e.to_mpl_error()));
+                return outcome;
             }
 
             let sub = crate::cluster::update_sub_tree(parent, t.max_std_cell, t.max_macro);

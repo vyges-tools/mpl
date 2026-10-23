@@ -7,12 +7,22 @@ Pin constraints, halos and guidance regions are all set by commands a read-only 
 drops -- and a design missing them still clusters, just differently. That produced five false
 mismatches before it was noticed, and the engine was right every time.
 
-Usage:  python3 scripts/compare-hierarchy.py <odb-dir> [golden-file]
+⛔ **And translate the case's `rtl_macro_placer` options, not only its prep.** Thresholds such as
+`-max_num_inst` are command state a `.odb` cannot carry. Run without them, `keep_clustering_data2`
+derived its own (min 20 cells / 10 macros where the case sets 2 / 1) and still matched — but only
+while the small-children merge was unbuilt: under the wrong minimums every child is "small", and
+the merge joined two clusters upstream keeps apart.
+
+Usage:  python3 scripts/compare-hierarchy.py <odb-dir> [golden-file] [tcl-dir]
 """
 import io, subprocess, sys, os
 
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+from _mplflags import case_flags  # noqa: E402
+
 odb_dir = sys.argv[1] if len(sys.argv) > 1 else "/tmp/mplodb"
 golden = sys.argv[2] if len(sys.argv) > 2 else "tests/goldens/macro_only_hierarchy.txt"
+tcl_dir = sys.argv[3] if len(sys.argv) > 3 else odb_dir
 
 gold, cur = {}, None
 for line in io.open(golden, encoding="utf-8"):
@@ -30,7 +40,8 @@ for case, want in sorted(gold.items()):
     path = os.path.join(odb_dir, case + ".odb")
     if not os.path.exists(path):
         print(f"  {case:24} NO ODB"); refused += 1; continue
-    p = subprocess.run(["target/debug/cluster-dump", path], capture_output=True, text=True)
+    p = subprocess.run(["target/debug/cluster-dump"] + case_flags(tcl_dir, case) + [path],
+                       capture_output=True, text=True)
     if p.returncode != 0:
         print(f"  {case:24} REFUSED: {p.stderr.strip()[:60]}"); refused += 1; continue
     got = [l for l in p.stdout.splitlines() if l.strip()]

@@ -140,3 +140,40 @@ fn unfixed_macros_are_a_subset_of_the_macros() {
         assert!(d.instances[i].is_block && !d.instances[i].is_fixed);
     }
 }
+
+// ------------------------------------------------------------------ a deep hierarchy
+
+/// Three module levels below the top, several children per module, an instance at every depth
+/// (`hier3.v`: `hier3 > u_b, u_p > {u_z, u_q > u_r}, u_a`), floorplanned, nothing else.
+const HIER3: &str = "tests/fixtures/hier3.odb";
+
+#[test]
+fn an_instance_two_module_levels_down_is_not_lost() {
+    // ⛔ A child module instance resolves by its PATH from the top (`dbBlock::findModInst`
+    // walks it token by token), while the database lists children by LOCAL name. Resolving the
+    // local name works one level down and silently drops every deeper subtree — `u_p/u_q`'s
+    // `q0` and `u_p/u_q/u_r`'s `r0` with it. Found by a generated hierarchical witness: the
+    // design report read 2215 of 8345 standard cells.
+    let d = read_design(&Db::open(HIER3).expect("fixture reads")).expect("read");
+    assert_eq!(d.modules.len(), 7, "every module, at every depth");
+    let owned: usize = d.modules.iter().map(|m| m.insts.len()).sum();
+    assert_eq!(owned, d.instances.len(), "every instance is owned by some module");
+    let names: Vec<&str> = d.modules.iter().map(|m| m.name.as_str()).collect();
+    assert!(names.contains(&"leaf_r"), "the deepest module was read: {names:?}");
+}
+
+#[test]
+fn a_modules_children_keep_the_databases_order() {
+    // 🔑 `breakCluster` creates one cluster per child in `getChildren()` order, so that order is
+    // the cluster ids. The reader's depth-first walk pops a stack; pushing children in order
+    // would list them REVERSED. Upstream on this fixture (`getChildren()`, printed by the
+    // reference): `hier3` -> u_a u_b u_p, `top_p` -> u_q u_z — the database's order, NOT the
+    // netlist's (which declares u_b first).
+    let d = read_design(&Db::open(HIER3).expect("fixture reads")).expect("read");
+    let kids = |name: &str| -> Vec<String> {
+        let m = d.modules.iter().find(|m| m.name == name).expect("module read");
+        m.children.iter().map(|&c| d.modules[c].hierarchical_name.clone()).collect()
+    };
+    assert_eq!(kids("hier3"), ["u_a", "u_b", "u_p"]);
+    assert_eq!(kids("top_p"), ["u_p/u_q", "u_p/u_z"]);
+}

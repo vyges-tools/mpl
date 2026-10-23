@@ -74,8 +74,13 @@ pub fn read_design(db: &Db) -> Result<Design, String> {
     // The module hierarchy, depth-first from the top.
     let top_name = db.block_get_top_module();
     let mut modules: Vec<Module> = Vec::new();
-    let mut stack = vec![(top_name, None::<usize>)];
-    while let Some((module_name, parent)) = stack.pop() {
+    // ⛔ **A child is resolved by its PATH from the top, not its name.** `module_get_children` gives
+    // each `dbModInst`'s local name (`u_a`), and `modinst_get_master` looks it up with
+    // `dbBlock::findModInst`, which walks from the top module one `/`-separated token at a time.
+    // One level down the two agree, so a flat-ish hierarchy reads fine; two levels down `u_a`
+    // resolves to nothing and the whole subtree — its instances too — silently disappears.
+    let mut stack = vec![(top_name, None::<usize>, String::new())];
+    while let Some((module_name, parent, path)) = stack.pop() {
         let idx = modules.len();
         let insts = db
             .module_get_insts(&module_name)
@@ -92,10 +97,14 @@ pub fn read_design(db: &Db) -> Result<Design, String> {
             modules[p].children.push(idx);
         }
         // `module_get_children` yields the child module INSTANCES; each resolves to its master.
-        for mod_inst in db.module_get_children(&module_name) {
-            let master = db.modinst_get_master(&mod_inst);
+        // 🔑 Pushed in REVERSE so they pop — and join `children` — in `getChildren()` order, the
+        // order upstream's `breakCluster` creates their clusters in, and so their ids.
+        for mod_inst in db.module_get_children(&module_name).into_iter().rev() {
+            let child_path =
+                if path.is_empty() { mod_inst.clone() } else { format!("{path}/{mod_inst}") };
+            let master = db.modinst_get_master(&child_path);
             if !master.is_empty() {
-                stack.push((master, Some(idx)));
+                stack.push((master, Some(idx), child_path));
             }
         }
     }

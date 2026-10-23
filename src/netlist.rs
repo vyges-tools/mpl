@@ -136,8 +136,8 @@ pub fn connections_for(net: &Net, large_net_threshold: usize) -> Vec<(ClusterId,
 
 /// Accumulated connection weights, per cluster.
 ///
-/// 🔑 **Symmetric**: connecting A to B records the weight on BOTH. A one-sided map would make the
-/// merge stage's answer depend on which cluster it asked.
+/// 🔑 **Built symmetric**: connecting A to B records the weight on BOTH. Only the merge stage's
+/// in-place updates ([`Connections::add_one_way`]) make it one-sided, as upstream's do.
 #[derive(Debug, Clone, Default, PartialEq)]
 pub struct Connections {
     per_cluster: BTreeMap<ClusterId, BTreeMap<ClusterId, f32>>,
@@ -156,6 +156,22 @@ impl Connections {
     pub fn connect(&mut self, a: ClusterId, b: ClusterId, weight: f32) {
         *self.per_cluster.entry(a).or_default().entry(b).or_insert(0.0) += weight;
         *self.per_cluster.entry(b).or_default().entry(a).or_insert(0.0) += weight;
+    }
+
+    /// Upstream `Cluster::addConnection`: ONE side only — `a` gains weight towards `b`.
+    ///
+    /// ⚠️ **The merge stage leaves the map one-sided on purpose.** When an incomer dissolves,
+    /// each of its neighbours drops it and gains the receiver, but the receiver does not gain
+    /// them back. Later ratios in the same round read that lopsided state, so it is kept.
+    pub fn add_one_way(&mut self, a: ClusterId, b: ClusterId, weight: f32) {
+        *self.per_cluster.entry(a).or_default().entry(b).or_insert(0.0) += weight;
+    }
+
+    /// Upstream `Cluster::removeConnection`: `a` forgets `b`; `b`'s own entry is untouched.
+    pub fn remove_one_way(&mut self, a: ClusterId, b: ClusterId) {
+        if let Some(m) = self.per_cluster.get_mut(&a) {
+            m.remove(&b);
+        }
     }
 
     pub fn weight(&self, a: ClusterId, b: ClusterId) -> f32 {

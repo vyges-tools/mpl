@@ -517,6 +517,31 @@ fn a_zero_area_macro_does_not_cut_the_grid() {
     assert_eq!(ys, vec![0, 800]);
 }
 
+/// ⛔ **A TINY cell cluster — collapsed to 1×1 by `applyUtilization` — is not grown, and blocks
+/// nothing.** Upstream's `fillDeadSpace` tests `getArea()`, which reports an area of ONE as zero.
+/// Testing the field grew the tiny cluster into the space around it: a generated witness's 5-cell
+/// cluster came out 78252×17263 where the reference kept it one DBU square.
+#[test]
+fn a_one_dbu_square_cluster_is_neither_grown_nor_an_obstacle() {
+    let mut macros = [ds(500, 500, 1, 1, false, true), ds(0, 0, 200, 200, false, true)];
+    let (xs, _) = dead_space_grid(&macros, (1000, 1000));
+    assert_eq!(xs, vec![0, 200, 1000], "the 1x1 square cuts no grid line");
+    fill_dead_space(&mut macros, (1000, 1000));
+    assert_eq!((macros[0].x, macros[0].y, macros[0].width, macros[0].height), (500, 500, 1, 1));
+    assert_eq!((macros[1].width, macros[1].height), (1000, 1000), "grew straight through it");
+}
+
+/// ⛔ **Nor does it OCCUPY a cell when it sits on someone else's grid lines.** Cutting no edges, a
+/// 1×1 square spans no grid cell — unless its corner lands exactly on lines another macro cut,
+/// when its span is the whole cell beyond. Upstream skips it in the occupancy pass too.
+#[test]
+fn a_one_dbu_square_on_another_macros_corner_occupies_nothing() {
+    let mut macros = [ds(200, 200, 1, 1, false, true), ds(0, 0, 200, 200, false, true)];
+    fill_dead_space(&mut macros, (1000, 1000));
+    assert_eq!((macros[0].width, macros[0].height), (1, 1));
+    assert_eq!((macros[1].width, macros[1].height), (1000, 1000), "the far cell was free to take");
+}
+
 /// 🔑 **A lone cell cluster expands to fill the whole outline.**
 #[test]
 fn a_lone_cluster_takes_the_whole_outline() {

@@ -221,18 +221,23 @@ fn merging_sums_the_metrics_and_concatenates_the_leaves() {
 }
 
 #[test]
-fn a_receiver_with_children_ADOPTS_the_incomer_instead_of_dissolving_it() {
-    // ⚠️ A cluster with children cannot absorb another's leaves without losing the structure its
-    // own children describe, so the incomer becomes another child.
+fn a_receiver_with_children_takes_the_incomers_leaves_AND_adopts_it() {
+    // ⛔ Upstream `Cluster::attemptMerge` appends the incomer's leaves and modules to the
+    // receiver unconditionally, and only then, when the receiver has children, adopts the
+    // incomer as one of them too. Both — so the receiver's association claims the incomer's
+    // instances while the tree keeps it as a child.
     let mut r = cl(1, "r", 3, 0);
     r.children.push(cl(5, "kid", 1, 0));
     let mut i = cl(2, "i", 4, 0);
     i.leaf_std_cells = vec![3];
+    i.db_modules = vec![7];
     let dissolved = merge_into(&mut r, i);
     assert!(!dissolved, "adopted, not dissolved");
     assert_eq!(r.children.len(), 2);
-    assert!(r.leaf_std_cells.is_empty(), "its leaves did NOT move to the receiver");
-    assert_eq!(r.metrics.num_std_cell, 7, "but the metrics still accumulate");
+    assert_eq!(r.children[1].leaf_std_cells, vec![3], "the adopted child keeps its leaves");
+    assert_eq!(r.leaf_std_cells, vec![3], "and the receiver has them too");
+    assert_eq!(r.db_modules, vec![7]);
+    assert_eq!(r.metrics.num_std_cell, 7);
 }
 
 // ------------------------------------------------------------------ dust
@@ -256,7 +261,7 @@ fn all_connections_weight_sums_every_link() {
 
 // ------------------------------------------------------------------ the loop
 
-use vyges_mpl::merge::{merge_children_below_thresholds, ImpossibleMerge};
+use vyges_mpl::merge::{merge_children_below_thresholds, ImpossibleMerge, MergeCtx};
 
 /// A parent holding the given children.
 fn parent_of(children: Vec<Cluster>) -> Cluster {
@@ -265,16 +270,35 @@ fn parent_of(children: Vec<Cluster>) -> Cluster {
     p
 }
 
-/// Connections that never change, for a loop that should converge on structure alone.
-fn fixed(c: Connections) -> impl FnMut(&Cluster) -> Connections {
-    move |_: &Cluster| c.clone()
+/// Connections that every round rebuilds the same, for a loop that should converge on structure
+/// alone; no IO clusters; the engine's post-merge bookkeeping is a no-op.
+struct Fixed {
+    c: Connections,
+    rebuilds: usize,
+}
+
+impl Fixed {
+    fn new(c: Connections) -> Self {
+        Self { c, rebuilds: 0 }
+    }
+}
+
+impl MergeCtx for Fixed {
+    fn rebuild_connections(&mut self) -> Connections {
+        self.rebuilds += 1;
+        self.c.clone()
+    }
+    fn is_io_cluster(&self, _: i32) -> bool {
+        false
+    }
+    fn merged(&mut self, _: &mut Cluster, _: i32, _: bool) {}
 }
 
 #[test]
 fn no_small_children_means_no_rounds() {
     let mut p = parent_of(vec![cl(1, "a", 100, 0)]);
     let r = merge_children_below_thresholds(
-        &mut p, vec![], &mut fixed(Connections::new()), &never_io, 5, 5, 100, 100,
+        &mut p, vec![], &mut Fixed::new(Connections::new()), 5, 5, 100, 100,
     );
     assert_eq!(r.rounds, 0);
     assert!(r.merged.is_empty());
@@ -289,7 +313,7 @@ fn a_round_that_merges_nothing_ends_the_loop() {
     // Without the exit test this loops forever.
     let mut p = parent_of(vec![cl(1, "a", 20, 0), cl(2, "b", 20, 0)]);
     let r = merge_children_below_thresholds(
-        &mut p, vec![1, 2], &mut fixed(Connections::new()), &never_io, 50, 5, 100, 100,
+        &mut p, vec![1, 2], &mut Fixed::new(Connections::new()), 50, 5, 100, 100,
     );
     assert_eq!(r.rounds, 1, "one round, then it gives up");
     assert!(r.merged.is_empty());
@@ -303,7 +327,7 @@ fn a_small_cluster_merges_into_its_single_well_formed_neighbour() {
     let mut conns = Connections::new();
     conns.connect(1, 2, 5.0);
     let r = merge_children_below_thresholds(
-        &mut p, vec![1], &mut fixed(conns), &never_io, 5, 5, 100, 100,
+        &mut p, vec![1], &mut Fixed::new(conns), 5, 5, 100, 100,
     );
     assert_eq!(r.merged, vec![(2, 1)], "the WELL-FORMED cluster is the receiver");
     assert_eq!(p.children.len(), 1);
@@ -316,7 +340,7 @@ fn type_1_is_skipped_when_the_merge_would_break_a_maximum() {
     let mut conns = Connections::new();
     conns.connect(1, 2, 5.0);
     let r = merge_children_below_thresholds(
-        &mut p, vec![1], &mut fixed(conns), &never_io, 5, 5, 50, 5,
+        &mut p, vec![1], &mut Fixed::new(conns), 5, 5, 50, 5,
     );
     assert!(r.merged.is_empty(), "4 + 50 exceeds the 50-cell maximum");
     assert_eq!(p.children.len(), 2);
@@ -330,7 +354,7 @@ fn siblings_with_the_same_signature_merge_when_type_1_does_not_apply() {
     conns.connect(1, 10, 5.0);
     conns.connect(2, 10, 5.0);
     let r = merge_children_below_thresholds(
-        &mut p, vec![1, 2], &mut fixed(conns), &never_io, 5, 5, 100, 100,
+        &mut p, vec![1, 2], &mut Fixed::new(conns), 5, 5, 100, 100,
     );
     // ⚠️ Type 1 fires first: each small cluster has exactly one well-formed neighbour (10).
     // That is the correct upstream behaviour -- type 2 only sees what type 1 left.
@@ -347,7 +371,7 @@ fn type_1_takes_precedence_over_type_2() {
     conns.connect(1, 10, 5.0);
     conns.connect(2, 10, 5.0);
     let r = merge_children_below_thresholds(
-        &mut p, vec![1, 2], &mut fixed(conns), &never_io, 5, 5, 100, 100,
+        &mut p, vec![1, 2], &mut Fixed::new(conns), 5, 5, 100, 100,
     );
     assert!(
         !r.merged.iter().any(|&(recv, _)| recv == 1 || recv == 2),
@@ -361,7 +385,7 @@ fn dust_absorbs_dust_when_nothing_else_applies() {
     // Type 3. Two isolated dust clusters -- no connections at all, so types 1 and 2 cannot fire.
     let mut p = parent_of(vec![cl(1, "d1", 2, 0), cl(2, "d2", 3, 0)]);
     let r = merge_children_below_thresholds(
-        &mut p, vec![1, 2], &mut fixed(Connections::new()), &never_io, 50, 5, 100, 100,
+        &mut p, vec![1, 2], &mut Fixed::new(Connections::new()), 50, 5, 100, 100,
     );
     assert_eq!(r.merged, vec![(1, 2)], "the earlier one receives");
     assert_eq!(p.children.len(), 1);
@@ -376,7 +400,7 @@ fn a_non_dust_receiver_does_not_absorb_dust() {
     // lets DUST absorb dust, so nothing should happen.
     let mut p = parent_of(vec![cl(1, "notdust", 20, 0), cl(2, "dust", 2, 0)]);
     let r = merge_children_below_thresholds(
-        &mut p, vec![1, 2], &mut fixed(Connections::new()), &never_io, 50, 5, 100, 100,
+        &mut p, vec![1, 2], &mut Fixed::new(Connections::new()), 50, 5, 100, 100,
     );
     assert!(r.merged.is_empty(), "a non-dust cluster does not absorb dust");
     assert_eq!(p.children.len(), 2);
@@ -386,7 +410,7 @@ fn a_non_dust_receiver_does_not_absorb_dust() {
 fn a_cluster_with_a_macro_is_not_dust_and_is_left_alone() {
     let mut p = parent_of(vec![cl(1, "d", 2, 0), cl(2, "hasmacro", 2, 1)]);
     let r = merge_children_below_thresholds(
-        &mut p, vec![1, 2], &mut fixed(Connections::new()), &never_io, 50, 5, 100, 100,
+        &mut p, vec![1, 2], &mut Fixed::new(Connections::new()), 50, 5, 100, 100,
     );
     assert!(r.merged.is_empty(), "a macro is never negligible");
     assert_eq!(p.children.len(), 2);
@@ -403,7 +427,7 @@ fn merging_preserves_sibling_order() {
         cl(4, "last", 91, 0),
     ]);
     merge_children_below_thresholds(
-        &mut p, vec![1, 2], &mut fixed(Connections::new()), &never_io, 50, 5, 100, 100,
+        &mut p, vec![1, 2], &mut Fixed::new(Connections::new()), 50, 5, 100, 100,
     );
     let names: Vec<&str> = p.children.iter().map(|c| c.name.as_str()).collect();
     assert_eq!(names, vec!["d1||d2", "keep", "last"], "the tail kept its order");
@@ -415,7 +439,7 @@ fn the_loop_runs_again_after_a_successful_merge() {
     // finds nothing left to do and stops.
     let mut p = parent_of(vec![cl(1, "a", 1, 0), cl(2, "b", 1, 0), cl(3, "c", 1, 0)]);
     let r = merge_children_below_thresholds(
-        &mut p, vec![1, 2, 3], &mut fixed(Connections::new()), &never_io, 50, 5, 100, 100,
+        &mut p, vec![1, 2, 3], &mut Fixed::new(Connections::new()), 50, 5, 100, 100,
     );
     assert_eq!(p.children.len(), 1, "all three ended up together");
     assert!(r.rounds >= 1);
@@ -425,14 +449,10 @@ fn the_loop_runs_again_after_a_successful_merge() {
 fn connections_are_rebuilt_every_round() {
     // ⚠️ Cluster ids change as clusters merge, so a map built once and reused would connect
     // clusters that no longer exist.
-    let mut calls = 0;
     let mut p = parent_of(vec![cl(1, "a", 1, 0), cl(2, "b", 1, 0)]);
-    let mut rebuild = |_: &Cluster| {
-        calls += 1;
-        Connections::new()
-    };
-    merge_children_below_thresholds(&mut p, vec![1, 2], &mut rebuild, &never_io, 50, 5, 100, 100);
-    assert!(calls >= 1, "rebuilt at least once");
+    let mut ctx = Fixed::new(Connections::new());
+    let r = merge_children_below_thresholds(&mut p, vec![1, 2], &mut ctx, 50, 5, 100, 100);
+    assert_eq!(ctx.rebuilds, r.rounds, "rebuilt once per round");
 }
 
 #[test]
@@ -443,7 +463,7 @@ fn a_well_formed_neighbour_that_is_not_a_sibling_is_silently_skipped() {
     let mut conns = Connections::new();
     conns.connect(1, 99, 5.0); // 99 is not a child of this parent
     let r = merge_children_below_thresholds(
-        &mut p, vec![1], &mut fixed(conns), &never_io, 5, 5, 100, 100,
+        &mut p, vec![1], &mut Fixed::new(conns), 5, 5, 100, 100,
     );
     assert!(r.merged.is_empty());
     assert!(r.impossible.is_empty(), "not an error, just no merge");
@@ -458,7 +478,62 @@ fn no_impossible_merges_arise_in_ordinary_operation() {
     conns.connect(1, 10, 5.0);
     conns.connect(2, 10, 5.0);
     let r = merge_children_below_thresholds(
-        &mut p, vec![1, 2], &mut fixed(conns), &never_io, 5, 5, 100, 100,
+        &mut p, vec![1, 2], &mut Fixed::new(conns), 5, 5, 100, 100,
     );
     assert_eq!(r.impossible, Vec::<ImpossibleMerge>::new());
+}
+
+// ------------------------------------------------------------------ connections edited mid-round
+
+#[test]
+fn a_dissolved_incomers_neighbours_re_point_to_the_receiver_one_way() {
+    // 🔑 Upstream `ClusteringEngine::attemptMerge`: once the incomer dissolves, every cluster in
+    // its (cached) map forgets it and gains that weight towards the receiver — ONE way. The
+    // receiver forgets the incomer and gains nothing. Later merges in the round read that state.
+    //
+    // X is well-formed, A and D are small. A (20 to X, 1 to Q) merges into X first. D's only
+    // link is 1 to X, and whether it is strong depends on X's total AFTER A left:
+    //   upstream  -- X keeps D 1 + W 11 = 12  ->  1 / (1 + 12 - 1) = 0.083 >= 0.08: D merges.
+    //   mutations -- X keeping A's 20, or linking to itself (+20), or gaining Q back (+1) all
+    //                push X past 12, the ratio under 0.08, and D stays.
+    let mut p = parent_of(vec![
+        cl(1, "A", 3, 0),
+        cl(2, "D", 20, 0),
+        cl(10, "X", 90, 0),
+        cl(11, "W", 90, 0),
+        cl(12, "Q", 90, 0),
+    ]);
+    let mut c = Connections::new();
+    c.connect(1, 10, 20.0);
+    c.connect(1, 12, 1.0);
+    c.connect(2, 10, 1.0);
+    c.connect(10, 11, 11.0);
+    let r = merge_children_below_thresholds(&mut p, vec![1, 2], &mut Fixed::new(c), 50, 5, 1000, 100);
+    assert_eq!(r.merged[..2], [(10, 1), (10, 2)], "A, then D, into X in the same round: {:?}", r.merged);
+}
+
+#[test]
+fn a_signature_is_read_from_the_connections_as_this_rounds_merges_left_them() {
+    // A merges into X in type 1. Before that, B's neighbours are {A, Y, Z} and C's {X, Y, Z};
+    // A dissolving re-points B to X, so by type 2 they share a signature and merge.
+    // ⛔ Scoring the round against the map it started with — the earlier reading — merges nothing.
+    let mut p = parent_of(vec![
+        cl(1, "A", 3, 0),
+        cl(2, "B", 20, 0),
+        cl(3, "C", 20, 0),
+        cl(10, "X", 90, 0),
+        cl(11, "Y", 90, 0),
+        cl(12, "Z", 90, 0),
+    ]);
+    let mut c = Connections::new();
+    c.connect(1, 10, 1.0);
+    c.connect(2, 1, 1.0);
+    c.connect(2, 11, 1.0);
+    c.connect(2, 12, 1.0);
+    c.connect(3, 10, 1.0);
+    c.connect(3, 11, 1.0);
+    c.connect(3, 12, 1.0);
+    let r = merge_children_below_thresholds(&mut p, vec![1, 2, 3], &mut Fixed::new(c), 50, 5, 1000, 100);
+    assert!(r.merged.contains(&(10, 1)), "A into X: {:?}", r.merged);
+    assert!(r.merged.contains(&(2, 3)), "then B and C by signature: {:?}", r.merged);
 }

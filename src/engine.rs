@@ -110,6 +110,12 @@ pub struct ShapingHandoff {
     /// its own thresholds — leaves the weight at its command default of `10`, and hardcoding `1`
     /// gives every such design a weight of `50` instead.
     pub max_level: i32,
+    /// `block_->getInsts().size()` — EVERY instance in the block, macros and pads included.
+    ///
+    /// ⛔ **The tiny-cluster threshold is a thousandth of this.** A placeholder of `0` passes every
+    /// design under 1000 instances — the whole upstream suite — and gives a larger one a threshold
+    /// of zero, so its small std-cell clusters are shaped instead of collapsed to a unit square.
+    pub block_instance_count: usize,
     /// Summed over the UNFIXED macros, as `init` computed it for the MPL-16 test.
     pub macro_with_halo_area: i64,
     pub io_bundles: Vec<crate::regions::IoRegion>,
@@ -419,6 +425,7 @@ pub fn run_clustering_with(
         nets: input.nets,
         bterm_to_cluster: bterm_to_cluster.clone(),
         large_net_threshold: opts.large_net_threshold,
+        design_has_io_pads: !pads.is_empty(),
         dbu_per_micron: input.dbu_per_micron,
         partitioner: partitioner.unwrap_or(&mut none),
         calls: Vec::new(),
@@ -594,6 +601,7 @@ fn shaping_handoff(
         macro_halos,
         has_std_cells: num_std_cell > 0,
         max_level,
+        block_instance_count: design.instances.len(),
         macro_with_halo_area,
         io_bundles: io.bundles.iter().filter_map(as_region).collect(),
         // ⚠️ The CONSTRAINED ones only. An unconstrained cluster is served by the available-region
