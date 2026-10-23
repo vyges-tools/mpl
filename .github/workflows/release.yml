@@ -41,9 +41,13 @@ jobs:
           # Same support matrix as opendb, which this transitively builds: Linux x86_64/arm64 +
           # Apple Silicon on macos-15 (Xcode 16 — new enough for cxx, stable for fmt 11.0.2;
           # macos-latest/Xcode 26.5 breaks fmt consteval). Intel Mac is unsupported.
-          - { os: ubuntu-latest,    target: x86_64-unknown-linux-gnu  }
-          - { os: ubuntu-24.04-arm, target: aarch64-unknown-linux-gnu }
-          - { os: macos-15,         target: aarch64-apple-darwin      }
+          #
+          # 🔑 Only x86_64 Linux links the partitioner (`--features par`): its exact stages need the
+          # solver bundle, which is built for that target alone. The other two refuse a large flat
+          # cluster by name, and their `--describe` says so.
+          - { os: ubuntu-latest,    target: x86_64-unknown-linux-gnu,  features: "--features par" }
+          - { os: ubuntu-24.04-arm, target: aarch64-unknown-linux-gnu, features: "" }
+          - { os: macos-15,         target: aarch64-apple-darwin,      features: "" }
     steps:
       # Sibling layout: <ws>/vyges-tools-mpl + <ws>/vyges-tools-opendb + <ws>/vyges-tools-opendb-lib,
       # so both `[patch]` path entries in Cargo.toml resolve on CI. Every patched dependency needs
@@ -71,6 +75,16 @@ jobs:
         with:
           repository: vyges-tools/layout
           path: vyges-tools-layout
+      # The partitioner and its solver crate: Cargo.toml patches both to these siblings, so they
+      # must be checked out even for a build without the `par` feature.
+      - uses: actions/checkout@v7
+        with:
+          repository: vyges-tools/par
+          path: vyges-tools-par
+      - uses: actions/checkout@v7
+        with:
+          repository: vyges-tools/ortools-lib
+          path: vyges-tools-ortools-lib
 
       - name: Toolchain (Linux)
         # Boost (headers) + zlib only; fmt/spdlog/abseil are built from source by libodb's build.
@@ -83,6 +97,11 @@ jobs:
         if: runner.os == 'macOS'
         run: brew install cmake boost bison   # bison for the LEF/DEF parsers
 
+      # The prebuilt solver bundle for the checked-out ortools-lib (no Bazel build here).
+      - name: Fetch the solver bundle (par)
+        if: matrix.features != ''
+        run: bash ../vyges-tools-ortools-lib/scripts/fetch-bundle.sh "$RUNNER_TEMP/ortools" >> "$GITHUB_ENV"
+
       - uses: dtolnay/rust-toolchain@stable
         with:
           targets: ${{ matrix.target }}
@@ -94,7 +113,7 @@ jobs:
         # parsers.
         run: |
           [ "${{ runner.os }}" = "macOS" ] && export PATH="$(brew --prefix bison)/bin:$PATH"
-          cargo build --release --bin vyges-mpl
+          cargo build --release --bin vyges-mpl ${{ matrix.features }}
 
       - name: Package vyges-mpl-${{ matrix.target }}.tar.gz
         id: pkg

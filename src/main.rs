@@ -159,7 +159,7 @@ fn describe() -> String {
         "assertion": {"id": "macros-placed", "field": "status", "pass_when": {"eq": "applied"}},
         "stages": ORDER.iter().map(|s| s.upstream_name()).collect::<Vec<_>>(),
         "limits": {
-            "par_partitioning": "not implemented; a flat cluster over the level threshold is refused",
+            "par_partitioning": PAR_LIMIT,
             "clustering_groups": "not written; `run` has no --keep-clustering-data",
         },
         // ⛔ **REQUIRED, and it is where the gaps go.** The maturity word is a rung on a
@@ -167,7 +167,11 @@ fn describe() -> String {
         "provenance_limitations": [
             "input_hash covers the argument vector, not the content of the .odb it names.",
             "`run` writes what the commit gate scores: the commit stage's rows (macro corner and orientation, halo blockages, temporary standard-cell positions) applied to the database, so the database and the scored output are one derivation. Clustering groups (-keep_clustering_data) are not written. `place-macro` is LibreLane `Classic` step 16, `Odb.ManualMacroPlacement`, and asserts nothing about where macros should go.",
-            "TritonPart partitioning is NOT implemented. A FLAT cluster -- one with no module children -- whose leaf standard cells exceed the level threshold is REFUSED rather than approximated. Upstream's own mpl suite never reaches that path; a large flat block does, so a refusal here is a real design shape and not a corner case.",
+            if cfg!(feature = "par") {
+                "A FLAT cluster -- one with no module children -- whose leaf standard cells exceed the level threshold is split by vyges-par. Upstream's own mpl suite never reaches that path; it is measured on a flat synthesized design, where the partitioner's inputs and answers and the written DEF match upstream's exactly. Builds without the `par` feature (every target but x86_64 Linux) refuse such a cluster instead."
+            } else {
+                "This build does not link the partitioner. A FLAT cluster -- one with no module children -- whose leaf standard cells exceed the level threshold is REFUSED rather than approximated. Upstream's own mpl suite never reaches that path; a large flat block does, so a refusal here is a real design shape and not a corner case."
+            },
             "Correlation is measured against upstream's own 36-design regression suite at the pin above, per stage rather than on the final output: physical hierarchy and design report 33 of 33 byte-exact each; coarse shaping, boundary push and orientation byte-exact on every case that emits a trace; golden DEFs -- macro positions, temporary standard cells, halo blockages and clustering groups -- 33 of 33 exact. Those gates drive `cluster-dump`, which runs the same driver as `run`.",
             "Every score is true of ONE upstream commit, named in `openroad_pin`. The reference moves: a score quoted without its pin says nothing.",
             "`consumes` is the generic `odb` on purpose. mpl supports running BEFORE or AFTER pin placement and the two give DIFFERENT placements, so a fixed predecessor list would be the wrong shape of claim rather than merely the wrong list.",
@@ -400,6 +404,24 @@ mod micron_conversion_tests {
 }
 
 
+/// `run`, with the partitioner that splits a large flat cluster: `vyges-par` when built with the
+/// `par` feature; otherwise none, and such a cluster is refused.
+#[cfg(feature = "par")]
+fn run(args: &[String]) -> ExitCode {
+    vyges_mpl::run::run_main(args, Some(&mut vyges_mpl::par::Par))
+}
+#[cfg(not(feature = "par"))]
+fn run(args: &[String]) -> ExitCode {
+    vyges_mpl::run::run_main(args, None)
+}
+
+/// The `par_partitioning` limit, as this build has it.
+const PAR_LIMIT: &str = if cfg!(feature = "par") {
+    "linked (vyges-par, with its exact stages): a flat cluster over the level threshold is split in two, recursively, as upstream does; a call the partitioner cannot balance is MPL-45"
+} else {
+    "not linked in this build; a flat cluster over the level threshold is refused"
+};
+
 fn main() -> ExitCode {
     let args: Vec<String> = std::env::args().skip(1).collect();
     // ⛔ Before any database exists: libodb then logs to the events trail (stderr) only, and
@@ -419,7 +441,7 @@ fn main() -> ExitCode {
             ExitCode::SUCCESS
         }
         Some("place-macro") => place_macro_main(&args[1..]),
-        Some("run") => vyges_mpl::run::run_main(&args[1..], None),
+        Some("run") => run(&args[1..]),
         Some(other) => {
             diag!("vyges-mpl: unknown command {other:?}\n\n{USAGE}");
             ExitCode::from(2)
@@ -497,5 +519,16 @@ mod descriptor_tests {
         let v: serde_json::Value =
             serde_json::from_str(&describe()).expect("the descriptor is valid JSON");
         assert!(v["limits"]["par_partitioning"].is_string(), "par_partitioning must be published");
+    }
+
+    /// The limit names the build: a binary that refuses a large flat cluster must not claim a
+    /// partitioner, and one that splits it must not claim to refuse.
+    #[test]
+    fn the_par_limit_says_whether_the_partitioner_is_linked() {
+        let v: serde_json::Value =
+            serde_json::from_str(&describe()).expect("the descriptor is valid JSON");
+        let lim = v["limits"]["par_partitioning"].as_str().expect("a string");
+        assert_eq!(lim.starts_with("linked"), cfg!(feature = "par"), "{lim}");
+        assert_eq!(lim.contains("refused"), !cfg!(feature = "par"), "{lim}");
     }
 }

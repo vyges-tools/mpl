@@ -178,9 +178,10 @@ pub fn run_with(
     if let Some(refusal) = &r.refusal {
         // ⛔ **OUR refusal, not an upstream message — so it does not borrow an upstream code.**
         // Upstream never refuses here: it calls TritonPart and errors MPL-45 only when the
-        // partitioner cannot balance. We have no `par` at all, so a flat cluster over the level
+        // partitioner cannot balance. With no partitioner linked (a build without the `par`
+        // feature), or one that refuses a stage it cannot run, a flat cluster over the level
         // threshold stops the run instead of being approximated. Dressing that as MPL-45 would
-        // claim we ran a partitioner and it failed.
+        // claim a partitioner ran and failed.
         vyges_events::emit(
             &vyges_events::Event::new(
                 "vyges-mpl",

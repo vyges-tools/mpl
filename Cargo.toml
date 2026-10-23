@@ -17,6 +17,12 @@ vyges-opendb = { git = "https://github.com/vyges-tools/opendb.git", branch = "ma
 vyges-events = { git = "https://github.com/vyges-tools/events.git", branch = "main", default-features = false }
 vyges-loom = { git = "https://github.com/vyges-tools/loom", branch = "main" }
 serde_json = "1"
+# The hypergraph partitioner that splits a large flat cluster, with its exact (ILP) stages through
+# the pinned solver bundle (Linux x86_64). Without the `par` feature such a cluster is refused.
+vyges-par = { git = "https://github.com/vyges-tools/par", branch = "main", optional = true }
+
+[features]
+par = ["dep:vyges-par", "vyges-par/ilp"]
 
 # Local development against the sibling checkouts. Patches are only honored from the root
 # manifest, so this is a no-op for downstream consumers pulling us by git.
@@ -31,6 +37,12 @@ vyges-loom = { path = "../vyges-tools-loom" }
 
 [patch."https://github.com/vyges-tools/layout"]
 vyges-layout = { path = "../vyges-tools-layout" }
+
+[patch."https://github.com/vyges-tools/par"]
+vyges-par = { path = "../vyges-tools-par" }
+
+[patch."https://github.com/vyges-tools/ortools-lib"]
+vyges-ortools-lib = { path = "../vyges-tools-ortools-lib" }
 
 [[bin]]
 name = "vyges-mpl"

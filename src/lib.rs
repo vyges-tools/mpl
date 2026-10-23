@@ -5,16 +5,18 @@
 //! written as ours (decision B — same algorithm, our architecture). Spec and stage-by-stage
 //! flowchart: the stage table in `pipeline::ORDER`, which mirrors upstream `HierRTLMP::run`.
 //!
-//! ## Scope — stage 1 is `mpl` MINUS `par`
+//! ## Scope — the partitioner is linked by feature
 //!
-//! ⛔ Upstream's clustering calls TritonPart (`par`, ~469 KB) from `breakLargeFlatCluster` to split
-//! a **flat** cluster — one with no `dbModule` children — whose leaf standard cells exceed
-//! `max_std_cell_`. This engine does not implement that, and **refuses rather than approximating**.
+//! Upstream's clustering calls TritonPart (`par`) from `breakLargeFlatCluster` to split a **flat**
+//! cluster — one with no `dbModule` children — whose leaf standard cells exceed `max_std_cell_`.
+//! This crate builds that call's hypergraph and applies the answer ([`flatpart`]); the answer
+//! comes from [`vyges_par`] when built with the `par` feature ([`par`], Linux x86_64, which the
+//! partitioner's exact stages need). ⛔ Without it — or when the partitioner refuses a stage —
+//! the cluster is **refused, never approximated**, and `--describe` says which build this is.
 //!
 //! 🔑 Measured at pin `945a9f4`: that path is reached by **0 of upstream's 36 `rtl_macro_placer`
 //! cases** (the largest suite design has 400 standard cells against a 5,000 threshold), so the
-//! whole suite is scoreable without it. ⚠️ **That makes a green suite a weaker claim than it
-//! looks** — a real design with a large flat block still needs `par`. `--describe` says so.
+//! suite cannot witness it; a flat synthesized design does.
 
 pub mod anneal;
 pub mod apply;
@@ -29,6 +31,8 @@ pub mod dump;
 pub mod halo;
 pub mod ioclusters;
 pub mod options;
+#[cfg(feature = "par")]
+pub mod par;
 pub mod macroclass;
 pub mod merge;
 pub mod netlist;
