@@ -3,6 +3,7 @@
 //! placed. Rules from the reference's `ClusteringEngine::init`.
 use vyges_mpl::design::{Design, Instance, MasterKind, Module, Rect};
 use vyges_mpl::engine::{run_clustering, ClusterOptions, DesignInputs};
+use vyges_mpl::messages::Message;
 use vyges_mpl::status::Status;
 
 fn r(x0: i64, y0: i64, x1: i64, y1: i64) -> Rect {
@@ -59,6 +60,8 @@ fn a_fixed_cell_does_not_refuse_a_design_with_nothing_to_place() {
     let c = run_clustering(&input, &ClusterOptions::default());
     assert_eq!(c.status, Status::Vacuous, "refusal: {:?}", c.refusal);
     assert!(c.refusal.is_none());
+    // Rule (createHardMacros, init): each fixed block is reported as found, then MPL-17.
+    assert_eq!(c.messages, [Message::Info(62, "Found fixed macro U1.".into()), Message::Info(17, "No unfixed macros.".into())]);
 }
 
 /// ⛔ **The shaping handoff counts EVERY block instance**, because the tiny-cluster threshold is
@@ -107,5 +110,8 @@ fn the_shaping_handoff_carries_the_block_instance_count() {
     let c = run_clustering(&input, &ClusterOptions::default());
     let h = c.shaping.unwrap_or_else(|| panic!("no handoff: {:?} {:?}", c.status, c.refusal));
     assert_eq!(h.block_instance_count, 1501, "macros count too, not just the std cells");
+    // Rule (init, then createIOClusters): the design report, then MPL-26 for a design without
+    // ports; no MPL-25, since it has standard cells.
+    assert!(matches!(&c.messages[..], [Message::Report(t), Message::Warn(26, _)] if t.starts_with("Die Area: ")), "{:?}", c.messages);
     assert_eq!(vyges_mpl::placement::tiny_cluster_max_number_of_std_cells(h.block_instance_count), 1);
 }

@@ -35,6 +35,7 @@ pub mod options;
 pub mod par;
 pub mod macroclass;
 pub mod merge;
+pub mod messages;
 pub mod netlist;
 pub mod pipeline;
 pub mod placement;

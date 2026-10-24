@@ -32,6 +32,8 @@ pub enum Refusal {
 /// The outcome of clustering.
 #[derive(Debug, Clone, PartialEq)]
 pub struct Clustering {
+    /// The message lines `init` and `run` log, in order (also when the run is refused).
+    pub messages: Vec<crate::messages::Message>,
     pub root: Cluster,
     pub status: Status,
     pub refusal: Option<Refusal>,
@@ -207,6 +209,19 @@ pub fn run_clustering_with(
     opts: &ClusterOptions,
     partitioner: Option<&mut dyn crate::flatpart::FlatPartitioner>,
 ) -> Clustering {
+    let mut msgs = Vec::new();
+    let mut c = cluster(input, opts, partitioner, &mut msgs);
+    c.messages = msgs;
+    c
+}
+
+fn cluster(
+    input: &DesignInputs,
+    opts: &ClusterOptions,
+    partitioner: Option<&mut dyn crate::flatpart::FlatPartitioner>,
+    msgs: &mut Vec<crate::messages::Message>,
+) -> Clustering {
+    use crate::messages::Message;
     let design = input.design;
 
     // ---- setFloorplanShape
@@ -222,7 +237,7 @@ pub fn run_clustering_with(
     // ---- createHardMacros: resolve every macro's halo, and refuse one that cannot fit the core
     //
     // ⚠️ **Before** the movable-cell test, because that test measures macros WITH their halos.
-    let halos = match resolve_halos(input, opts, &placement_area) {
+    let halos = match resolve_halos(input, opts, &placement_area, msgs) {
         Ok(h) => h,
         Err(e) => return refuse(Refusal::Mpl(e)),
     };
@@ -237,7 +252,9 @@ pub fn run_clustering_with(
     // case; it skips where we used to refuse.
     let unfixed = crate::design::unfixed_macros(design);
     if unfixed.is_empty() {
+        msgs.push(Message::Info(17, "No unfixed macros.".into()));
         return Clustering {
+            messages: Vec::new(),
             pad_assoc: Vec::new(),
             pin_cluster: Vec::new(),
             partition_calls: Vec::new(),
@@ -333,6 +350,9 @@ pub fn run_clustering_with(
         unfixed.len(),
         input.manufacturing_grid,
     ));
+    if let Some(r) = &report {
+        msgs.push(Message::Report(r.render(input.dbu_per_micron)));
+    }
 
     // ---- createRoot, then the thresholds it needs
     let module_metrics: Vec<_> = (0..design.modules.len())
@@ -361,6 +381,9 @@ pub fn run_clustering_with(
     let pads = crate::design::io_pads(design);
     let io_first_id = builder.next_id();
     let io = if pads.is_empty() {
+        if input.pins.is_empty() {
+            msgs.push(Message::Warn(26, "Design has no IO pins!".into()));
+        }
         create_io_clusters(input.pins, &design.die_area, io_first_id)
     } else {
         crate::ioclusters::create_io_pad_clusters(&pads, design, io_first_id)
@@ -388,11 +411,13 @@ pub fn run_clustering_with(
 
     // ---- the split that decides everything after it
     if design_metrics.num_std_cell == 0 {
+        msgs.push(Message::Warn(25, "Design has no standard cells!".into()));
         // Upstream warns MPL-25 and gives every macro its own cluster.
         for c in builder.one_cluster_per_macro() {
             root.children.push(c);
         }
         return Clustering {
+            messages: Vec::new(),
             pad_assoc: Vec::new(),
             pin_cluster: bterm_to_cluster,
             partition_calls: Vec::new(),
@@ -479,6 +504,7 @@ pub fn run_clustering_with(
     let pin_cluster = ctx.bterm_to_cluster;
     let pad_assoc = ctx.seed_assoc;
     Clustering {
+        messages: Vec::new(),
         pin_cluster,
         pad_assoc,
         partition_calls,
@@ -519,12 +545,21 @@ fn resolve_halos(
     input: &DesignInputs,
     opts: &ClusterOptions,
     placement_area: &Rect,
+    msgs: &mut Vec<crate::messages::Message>,
 ) -> Result<Vec<Halo>, MplError> {
+    use crate::messages::Message;
     let design = input.design;
     let mut halos = vec![Halo::default(); design.instances.len()];
     for (i, inst) in design.instances.iter().enumerate() {
+        // `createHardMacros`: each fixed block, in instance order, and whether it is ignored.
+        if inst.is_block && inst.is_fixed {
+            msgs.push(Message::Info(62, format!("Found fixed macro {}.", inst.name)));
+        }
         let Some(g) = input.geometry[i].as_ref() else { continue };
         if inst.is_fixed && !overlaps(&inst.bbox, placement_area) {
+            if inst.is_block {
+                msgs.push(Message::Info(63, format!("{} is outside the macro placement area and will be ignored.", inst.name)));
+            }
             continue;
         }
         let halo = crate::halo::build_macro_halo(
@@ -624,6 +659,7 @@ fn shaping_handoff(
 
 fn refuse(r: Refusal) -> Clustering {
     Clustering {
+        messages: Vec::new(),
         pad_assoc: Vec::new(),
         pin_cluster: Vec::new(),
         partition_calls: Vec::new(),

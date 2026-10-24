@@ -167,6 +167,7 @@ pub fn run_with(
     };
 
     let r = crate::engine::run_clustering_with(&input, &opts, partitioner);
+    r.messages.iter().for_each(crate::messages::emit);
     if let Some(f) = &partition_calls {
         let mut text = String::new();
         for c in &r.partition_calls {
@@ -199,6 +200,8 @@ pub fn run_with(
     // `root (0) Type: Mixed Leaf` — a line that reads like a result and would be DIFFED against
     // upstream as though the engine had clustered something. Vacuous gets its own exit code.
     if r.status == crate::status::Status::Vacuous {
+        // `run`: no unfixed macros sets `skip_macro_placement_`.
+        crate::messages::emit(&crate::messages::Message::Info(13, "Skipping macro placement.".into()));
         return Err(Exit::new(3, "vacuous: nothing to place".to_string()));
     }
     if want_report {
@@ -359,6 +362,9 @@ fn print_coarse_shaping_trace(
 
     let mut root = r.root;
     let mut trace = crate::trace::CoarseTrace::recording();
+    if input.has_only_macros {
+        crate::messages::emit(&crate::messages::Message::Warn(27, "Design has only macros!".into()));
+    }
     let shaping = match crate::shaping::run_coarse_shaping_traced(&mut root, &input, dbu, &mut trace) {
         Ok(s) => s,
         Err(e) => {
