@@ -22,6 +22,9 @@ serde_json = "1"
 vyges-par = { git = "https://github.com/vyges-tools/par", branch = "main", optional = true }
 
 [features]
+# The command-line entry built into the library too (`cli_main`), for the suite binaries
+# that link every engine and run the one they are invoked as.
+suite = []
 par = ["dep:vyges-par", "vyges-par/ilp"]
 
 # Local development against the sibling checkouts. Patches are only honored from the root

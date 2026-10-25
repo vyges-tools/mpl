@@ -18,6 +18,10 @@
 //! cases** (the largest suite design has 400 standard cells against a 5,000 threshold), so the
 //! suite cannot witness it; a flat synthesized design does.
 
+// The crate's own name inside it: the command-line entry ([`cli_main`]) is built into the
+// library too, and its `vyges_mpl::…` paths resolve here.
+extern crate self as vyges_mpl;
+
 pub mod anneal;
 pub mod apply;
 pub mod cluster;
@@ -54,3 +58,10 @@ pub mod tree;
 pub use options::{parse_placer_args, Halo, MplError, PlacerOptions, Region};
 pub use pipeline::{Outcome, Plan, StageId};
 pub use status::{settle_status, Status};
+
+/// The `vyges-mpl` command-line entry (the binary's `main`), built into the library too so a
+/// suite binary can link every engine and run the one it is invoked as.
+#[cfg(feature = "suite")]
+#[doc(hidden)]
+#[path = "main.rs"]
+pub mod cli_main;
