@@ -51,7 +51,7 @@ STATUS:
 LIMITS:
   This engine does not implement TritonPart partitioning. A FLAT cluster -- one with no
   module children -- whose leaf standard cells exceed the level threshold is REFUSED rather
-  than approximated. Upstream's own mpl suite never reaches that path; a large flat block does.
+  than approximated. The reference's own mpl suite never reaches that path; a large flat block does.
   Clustering data is not kept as database groups; `run` has no --keep-clustering-data.
 
 THREADS:
@@ -168,11 +168,11 @@ fn describe() -> String {
             "input_hash covers the argument vector, not the content of the .odb it names.",
             "`run` writes what the commit gate scores: the commit stage's rows (macro corner and orientation, halo blockages, temporary standard-cell positions) applied to the database, so the database and the scored output are one derivation. Clustering groups (-keep_clustering_data) are not written. `place-macro` is LibreLane `Classic` step 16, `Odb.ManualMacroPlacement`, and asserts nothing about where macros should go.",
             if cfg!(feature = "par") {
-                "A FLAT cluster -- one with no module children -- whose leaf standard cells exceed the level threshold is split by vyges-par. Upstream's own mpl suite never reaches that path; it is measured on a flat synthesized design, where the partitioner's inputs and answers and the written DEF match upstream's exactly. Builds without the `par` feature refuse such a cluster instead."
+                "A FLAT cluster -- one with no module children -- whose leaf standard cells exceed the level threshold is split by vyges-par. The reference's own mpl suite never reaches that path; it is measured on a flat synthesized design, where the partitioner's inputs and answers and the written DEF match the reference's exactly. Builds without the `par` feature refuse such a cluster instead."
             } else {
-                "This build does not link the partitioner. A FLAT cluster -- one with no module children -- whose leaf standard cells exceed the level threshold is REFUSED rather than approximated. Upstream's own mpl suite never reaches that path; a large flat block does, so a refusal here is a real design shape and not a corner case."
+                "This build does not link the partitioner. A FLAT cluster -- one with no module children -- whose leaf standard cells exceed the level threshold is REFUSED rather than approximated. The reference's own mpl suite never reaches that path; a large flat block does, so a refusal here is a real design shape and not a corner case."
             },
-            "Correlation is measured against upstream's own 36-design regression suite at the pin above, per stage rather than on the final output: physical hierarchy and design report 33 of 33 byte-exact each; coarse shaping, boundary push and orientation byte-exact on every case that emits a trace; golden DEFs -- macro positions, temporary standard cells, halo blockages and clustering groups -- 33 of 33 exact. Those gates drive `cluster-dump`, which runs the same driver as `run`.",
+            "Correlation is measured against the reference's own 36-design regression suite at the pin above, per stage rather than on the final output: physical hierarchy and design report 33 of 33 byte-exact each; coarse shaping, boundary push and orientation byte-exact on every case that emits a trace; golden DEFs -- macro positions, temporary standard cells, halo blockages and clustering groups -- 33 of 33 exact. Those gates drive `cluster-dump`, which runs the same driver as `run`.",
             "Every score is true of ONE upstream commit, named in `openroad_pin`. The reference moves: a score quoted without its pin says nothing.",
             "`consumes` is the generic `odb` on purpose. mpl supports running BEFORE or AFTER pin placement and the two give DIFFERENT placements, so a fixed predecessor list would be the wrong shape of claim rather than merely the wrong list.",
         ],
@@ -417,7 +417,7 @@ fn run(args: &[String]) -> ExitCode {
 
 /// The `par_partitioning` limit, as this build has it.
 const PAR_LIMIT: &str = if cfg!(feature = "par") {
-    "linked (vyges-par, with its exact stages): a flat cluster over the level threshold is split in two, recursively, as upstream does; a call the partitioner cannot balance is MPL-45"
+    "linked (vyges-par, with its exact stages): a flat cluster over the level threshold is split in two, recursively, as the reference does; a call the partitioner cannot balance is MPL-45"
 } else {
     "not linked in this build; a flat cluster over the level threshold is refused"
 };
