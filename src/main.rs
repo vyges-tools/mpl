@@ -173,7 +173,7 @@ fn describe() -> String {
                 "This build does not link the partitioner. A FLAT cluster -- one with no module children -- whose leaf standard cells exceed the level threshold is REFUSED rather than approximated. The reference's own mpl suite never reaches that path; a large flat block does, so a refusal here is a real design shape and not a corner case."
             },
             "Correlation is measured against the reference's own 36-design regression suite at the pin above, per stage rather than on the final output: physical hierarchy and design report 33 of 33 byte-exact each; coarse shaping, boundary push and orientation byte-exact on every case that emits a trace; golden DEFs -- macro positions, temporary standard cells, halo blockages and clustering groups -- 33 of 33 exact. Those gates drive `cluster-dump`, which runs the same driver as `run`.",
-            "Every score is true of ONE upstream commit, named in `openroad_pin`. The reference moves: a score quoted without its pin says nothing.",
+            "Every score is true of ONE reference commit, named in `openroad_pin`. The reference moves: a score quoted without its pin says nothing.",
             "`consumes` is the generic `odb` on purpose. mpl supports running BEFORE or AFTER pin placement and the two give DIFFERENT placements, so a fixed predecessor list would be the wrong shape of claim rather than merely the wrong list.",
         ],
     })
