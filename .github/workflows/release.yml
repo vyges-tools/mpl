@@ -46,8 +46,8 @@ jobs:
           # solver bundle, published per target (Linux x86_64/arm64, macOS arm64) and fetched for
           # the checked-out ortools-lib. Each target's par trace matches the reference's on the flat
           # synthesized design, solutions included.
-          - { os: ubuntu-latest,    target: x86_64-unknown-linux-gnu,  features: "--features par" }
-          - { os: ubuntu-24.04-arm, target: aarch64-unknown-linux-gnu, features: "--features par" }
+          - { os: "ubuntu-${{ vars.VYGES_UBUNTU_VERSION || '24.04' }}",    target: x86_64-unknown-linux-gnu,  features: "--features par" }
+          - { os: "ubuntu-${{ vars.VYGES_UBUNTU_VERSION || '24.04' }}-arm", target: aarch64-unknown-linux-gnu, features: "--features par" }
           - { os: macos-15,         target: aarch64-apple-darwin,      features: "--features par" }
     steps:
       # Sibling layout: <ws>/vyges-tools-mpl + <ws>/vyges-tools-opendb + <ws>/vyges-tools-opendb-lib,
@@ -115,6 +115,14 @@ jobs:
         run: |
           [ "${{ runner.os }}" = "macOS" ] && export PATH="$(brew --prefix bison)/bin:$PATH"
           cargo build --release --bin vyges-mpl ${{ matrix.features }}
+
+      # Runner and glibc floor, one policy for every release: vyges-tools/actions.
+      - name: glibc ceiling
+        uses: vyges-tools/actions/glibc-ceiling@v1
+        with:
+          runner: ${{ matrix.os }}
+          working-directory: vyges-tools-mpl
+          paths: target
 
       - name: Package vyges-mpl-${{ matrix.target }}.tar.gz
         id: pkg
