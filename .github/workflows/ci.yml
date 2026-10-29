@@ -18,7 +18,7 @@ permissions:
 jobs:
   build-test:
     name: build & test
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-${{ vars.VYGES_UBUNTU_VERSION || '24.04' }}
     defaults:
       run:
         working-directory: vyges-tools-mpl
@@ -145,7 +145,7 @@ jobs:
   # The build x86_64 Linux releases: the partitioner linked, against the prebuilt solver bundle.
   par:
     name: build & test (par linked, x86_64-linux)
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-${{ vars.VYGES_UBUNTU_VERSION || '24.04' }}
     defaults:
       run:
         working-directory: vyges-tools-mpl
@@ -208,7 +208,7 @@ jobs:
 
   lint:
     name: fmt-free lint
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-${{ vars.VYGES_UBUNTU_VERSION || '24.04' }}
     steps:
       - uses: actions/checkout@v7
       # ⛔ NO `cargo fmt --check`. These crates are deliberately hand-formatted; `cargo fmt`
