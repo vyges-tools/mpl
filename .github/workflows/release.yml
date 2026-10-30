@@ -48,7 +48,7 @@ jobs:
           # synthesized design, solutions included.
           - { os: "ubuntu-${{ vars.VYGES_UBUNTU_VERSION || '24.04' }}",    target: x86_64-unknown-linux-gnu,  features: "--features par" }
           - { os: "ubuntu-${{ vars.VYGES_UBUNTU_VERSION || '24.04' }}-arm", target: aarch64-unknown-linux-gnu, features: "--features par" }
-          - { os: macos-15,         target: aarch64-apple-darwin,      features: "--features par" }
+          - { os: "macos-${{ vars.VYGES_MACOS_VERSION || '15' }}",         target: aarch64-apple-darwin,      features: "--features par" }
     steps:
       # Sibling layout: <ws>/vyges-tools-mpl + <ws>/vyges-tools-opendb + <ws>/vyges-tools-opendb-lib,
       # so both `[patch]` path entries in Cargo.toml resolve on CI. Every patched dependency needs
