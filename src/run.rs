@@ -64,6 +64,8 @@ pub fn run_main(args: &[String], partitioner: Option<&mut dyn crate::flatpart::F
                 if a == "--out-odb" { out_odb = Some(v.clone()) } else { out_def = Some(v.clone()) }
             }
             "--pin-aware-channels" => pass.push(a.to_string()),
+            // the report is always JSON; accepted because `vyges mcp` appends it (emits_json)
+            "--json" => {}
             "--keep-clustering-data" => {
                 diag!("vyges-mpl run: --keep-clustering-data is not supported: clustering groups are not written");
                 return ExitCode::from(1);
