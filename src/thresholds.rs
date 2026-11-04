@@ -23,11 +23,15 @@ pub struct Thresholds {
 pub struct DesignMetrics {
     pub num_macro: i32,
     pub num_std_cell: i32,
+    /// Distinct masters among the hard macros (`maps.inst_to_hard`: every block instance but an
+    /// ignorable fixed one outside the placement area), fixed and movable alike.
+    pub num_masters: i32,
 }
 
-/// ⚠️ Below this many macros, multilevel clustering is not worth it and the level count is reset
-/// to 1. Upstream's constant, and its comment says it comes from the original implementation.
-const MIN_NUM_MACROS_FOR_MULTILEVEL: i32 = 150;
+/// ⚠️ With fewer distinct macro masters than this, the physical hierarchy is flat: the level count
+/// is reset to 1. Upstream `kMaxNumOfMasters` (5946b7a6afc), which replaced a reset at 150 or
+/// fewer MACROS — so 400 copies of three masters is now flat, and 20 macros of 16 masters is not.
+const MAX_NUM_OF_MASTERS: i32 = 15;
 
 /// ⚠️ A derived minimum below this is raised to it. Upstream's `min_num_std_cells_allowed`.
 const MIN_NUM_STD_CELLS_ALLOWED: i32 = 1000;
@@ -60,7 +64,7 @@ pub struct BaseThresholds {
 /// `supplied` carries the four `-max_num_*` / `-min_num_*` values, where **0 means auto**.
 ///
 /// 🔑 **Supplying all four thresholds also disables the level reset.** The
-/// `num_macro <= 150 -> max_level = 1` rule lives *inside* the derivation block, so a design with
+/// `num_masters < 15 -> max_level = 1` rule lives *inside* the derivation block, so a design with
 /// two macros keeps `max_level = 2` when the user supplies thresholds and drops to 1 when it does
 /// not. Verified against upstream: `keep_clustering_data2` supplies all four and reports
 /// `num level: 2`, while `halos1` supplies none and reports `num level: 1`.
@@ -84,7 +88,7 @@ pub fn set_base_thresholds(
     // per-field. A user supplying only `-max_num_inst` gets the other three derived AND the
     // level reset applied.
     if t.max_macro <= 0 || t.min_macro <= 0 || t.max_std_cell <= 0 || t.min_std_cell <= 0 {
-        if metrics.num_macro <= MIN_NUM_MACROS_FOR_MULTILEVEL {
+        if metrics.num_masters < MAX_NUM_OF_MASTERS {
             max_level = 1;
         }
 

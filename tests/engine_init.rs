@@ -93,6 +93,7 @@ fn the_shaping_handoff_carries_the_block_instance_count() {
         master_width: 200,
         master_height: 200,
         pins: vec![],
+        halo_pins: vec![],
         inst_halo: None,
         orient: vyges_mpl::halo::Orient::R0,
     });

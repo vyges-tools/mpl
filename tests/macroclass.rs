@@ -1,41 +1,34 @@
 // SPDX-License-Identifier: Apache-2.0
 //! Macro classification. Rules from upstream's three `classifyMacrosBy*` passes and the grouping.
 use vyges_mpl::macroclass::{
-    classify_by_conn_signature, classify_by_interconn, classify_by_size,
-    group_single_macro_clusters, single_macro_grouping, GroupMerge, MacroSize,
+    classify_by_conn_signature, classify_by_interconn, classify_by_master,
+    group_single_macro_clusters, single_macro_grouping, GroupMerge,
 };
 use vyges_mpl::netlist::Connections;
 
-fn sz(w: i64, h: i64) -> MacroSize {
-    MacroSize { width: w, height: h }
-}
-
-// ------------------------------------------------------------------ size
+// ------------------------------------------------------------------ master
 
 #[test]
-fn macros_of_identical_dimensions_share_a_size_class() {
-    let sizes = [sz(10, 20), sz(30, 40), sz(10, 20)];
-    assert_eq!(classify_by_size(&sizes), vec![0, 1, 0], "index 2 follows index 0");
+fn macros_of_one_master_share_a_master_class() {
+    assert_eq!(classify_by_master(&[7, 3, 7]), vec![0, 1, 0], "index 2 follows index 0");
 }
 
+/// Upstream c0a06360afb: `classifyMacrosByMaster` compares `getInst()->getMaster()`, replacing
+/// the width-and-height comparison. Two masters of identical dimensions are DIFFERENT classes —
+/// the classification is handed master ids, and dimensions never reach it.
 #[test]
-fn size_compares_width_AND_height_not_area() {
-    // ⚠️ Upstream's HardMacro::operator== is width and height. Two macros of equal AREA but
-    // different shape are NOT the same size, and grouping them would build an array that does
-    // not tile.
-    let sizes = [sz(10, 20), sz(20, 10)];
-    assert_eq!(classify_by_size(&sizes), vec![0, 1], "same area, different shape, different class");
+fn two_masters_of_identical_dimensions_do_not_share_a_class() {
+    assert_eq!(classify_by_master(&[0, 1]), vec![0, 1]);
 }
 
 #[test]
 fn an_unmatched_macro_represents_itself() {
-    assert_eq!(classify_by_size(&[sz(1, 1), sz(2, 2), sz(3, 3)]), vec![0, 1, 2]);
+    assert_eq!(classify_by_master(&[1, 2, 3]), vec![0, 1, 2]);
 }
 
 #[test]
-fn the_lowest_index_leads_a_size_group() {
-    let sizes = [sz(5, 5), sz(5, 5), sz(5, 5)];
-    assert_eq!(classify_by_size(&sizes), vec![0, 0, 0]);
+fn the_lowest_index_leads_a_master_group() {
+    assert_eq!(classify_by_master(&[5, 5, 5]), vec![0, 0, 0]);
 }
 
 // ------------------------------------------------------------------ signature
@@ -183,13 +176,13 @@ fn a_macro_already_merged_is_not_considered_again() {
 
 use vyges_mpl::macroclass::{break_mixed_leaf, MacroCluster};
 
-fn mc(id: i32, name: &str, inst: usize, fixed: bool, w: i64, h: i64) -> MacroCluster {
-    MacroCluster { id, name: name.into(), inst, is_fixed: fixed, size: sz(w, h) }
+fn mc(id: i32, name: &str, inst: usize, fixed: bool, master: usize) -> MacroCluster {
+    MacroCluster { id, name: name.into(), inst, is_fixed: fixed, master }
 }
 
 #[test]
 fn every_macro_becomes_its_own_cluster_and_the_leaf_keeps_the_cells() {
-    let macros = [mc(10, "M1", 0, false, 5, 5), mc(11, "M2", 1, false, 9, 9)];
+    let macros = [mc(10, "M1", 0, false, 5), mc(11, "M2", 1, false, 9)];
     let plan = break_mixed_leaf(1, &macros, &Connections::new());
     assert_eq!(plan.std_cell_cluster, 1, "the mixed leaf survives as the standard-cell cluster");
     assert_eq!(plan.arrays.len(), 2, "different sizes, so neither merged");
@@ -209,9 +202,9 @@ fn shared_signature(ids: &[i32]) -> Connections {
 fn a_FIXED_macro_is_never_folded_into_an_array() {
     // 🔑 It cannot move to join one. Only the movable macros are classified at all.
     let macros = [
-        mc(10, "M1", 0, false, 5, 5),
-        mc(11, "M2", 1, true, 5, 5),
-        mc(12, "M3", 2, false, 5, 5),
+        mc(10, "M1", 0, false, 5),
+        mc(11, "M2", 1, true, 5),
+        mc(12, "M3", 2, false, 5),
     ];
     let plan = break_mixed_leaf(1, &macros, &shared_signature(&[10, 12]));
     assert_eq!(plan.fixed_clusters, vec![11], "the fixed one stands alone");
@@ -225,14 +218,14 @@ fn same_size_alone_does_NOT_merge() {
     // sufficient: the grouping needs size AND (same interconnection OR same signature). Two
     // identical macros wired to nothing share neither, because an empty neighbour set is
     // deliberately not a signature match -- so they stay apart.
-    let macros = [mc(10, "M1", 0, false, 5, 5), mc(11, "M2", 1, false, 5, 5)];
+    let macros = [mc(10, "M1", 0, false, 5), mc(11, "M2", 1, false, 5)];
     let plan = break_mixed_leaf(1, &macros, &Connections::new());
     assert_eq!(plan.arrays.len(), 2, "identical size, no connections, no merge");
 }
 
 #[test]
 fn same_sized_movable_macros_merge_into_one_array() {
-    let macros = [mc(10, "M1", 0, false, 5, 5), mc(11, "M2", 1, false, 5, 5)];
+    let macros = [mc(10, "M1", 0, false, 5), mc(11, "M2", 1, false, 5)];
     let plan = break_mixed_leaf(1, &macros, &shared_signature(&[10, 11]));
     assert_eq!(plan.arrays.len(), 1);
     assert_eq!(plan.arrays[0].id, 10, "the leader keeps its id");
@@ -241,7 +234,7 @@ fn same_sized_movable_macros_merge_into_one_array() {
 
 #[test]
 fn a_single_movable_macro_is_not_an_interconnected_array() {
-    let macros = [mc(10, "M1", 0, false, 5, 5), mc(11, "M2", 1, true, 5, 5)];
+    let macros = [mc(10, "M1", 0, false, 5), mc(11, "M2", 1, true, 5)];
     let plan = break_mixed_leaf(1, &macros, &Connections::new());
     assert_eq!(plan.arrays.len(), 1);
     assert!(!plan.arrays[0].is_interconnected_array, "one macro is not an array");
@@ -251,7 +244,7 @@ fn a_single_movable_macro_is_not_an_interconnected_array() {
 fn a_wired_group_is_marked_as_an_interconnected_array() {
     let mut c = Connections::new();
     c.connect(10, 11, 5.0);
-    let macros = [mc(10, "M1", 0, false, 5, 5), mc(11, "M2", 1, false, 5, 5)];
+    let macros = [mc(10, "M1", 0, false, 5), mc(11, "M2", 1, false, 5)];
     let plan = break_mixed_leaf(1, &macros, &c);
     assert_eq!(plan.arrays.len(), 1);
     assert!(plan.arrays[0].is_interconnected_array);
@@ -263,7 +256,7 @@ fn a_wired_group_is_marked_as_an_interconnected_array() {
 fn virtual_connections_join_every_pair() {
     // 🔑 The std-cell cluster, each surviving array and each fixed cluster are all joined, so the
     // annealer knows they came from one place. Three members means three pairs.
-    let macros = [mc(10, "M1", 0, false, 5, 5), mc(11, "M2", 1, true, 9, 9)];
+    let macros = [mc(10, "M1", 0, false, 5), mc(11, "M2", 1, true, 9)];
     let plan = break_mixed_leaf(1, &macros, &Connections::new());
     assert_eq!(
         plan.virtual_connections,
@@ -274,7 +267,7 @@ fn virtual_connections_join_every_pair() {
 
 #[test]
 fn a_leaf_with_one_macro_still_joins_it_to_the_cells() {
-    let macros = [mc(10, "M1", 0, false, 5, 5)];
+    let macros = [mc(10, "M1", 0, false, 5)];
     let plan = break_mixed_leaf(1, &macros, &Connections::new());
     assert_eq!(plan.virtual_connections, vec![(1, 10)]);
 }
@@ -284,9 +277,9 @@ fn merged_macros_contribute_ONE_virtual_connection_not_one_each() {
     // ⚠️ Only the surviving leaders take part. Counting every macro would over-connect the
     // annealer's view by exactly the number of merges.
     let macros = [
-        mc(10, "M1", 0, false, 5, 5),
-        mc(11, "M2", 1, false, 5, 5),
-        mc(12, "M3", 2, false, 5, 5),
+        mc(10, "M1", 0, false, 5),
+        mc(11, "M2", 1, false, 5),
+        mc(12, "M3", 2, false, 5),
     ];
     let plan = break_mixed_leaf(1, &macros, &shared_signature(&[10, 11, 12]));
     assert_eq!(plan.arrays.len(), 1, "all three merged");

@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 //! Classifying macros before they are grouped.
 //!
-//! Upstream: `classifyMacrosBySize`, `classifyMacrosByConnSignature`,
+//! Upstream: `classifyMacrosByMaster`, `classifyMacrosByConnSignature`,
 //! `classifyMacrosByInterconn`, `groupSingleMacroClusters`.
 //!
 //! 🔑 **Three classifications, then one grouping that reads all three.** Each assigns every macro
@@ -12,25 +12,22 @@ use crate::cluster::ClusterId;
 use crate::merge::{same_connection_signature, strong_connection};
 use crate::netlist::Connections;
 
-/// A macro's dimensions. ⚠️ Upstream's `HardMacro::operator==` compares **width and height only**
-/// — not area, not master. Two different masters with identical dimensions are "the same size".
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct MacroSize {
-    pub width: i64,
-    pub height: i64,
-}
-
-/// `classifyMacrosBySize`.
+/// `classifyMacrosByMaster` (c0a06360afb; before it, `classifyMacrosBySize`).
+///
+/// 🔑 **Two macros are in one class when they instantiate the same MASTER** — the same
+/// `dbMaster`, not merely the same width and height. Upstream replaced the size test (which
+/// compared width and height through `HardMacro::operator==`) with master identity, so two
+/// distinct masters of identical dimensions no longer group into one array.
 ///
 /// ⚠️ The representative is assigned in a **second pass**: the first pass only marks followers, so
 /// an unmatched macro keeps `-1` until the end and then becomes its own representative. Assigning
 /// it in the first pass would change which index leads a group.
-pub fn classify_by_size(sizes: &[MacroSize]) -> Vec<usize> {
-    let mut class: Vec<i64> = vec![-1; sizes.len()];
-    for i in 0..sizes.len() {
+pub fn classify_by_master(masters: &[usize]) -> Vec<usize> {
+    let mut class: Vec<i64> = vec![-1; masters.len()];
+    for i in 0..masters.len() {
         if class[i] == -1 {
-            for j in (i + 1)..sizes.len() {
-                if class[j] == -1 && sizes[i] == sizes[j] {
+            for j in (i + 1)..masters.len() {
+                if class[j] == -1 && masters[i] == masters[j] {
                     class[j] = i as i64;
                 }
             }
@@ -110,7 +107,7 @@ pub enum GroupMerge {
 pub struct Grouping {
     /// Representative per macro; `macro_class[i] == i` means it leads a group.
     pub macro_class: Vec<usize>,
-    /// ⚠️ **Mutated by the grouping**, not just read: a macro that meets a same-size neighbour in a
+    /// ⚠️ **Mutated by the grouping**, not just read: a macro that meets a same-master neighbour in a
     /// *different* interconnection group has its own class cleared to `-1`. That is how upstream
     /// distinguishes a real interconnected array from macros merely sharing a signature.
     pub interconn_class: Vec<i64>,
@@ -119,15 +116,15 @@ pub struct Grouping {
 
 /// `groupSingleMacroClusters`.
 ///
-/// 🔑 **Same SIZE is required for every merge** — the two connection tests only decide *which kind*
-/// of group it is, never whether to group at all. Two macros of different dimensions never merge
-/// however strongly they are wired together.
+/// 🔑 **Same MASTER is required for every merge** (c0a06360afb; it was same size) — the two
+/// connection tests only decide *which kind* of group it is, never whether to group at all. Two
+/// macros of different masters never merge however strongly they are wired together.
 pub fn group_single_macro_clusters(
-    size_class: &[usize],
+    master_class: &[usize],
     signature_class: &[usize],
     interconn_class: &[i64],
 ) -> Grouping {
-    let n = size_class.len();
+    let n = master_class.len();
     let mut macro_class: Vec<i64> = vec![-1; n];
     let mut interconn = interconn_class.to_vec();
     let mut merges = Vec::new();
@@ -139,7 +136,7 @@ pub fn group_single_macro_clusters(
         macro_class[i] = i as i64;
 
         for j in (i + 1)..n {
-            if macro_class[j] != -1 || size_class[i] != size_class[j] {
+            if macro_class[j] != -1 || master_class[i] != master_class[j] {
                 continue;
             }
             if interconn[i] == interconn[j] {
@@ -179,7 +176,8 @@ pub struct MacroCluster {
     pub name: String,
     pub inst: usize,
     pub is_fixed: bool,
-    pub size: MacroSize,
+    /// The instance's interned master (`Instance::master_id`), what the classification compares.
+    pub master: usize,
 }
 
 /// A surviving group of movable macros.
@@ -231,11 +229,11 @@ pub fn break_mixed_leaf(
         single_macro_grouping()
     } else {
         let ids: Vec<ClusterId> = movable.iter().map(|m| m.id).collect();
-        let sizes: Vec<MacroSize> = movable.iter().map(|m| m.size).collect();
-        let size_class = classify_by_size(&sizes);
+        let masters: Vec<usize> = movable.iter().map(|m| m.master).collect();
+        let master_class = classify_by_master(&masters);
         let signature_class = classify_by_conn_signature(conns, &ids);
         let interconn_class = classify_by_interconn(conns, &ids);
-        group_single_macro_clusters(&size_class, &signature_class, &interconn_class)
+        group_single_macro_clusters(&master_class, &signature_class, &interconn_class)
     };
 
     // Only the group LEADERS survive; the rest were folded in.

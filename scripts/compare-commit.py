@@ -22,7 +22,7 @@ the DEF, at its original position. Those are counted as `fixed (not written)` ra
 
 Usage:  python3 scripts/compare-commit.py <odb-dir> [defok-dir] [tcl-dir]
 """
-import io, os, re, subprocess, sys
+import collections, io, os, re, subprocess, sys
 
 odb_dir = sys.argv[1] if len(sys.argv) > 1 else "/tmp/mplodb"
 defok_dir = sys.argv[2] if len(sys.argv) > 2 else os.path.join(odb_dir, "defok")
@@ -52,6 +52,37 @@ BLOCKAGE = re.compile(
 
 def flags(case):
     return case_flags(tcl_dir, case)
+
+
+def blockages_of(path):
+    """Every soft component blockage in a DEF, as a MULTISET.
+
+    ⛔ **A multiset, not a set.** Upstream's commit adds a blockage per hard macro without looking
+    for one already there, so a session that places twice (`rerun1`) holds the fixed macro's
+    keep-out TWICE with the same rectangle. A set folds the pair into one and the persistence it
+    shows disappears from the score.
+    """
+    out = collections.Counter()
+    for line in io.open(path, encoding="utf-8", errors="replace"):
+        b = BLOCKAGE.match(line)
+        if b:
+            out[(b.group(1), int(b.group(2)), int(b.group(3)), int(b.group(4)), int(b.group(5)))] += 1
+    return out
+
+
+def carried_in(case):
+    """The blockages a session sub-case's INPUT already holds: those of the previous call's DEF.
+
+    🔑 A sub-case `<case>.callK` starts from the reference's state after call K-1, whose DEF is the
+    `.defok` of `<case>.call{K-1}`. Our dump emits only what THIS call commits, while the golden is
+    the whole block, so the carried-in blockages are subtracted from the golden — and the previous
+    call's own score is what proves our engine wrote them.
+    """
+    m = re.fullmatch(r"(.+)\.call(\d+)", case)
+    if not m or int(m.group(2)) < 2:
+        return collections.Counter()
+    prev = os.path.join(defok_dir, f"{m.group(1)}.call{int(m.group(2)) - 1}.defok")
+    return blockages_of(prev) if os.path.exists(prev) else None
 
 
 cases = sorted(f[:-4] for f in os.listdir(odb_dir) if f.endswith(".odb"))
@@ -85,7 +116,7 @@ for case in cases:
 
     got = {}
     got_cells = {}
-    got_blockages = set()
+    got_blockages = collections.Counter()
     got_groups = {}
     bad_line = None
     for line in p.stdout.split("\n"):
@@ -101,7 +132,7 @@ for case in cases:
         elif parts[0] == "GROUP" and len(parts) >= 2:
             got_groups[parts[1]] = parts[2:]
         elif parts[0] == "BLOCKAGE" and len(parts) == 6:
-            got_blockages.add((parts[1], int(parts[2]), int(parts[3]), int(parts[4]), int(parts[5])))
+            got_blockages[(parts[1], int(parts[2]), int(parts[3]), int(parts[4]), int(parts[5]))] += 1
         else:
             bad_line = line
             break
@@ -115,7 +146,11 @@ for case in cases:
     # on the name is what gives this gate its denominator. A macro we FAIL to emit shows up as a
     # smaller denominator, not as a pass — which is why the count is printed beside every verdict.
     all_rows = {}
-    want_blockages = set()
+    carried = carried_in(case)
+    if carried is None:
+        print(f"  {case:32} ⛔ no .defok for the previous call — its input state is unknown")
+        other += 1
+        continue
     # ⚠️ A GROUPS entry WRAPS across lines and ends at `;`, so it cannot be read line by line the
     # way COMPONENTS can. `keep_clustering_data1`'s 150-cell group spans 38 lines.
     # ⚠️ **Keyed by NAME, so the ORDER groups appear in is NOT scored.** Upstream's is `dbGroup`
@@ -133,11 +168,7 @@ for case in cases:
         m = COMPONENT.match(line)
         if m:
             all_rows[m.group(1)] = (int(m.group(3)), int(m.group(4)), m.group(5))
-        b = BLOCKAGE.match(line)
-        if b:
-            want_blockages.add(
-                (b.group(1), int(b.group(2)), int(b.group(3)), int(b.group(4)), int(b.group(5)))
-            )
+    want_blockages = blockages_of(golden) - carried
     want = {k: v for k, v in all_rows.items() if k in got}
     want_cells = {k: v for k, v in all_rows.items() if k in got_cells}
 
@@ -169,7 +200,7 @@ for case in cases:
         print(
             f"  {case:32} ⛔ DIFFER — {len(bad_orient)} orientation, {len(absent)} not in the DEF, "
             f"{len(cell_bad)}/{len(want_cells)} cells, "
-            f"{len(blk_missing)} blockages missing, {len(blk_extra)} extra, "
+            f"{sum(blk_missing.values())} blockages missing, {sum(blk_extra.values())} extra, "
             f"{len(grp_bad)}/{len(want_groups)} groups"
         )
         for n in (bad_orient + absent)[:2]:
@@ -196,7 +227,7 @@ for case in cases:
         exact += 1
         print(
             f"  {case:32} exact ({len(got)} macros, {len(want_cells)} cells, "
-            f"{len(want_blockages)} blockages, {len(want_groups)} groups)"
+            f"{sum(want_blockages.values())} blockages, {len(want_groups)} groups)"
         )
 
 print(

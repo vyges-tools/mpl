@@ -40,7 +40,7 @@ fn only_a_single_level_tree_has_its_soft_blockage_weight_raised() {
 // ---------------------------------------------------------------- blockages
 
 use vyges_mpl::placement::{
-    eliminate_overlaps, find_offset_intersections, soft_macros_for_blockages, NeedsPolygonUnion,
+    eliminate_overlaps, find_offset_intersections, soft_macros_for_blockages,
 };
 
 /// 🔑 Everything inside a placement problem is OUTLINE-RELATIVE.
@@ -68,25 +68,38 @@ fn edge_on_and_missing_blockages_are_dropped() {
     assert!(find_offset_intersections(&[(100, 100, 100, 900)], outline).is_empty(), "zero width");
 }
 
-/// 🔑 Zero or one rectangle needs no polygon library, and one is what every design in the
-/// reference suite that has a blockage at all actually has.
 #[test]
-fn a_single_blockage_passes_through_unchanged() {
-    assert_eq!(eliminate_overlaps(&[]), Ok(Vec::new()));
-    assert_eq!(eliminate_overlaps(&[(0, 0, 10, 10)]), Ok(vec![(0, 0, 10, 10)]));
+fn zero_or_one_blockage_passes_through_unchanged() {
+    assert_eq!(eliminate_overlaps(&[]), Vec::new());
+    assert_eq!(eliminate_overlaps(&[(0, 0, 10, 10)]), vec![(0, 0, 10, 10)]);
 }
 
-/// ⛔ **Two or more is refused by name, even when they do not overlap** — the reference merges
-/// rectangles that merely touch, so "no overlap" is not "no work", and a plausible decomposition
-/// is not the same decomposition.
+/// Upstream `eliminateOverlaps` (hier_rtlmp.cpp at 4155ac3): OR every blockage into one
+/// `polygon_90_set_data<int>`, then `get_rectangles`. The expected lists are Boost.Polygon's own
+/// output for these inputs (a C++ oracle against the header the reference builds with,
+/// 2026-11-04) — the scan is y-major, each rectangle emitted as it closes.
 #[test]
-fn several_blockages_are_refused_rather_than_approximated() {
-    assert_eq!(eliminate_overlaps(&[(0, 0, 10, 10), (5, 5, 15, 15)]), Err(NeedsPolygonUnion));
+fn blockages_come_back_in_the_scan_order_not_the_input_order() {
+    // `rerun1` call 3, outline-relative, in `getBlockages` order — and the order the instrumented
+    // reference handed `createSoftMacrosForBlockages`.
     assert_eq!(
-        eliminate_overlaps(&[(0, 0, 10, 10), (500, 500, 510, 510)]),
-        Err(NeedsPolygonUnion),
-        "disjoint is refused too"
+        eliminate_overlaps(&[(159860, 219860, 360140, 420140), (0, 190, 200280, 200470)]),
+        vec![(0, 190, 200280, 200470), (159860, 219860, 360140, 420140)]
     );
+    assert_eq!(
+        eliminate_overlaps(&[(500, 500, 510, 510), (0, 0, 10, 10)]),
+        vec![(0, 0, 10, 10), (500, 500, 510, 510)],
+        "disjoint: re-ordered, not refused"
+    );
+}
+
+#[test]
+fn overlapping_or_touching_blockages_are_merged_and_re_cut_by_the_scan() {
+    assert_eq!(
+        eliminate_overlaps(&[(0, 0, 10, 10), (5, 5, 15, 15)]),
+        vec![(0, 0, 10, 5), (0, 5, 15, 10), (5, 10, 15, 15)]
+    );
+    assert_eq!(eliminate_overlaps(&[(0, 0, 10, 10), (10, 0, 20, 10)]), vec![(0, 0, 20, 10)], "touching");
 }
 
 /// ⚠️ Blockage macros are FIXED and take the lowest ids, offsetting every cluster after them.

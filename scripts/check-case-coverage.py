@@ -30,7 +30,9 @@ here = os.path.dirname(os.path.abspath(__file__))
 shipped = {f[:-4] for f in os.listdir(up_dir) if f.endswith(".tcl")}
 if not shipped:
     sys.exit(f"no .tcl cases in {up_dir} — wrong directory?")
-scored = {f[:-4] for f in os.listdir(odb_dir) if f.endswith(".odb")}
+# A case that calls `rtl_macro_placer` more than once in a session (`rerun1`) is scored per call,
+# as `<case>.callK` (`mpl-capture.py`); every one of its calls scored is the case scored.
+scored = {re.sub(r"\.call\d+$", "", f[:-4]) for f in os.listdir(odb_dir) if f.endswith(".odb")}
 # The `place_macro` cases are scored by `compare-place-macro.py`, not through the clustering corpus.
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import importlib.util as _iu

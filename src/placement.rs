@@ -987,36 +987,25 @@ pub fn find_offset_intersections(
     out
 }
 
-/// Why a blockage set could not be reduced.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct NeedsPolygonUnion;
-
-// ⛔ **DELIBERATELY UNUSED — a class-A REFUSAL, recorded in the divergence register.** Upstream
-// merges blockages with `boost::polygon` and re-cuts them into rectangles; the DECOMPOSITION is
-// that library's own choice — count, cut positions, order — so we refuse rather than invent one.
-// ⚠️ Every suite design with a blockage has exactly ONE, so nothing reaches it. Triaged 2026-08-29.
-/// Upstream `eliminateOverlaps`: merge the blockages and re-cut them into disjoint rectangles.
+/// Upstream `eliminateOverlaps`: the blockages OR-ed into one `polygon_90_set_data<int>` and
+/// sliced back into rectangles with `get_rectangles`.
 ///
-/// ⛔ **Upstream does this with `boost::polygon`'s `polygon_90_set_data`, and the rectangles that
-/// come back are that library's DECOMPOSITION, not a canonical answer.** How a merged region is
-/// sliced — how many rectangles, where the cuts fall, what order they arrive in — is boost's
-/// choice. Reimplementing it by eye would produce a plausible set that is not the same set, which
-/// is the one thing this programme never does.
+/// 🔑 **The rectangles come back in the SCAN's order, not the input's** — y-major, each in the
+/// order it closes (Boost.Polygon's `form_rectangles`, ported step for step in [`crate::polygon90`]).
+/// They become the blockage macros at the head of the sequence pair, so the order is a value: on
+/// `rerun1`'s third call the block holds the keep-outs the second call committed, `getBlockages`
+/// yields `[MACRO_1's, MACRO_2's]`, and the reference's blockage macros are `[MACRO_2's, MACRO_1's]`
+/// (instrumented 2026-11-04 at 4155ac3). Keeping read order swapped two fixed macros'
+/// indices and moved every normalisation factor the annealer averages over its sweep.
 ///
-/// 🔑 **Zero or one rectangle needs no library.** A set built from a single rectangle decomposes
-/// back to that rectangle, so those cases are exact. Every design in the reference suite that has
-/// a placement blockage at all has exactly one, so this covers the corpus.
-///
-/// ⛔ Two or more is REFUSED by name. Note that it is refused even when they do not overlap:
-/// boost merges rectangles that merely touch, so "no overlap" is not the same as "no work".
-pub fn eliminate_overlaps(
-    blockages: &[(i32, i32, i32, i32)],
-) -> Result<Vec<(i32, i32, i32, i32)>, NeedsPolygonUnion> {
-    match blockages.len() {
-        0 => Ok(Vec::new()),
-        1 => Ok(blockages.to_vec()),
-        _ => Err(NeedsPolygonUnion),
+/// ⚠️ **Rectangles that overlap or merely touch are MERGED and re-cut**, so the count can change
+/// too; the cut positions are the scan's.
+pub fn eliminate_overlaps(blockages: &[(i32, i32, i32, i32)]) -> Vec<(i32, i32, i32, i32)> {
+    let mut set = crate::polygon90::Polygon90Set::new();
+    for &(xl, yl, xh, yh) in blockages {
+        set.insert_rect(crate::polygon90::Rect::new(xl, yl, xh, yh));
     }
+    set.rectangles().into_iter().map(|r| (r.xl, r.yl, r.xh, r.yh)).collect()
 }
 
 /// Upstream `createSoftMacrosForBlockages`: each blockage becomes a fixed, zero-cluster macro.
@@ -2993,7 +2982,7 @@ pub fn push_decision(
 /// ⚠️ **The threshold is the MACRO's own dimension, not the cluster's.** A cluster further from the
 /// boundary than one macro is wide is left alone entirely, which is what stops the push dragging
 /// clusters across the die. Upstream takes it from `getHardMacros().front()` and says why: only
-/// macros of the same size are grouped.
+/// macros of the same master are grouped.
 ///
 /// ⛔ **A TIE goes to RIGHT, and to TOP.** The tests are `left < right` and `bottom < top`, so a
 /// cluster exactly centred is pushed towards the far edges, not the near ones.
@@ -3206,7 +3195,7 @@ pub struct PushCluster {
     /// Indices into the flat macro list, in `getHardMacros()` order.
     ///
     /// ⚠️ **`front()` is the one that sets the push threshold** — upstream says why at the site:
-    /// only macros of the same size are grouped, so any of them would do. The order still has to
+    /// only macros of the same master are grouped, so any of them would do. The order still has to
     /// be the reference's for a cluster where that assumption does not hold.
     pub macros: Vec<usize>,
 }
@@ -5376,7 +5365,8 @@ pub fn build_parent_problem(
     let origin = (outline.0, outline.1);
     let size = (outline.2 - outline.0, outline.3 - outline.1);
 
-    let blockage_macros = soft_macros_for_blockages(ctx.blockages);
+    // `placeChildren`: findOffsetIntersections (the caller's), eliminateOverlaps, then the macros.
+    let blockage_macros = soft_macros_for_blockages(&eliminate_overlaps(ctx.blockages));
     let mut reshape: Vec<ReshapeInput> = blockage_macros
         .iter()
         .map(|_| ReshapeInput {

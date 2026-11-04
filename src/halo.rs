@@ -168,12 +168,13 @@ pub fn reorient_for_fixed(halo: Halo, orient: Orient) -> Halo {
 
 /// The pin-aware halo — upstream `buildPinAwareHalo`.
 ///
-/// Every side starts at `minimum_spacing`; a side that some SIGNAL pin is closest to is raised to
+/// Every side starts at `minimum_spacing`; a side that some non-supply pin is closest to is raised to
 /// the channel-floored value. ⚠️ **A side with no pin facing it keeps `minimum_spacing`**, not half
 /// the channel — that is the entire point of the mode: the keep-out need only be wide where pins
 /// escape.
 ///
-/// `pins` must already be filtered to SIGNAL pins; power and ground do not widen a halo.
+/// `pins` must already be filtered to non-supply pins ([`crate::read::pin_widens_halo`]): power and
+/// ground do not widen a halo; clock, analog and the other signal types do.
 pub fn pin_aware_halo(
     pins: &[PinBox],
     master_width: i64,

@@ -866,10 +866,7 @@ fn split_recursive(
                 name: inst.name.clone(),
                 inst: i,
                 is_fixed: inst.is_fixed,
-                size: crate::macroclass::MacroSize {
-                    width: inst.bbox.x_max - inst.bbox.x_min,
-                    height: inst.bbox.y_max - inst.bbox.y_min,
-                },
+                master: inst.master_id,
             });
             macro_clusters.push(c);
             *next_id += 1;

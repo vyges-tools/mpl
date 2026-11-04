@@ -25,7 +25,7 @@ fn halos1_matches_upstreams_reported_thresholds() {
     // Design: 150 standard cells, 2 macros, no thresholds supplied.
     let got = set_base_thresholds(
         AUTO,
-        DesignMetrics { num_macro: 2, num_std_cell: 150 },
+        DesignMetrics { num_macro: 2, num_std_cell: 150, num_masters: 2 },
         RATIO,
         LEVELS,
         false,
@@ -47,7 +47,7 @@ fn keep_clustering_data2_matches_upstreams_reported_thresholds() {
     let supplied = Thresholds { max_macro: 2, min_macro: 1, max_std_cell: 6, min_std_cell: 2 };
     let got = set_base_thresholds(
         supplied,
-        DesignMetrics { num_macro: 2, num_std_cell: 8 },
+        DesignMetrics { num_macro: 2, num_std_cell: 8, num_masters: 2 },
         RATIO,
         LEVELS,
         false,
@@ -72,7 +72,7 @@ fn a_partially_supplied_threshold_set_derives_all_four() {
     let partial = Thresholds { max_macro: 0, min_macro: 0, max_std_cell: 6, min_std_cell: 0 };
     let got = set_base_thresholds(
         partial,
-        DesignMetrics { num_macro: 2, num_std_cell: 150 },
+        DesignMetrics { num_macro: 2, num_std_cell: 150, num_masters: 2 },
         RATIO,
         LEVELS,
         false,
@@ -86,7 +86,7 @@ fn a_fixed_macro_forces_a_single_level() {
     // Upstream's TODO: hierarchical clustering with fixed macros is not supported.
     let got = set_base_thresholds(
         Thresholds { max_macro: 2, min_macro: 1, max_std_cell: 6, min_std_cell: 2 },
-        DesignMetrics { num_macro: 400, num_std_cell: 90_000 },
+        DesignMetrics { num_macro: 400, num_std_cell: 90_000, num_masters: 20 },
         RATIO,
         4,
         true,
@@ -98,18 +98,18 @@ fn a_fixed_macro_forces_a_single_level() {
 
 #[test]
 fn a_large_design_keeps_its_levels_and_derives_from_the_cell_count() {
-    // 400 macros is above 150, so no reset: max_level stays 3.
+    // 20 distinct masters is not below 15, so no reset: max_level stays 3.
     // min_std_cell = floor(90000 / 10^3) = 90 -> raised to 1000; max = 1000*10/2 = 5000
     // min_macro   = floor(400 / 10^3) = 0 -> 1;                 max = 1*10/2 = 5
     // coarsening  = 10^(3-1) = 100
     let got = set_base_thresholds(
         AUTO,
-        DesignMetrics { num_macro: 400, num_std_cell: 90_000 },
+        DesignMetrics { num_macro: 400, num_std_cell: 90_000, num_masters: 20 },
         RATIO,
         3,
         false,
     );
-    assert_eq!(got.max_level, 3, "above 150 macros, the level count survives");
+    assert_eq!(got.max_level, 3, "15 or more masters, the level count survives");
     assert_eq!(got.thresholds.min_std_cell, 100_000, "1000 * 100");
     assert_eq!(got.thresholds.max_std_cell, 500_000);
     assert_eq!(got.thresholds.min_macro, 100, "1 * 100");
@@ -121,7 +121,7 @@ fn the_std_cell_minimum_is_floored_at_1000_and_the_macro_minimum_at_1() {
     // ⚠️ The asymmetry is upstream's: one macro is a legitimate cluster, one standard cell is not.
     let got = set_base_thresholds(
         AUTO,
-        DesignMetrics { num_macro: 1, num_std_cell: 1 },
+        DesignMetrics { num_macro: 1, num_std_cell: 1, num_masters: 1 },
         RATIO,
         1,
         false,
@@ -180,7 +180,7 @@ fn an_odd_ratio_truncates_the_half_rather_than_rounding_it() {
     // 1 * 3.0 / 2.0 = 1.5, which truncates to 1 and would round to 2.
     let got = set_base_thresholds(
         AUTO,
-        DesignMetrics { num_macro: 1, num_std_cell: 1 },
+        DesignMetrics { num_macro: 1, num_std_cell: 1, num_masters: 1 },
         3.0,
         1,
         false,
@@ -196,4 +196,17 @@ fn truncation_is_toward_zero_not_rounding() {
     let l2 = update_size_thresholds(base, 2, RATIO);
     assert_eq!(l2.max_macro, 5);
     assert_eq!(l2.max_std_cell, 5);
+}
+
+/// Upstream `setBaseThresholds` at 4155ac3 (5946b7a6afc): the level reset reads the number of
+/// distinct macro MASTERS (fewer than 15 is flat), not the number of macros (150 or fewer was).
+#[test]
+fn the_level_reset_counts_masters_not_macros() {
+    let run = |num_macro, num_masters| {
+        set_base_thresholds(AUTO, DesignMetrics { num_macro, num_std_cell: 90_000, num_masters }, RATIO, 3, false).max_level
+    };
+    assert_eq!(run(400, 3), 1, "many macros of few masters: flat");
+    assert_eq!(run(400, 14), 1, "14 masters is below 15");
+    assert_eq!(run(400, 15), 3, "15 masters keeps the levels");
+    assert_eq!(run(20, 16), 3, "few macros of many masters: not flat (was flat at 150 or fewer macros)");
 }

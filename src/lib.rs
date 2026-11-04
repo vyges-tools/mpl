@@ -43,6 +43,7 @@ pub mod messages;
 pub mod netlist;
 pub mod pipeline;
 pub mod placement;
+pub mod polygon90;
 #[cfg(unix)]
 pub mod read;
 pub mod regions;

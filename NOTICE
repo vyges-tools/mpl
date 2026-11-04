@@ -20,3 +20,6 @@ limitations under the License.
 This engine reads the design database through vyges-opendb, which binds
 OpenROAD's OpenDB (libodb). OpenDB is Copyright (c) 2019-2026, The Regents of
 the University of California, and is used under the BSD 3-Clause License.
+
+src/polygon90.rs is derived from Boost.Polygon (Copyright 2008 Intel Corporation), distributed
+under the Boost Software License, Version 1.0 (http://www.boost.org/LICENSE_1_0.txt).

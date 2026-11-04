@@ -3,7 +3,7 @@
 //! `set_debug_level MPL multilevel_autoclustering 1`, with the thresholds it reported.
 //!
 //! ⚠️ **This table is a weak oracle, and saying so is the point.** 34 of the 35 cases produce the
-//! IDENTICAL outcome — every suite design has fewer than 150 macros and a small cell count, so all
+//! IDENTICAL outcome — every suite design has fewer than 15 macro masters and a small cell count, so all
 //! of them floor to the same four numbers. Only `keep_clustering_data2` differs, because it is the
 //! one case that supplies thresholds on the command line.
 //!
@@ -68,7 +68,8 @@ fn every_upstream_case_reproduces_its_reported_thresholds() {
     for c in CASES {
         let got = set_base_thresholds(
             c.sup,
-            DesignMetrics { num_macro: c.mac, num_std_cell: c.std },
+            // no suite design has more than 10 macros, so fewer than 15 masters whatever they are
+            DesignMetrics { num_macro: c.mac, num_std_cell: c.std, num_masters: c.mac },
             c.ratio,
             c.levels,
             c.fixed,

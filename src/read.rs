@@ -210,10 +210,20 @@ pub fn read_nets(
 pub struct MacroGeometry {
     pub master_width: i64,
     pub master_height: i64,
-    /// ⚠️ SIGNAL pins only — power and ground never widen a halo.
+    /// ⚠️ SIGNAL pins only: the pin box `HardMacro` centres its pin offset on.
     pub pins: Vec<crate::halo::PinBox>,
+    /// Every pin but supply (power, ground): what the pin-aware halo reads (`buildPinAwareHalo`,
+    /// upstream ddf3679fd15). A clock or analog pin widens a halo but moves no pin offset.
+    pub halo_pins: Vec<crate::halo::PinBox>,
     pub inst_halo: Option<(crate::options::Halo, bool)>,
     pub orient: crate::halo::Orient,
+}
+
+/// Whether a master pin of signal type `sig` faces a side of the pin-aware halo. Upstream
+/// `buildPinAwareHalo` skips `dbSigType::isSupply()` pins — power and ground — and nothing else
+/// (ddf3679fd15, after 468a233d1fc skipped power alone; before both, every non-SIGNAL pin).
+pub fn pin_widens_halo(sig: &str) -> bool {
+    !matches!(sig, "POWER" | "GROUND")
 }
 
 /// Layer number → `(spacing, direction)`, read once.
@@ -266,9 +276,11 @@ pub fn read_macro_geometry(db: &Db, design: &Design) -> Vec<Option<MacroGeometry
             continue;
         }
         let master = db.inst_get_master(&inst.name);
-        let mut pins = Vec::new();
+        let (mut pins, mut halo_pins) = (Vec::new(), Vec::new());
         for term in db.master_get_m_terms(&master) {
-            if db.mterm_get_sig_type(&master, &term) != "SIGNAL" {
+            let sig = db.mterm_get_sig_type(&master, &term);
+            let (offset, halo) = (sig == "SIGNAL", pin_widens_halo(&sig));
+            if !offset && !halo {
                 continue;
             }
             for p in 0..db.num_mterm_get_m_pins(&master, &term) {
@@ -277,13 +289,19 @@ pub fn read_macro_geometry(db: &Db, design: &Design) -> Vec<Option<MacroGeometry
                 let layer_dir =
                     layers.get(&first).map_or(crate::halo::LayerDir::Horizontal, |(_, d)| *d);
                 for (_, x0, y0, x1, y1) in boxes {
-                    pins.push(crate::halo::PinBox {
+                    let b = crate::halo::PinBox {
                         x_min: x0 as i64,
                         y_min: y0 as i64,
                         x_max: x1 as i64,
                         y_max: y1 as i64,
                         layer_dir,
-                    });
+                    };
+                    if halo {
+                        halo_pins.push(b);
+                    }
+                    if offset {
+                        pins.push(b);
+                    }
                 }
             }
         }
@@ -291,6 +309,7 @@ pub fn read_macro_geometry(db: &Db, design: &Design) -> Vec<Option<MacroGeometry
             master_width: db.master_get_width(&master) as i64,
             master_height: db.master_get_height(&master) as i64,
             pins,
+            halo_pins,
             inst_halo: db.inst_halo(&inst.name).unwrap_or(None).map(|(l, b, r, t, soft)| {
                 (crate::options::Halo { left: l, bottom: b, right: r, top: t }, soft)
             }),
@@ -520,4 +539,21 @@ pub fn read_snap_macros(
         });
     }
     out
+}
+
+#[cfg(test)]
+mod tests {
+    use super::pin_widens_halo;
+
+    /// Upstream `buildPinAwareHalo` (ddf3679fd15): every master pin but supply widens the halo
+    /// side it faces; `HardMacro`'s pin offset still reads SIGNAL pins only.
+    #[test]
+    fn every_pin_but_supply_widens_a_pin_aware_halo() {
+        for sig in ["SIGNAL", "CLOCK", "ANALOG", "RESET", "SCAN", "TIEOFF"] {
+            assert!(pin_widens_halo(sig), "{sig}");
+        }
+        for sig in ["POWER", "GROUND"] {
+            assert!(!pin_widens_halo(sig), "{sig}");
+        }
+    }
 }

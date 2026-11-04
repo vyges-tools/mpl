@@ -371,6 +371,7 @@ fn cluster(
         DesignMetrics {
             num_macro: design_metrics.num_macro,
             num_std_cell: design_metrics.num_std_cell,
+            num_masters: count_hard_macro_masters(design),
         },
         opts.cluster_size_ratio,
         opts.max_num_level,
@@ -566,7 +567,7 @@ fn resolve_halos(
             g.inst_halo.map(|(h, _soft)| h),
             opts.min_channel,
             opts.pin_aware_channels,
-            &g.pins,
+            &g.halo_pins,
             g.master_width,
             g.master_height,
             input.minimum_spacing,
@@ -669,4 +670,17 @@ fn refuse(r: Refusal) -> Clustering {
         report: None,
         shaping: None,
     }
+}
+
+/// Distinct masters over the hard macros, as upstream counts them over `maps.inst_to_hard`
+/// (5946b7a6afc, a06eb8019b2): every block instance except an ignorable fixed one outside the
+/// placement area, fixed macros included.
+pub(crate) fn count_hard_macro_masters(design: &crate::design::Design) -> i32 {
+    let masters: std::collections::BTreeSet<usize> = design
+        .instances
+        .iter()
+        .filter(|i| i.is_block && !i.is_ignorable_macro)
+        .map(|i| i.master_id)
+        .collect();
+    masters.len() as i32
 }
