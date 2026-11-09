@@ -101,6 +101,8 @@ jobs:
       # The prebuilt solver bundle for the checked-out ortools-lib (no Bazel build here).
       - name: Fetch the solver bundle (par)
         if: matrix.features != ''
+        env:
+          GH_TOKEN: ${{ github.token }}   # authenticated bundle download (fetch-bundle.sh)
         run: bash ../vyges-tools-ortools-lib/scripts/fetch-bundle.sh "$RUNNER_TEMP/ortools" >> "$GITHUB_ENV"
 
       - uses: dtolnay/rust-toolchain@stable
