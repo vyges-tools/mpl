@@ -1,7 +1,5 @@
 # vyges-mpl
 
-**[Download Loom](https://vyges.com/products/vyges-cli/#install)** · install the free [Vyges CLI](https://vyges.com/products/vyges-cli/), then `vyges install physical`
-
 Hierarchical macro placement over the [OpenDB](https://github.com/vyges-tools/opendb) database:
 clustering, coarse shaping, simulated-annealing placement, boundary push, and track snapping.
 
