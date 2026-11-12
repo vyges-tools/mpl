@@ -150,7 +150,7 @@ jobs:
           GH_TOKEN: ${{ github.token }}   # authenticated bundle download (fetch-bundle.sh)
         run: bash ../vyges-tools-ortools-lib/scripts/fetch-bundle.sh "$RUNNER_TEMP/ortools" >> "$GITHUB_ENV"
 
-      - uses: dtolnay/rust-toolchain@stable
+      - uses: dtolnay/rust-toolchain@1.100.0
         with:
           targets: ${{ matrix.target }}
 

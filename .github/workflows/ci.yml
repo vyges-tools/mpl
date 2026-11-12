@@ -64,7 +64,7 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y cmake g++ git bison libboost-dev libboost-iostreams-dev libbz2-dev zlib1g-dev
 
-      - uses: dtolnay/rust-toolchain@stable
+      - uses: dtolnay/rust-toolchain@1.100.0
 
       # No --locked: Cargo.lock is gitignored here, and the [patch] resolves the sibling crates to
       # the freshly-checked-out checkouts — let Cargo resolve.
@@ -190,7 +190,7 @@ jobs:
           GH_TOKEN: ${{ github.token }}   # authenticated bundle download (fetch-bundle.sh)
         run: bash ../vyges-tools-ortools-lib/scripts/fetch-bundle.sh "$RUNNER_TEMP/ortools" >> "$GITHUB_ENV"
 
-      - uses: dtolnay/rust-toolchain@stable
+      - uses: dtolnay/rust-toolchain@1.100.0
 
       - name: Build
         run: cargo build --release --verbose --features par
