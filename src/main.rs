@@ -24,7 +24,7 @@ USAGE:
                          [--target-util U] [--max-num-inst N] [--min-num-inst N]
                          [--max-num-macro N] [--min-num-macro N]
   vyges physical mpl place-macro <design.odb> --macro NAME=X,Y[,ORIENT] [--macro ...]
-                                 [--dbu] [--out-odb FILE]
+                                 [--dbu] [--snap [--exact]] [--out-odb FILE]
   vyges physical mpl --describe
   vyges physical mpl --help
 
@@ -41,6 +41,9 @@ PLACE-MACRO:
   flow uses. X,Y are the macro ORIGIN in MICRONS (as the MACROS config states them); pass --dbu
   to give database units instead. ORIENT is R0/R90/R180/R270/MX/MY/MXR90/MYR90, default R0.
   Each macro is left FIXED, which is the status LibreLane's step produces.
+  --snap is the reference's own `place_macro` instead (what OpenROAD-flow-scripts runs): the box is
+  checked against the core, the macro is snapped so its pins sit on their layers' tracks (not for
+  a right-angle rotation; not with --exact), and it is left LOCKED.
 
 STATUS:
   0 applied   macros placed and committed
@@ -209,12 +212,16 @@ fn place_macro_main(args: &[String]) -> ExitCode {
     let mut path: Option<&str> = None;
     let mut out: Option<&str> = None;
     let mut in_dbu = false;
+    let mut snap = false;
+    let mut exact = false;
     let mut specs: Vec<(String, f32, f32, String)> = Vec::new();
 
     let mut i = 0;
     while i < args.len() {
         match args[i].as_str() {
             "--dbu" => in_dbu = true,
+            "--snap" => snap = true,
+            "--exact" => exact = true,
             "--out-odb" => {
                 i += 1;
                 match args.get(i) {
@@ -276,6 +283,7 @@ fn place_macro_main(args: &[String]) -> ExitCode {
         return ExitCode::from(2);
     }
     let known: std::collections::HashSet<String> = db.inst_names().into_iter().collect();
+    let grids = if snap { vyges_mpl::read::read_track_grids(&db) } else { Default::default() };
 
     let mut placed = Vec::new();
     for (name, x, y, orient) in &specs {
@@ -293,15 +301,29 @@ fn place_macro_main(args: &[String]) -> ExitCode {
             diag!("vyges-mpl place-macro: {name}: cannot set orientation {orient}: {e}");
             return ExitCode::from(1);
         }
+        if snap {
+            // `placeMacro` checks the ORIENTED box against the core before it moves anything.
+            if let Err(msg) = check_in_core(&db, name, xd, yd, dbu) {
+                diag!("vyges-mpl place-macro: {msg}");
+                return ExitCode::from(1);
+            }
+        }
         if let Err(e) = db.set_inst_location(name, xd, yd) {
             diag!("vyges-mpl place-macro: {name}: cannot set location: {e}");
             eprintln!("  ⚠️ a macro that is already LOCKED cannot be relocated; this step expects\n\
                             macros to arrive UNPLACED, as a harden flow hands them.");
             return ExitCode::from(1);
         }
+        if snap {
+            if let Err(msg) = snap_as_place_macro(&mut db, &grids, name, orient, (xd, yd), exact) {
+                diag!("vyges-mpl place-macro: {msg}");
+                return ExitCode::from(1);
+            }
+        }
         // 🔑 **FIXED, not PLACED.** LibreLane's step leaves macros fixed so later placement cannot
         // move them; our own taped-out `user_project_wrapper.def` records every macro as `+ FIXED`.
-        if let Err(e) = db.inst_set_placement_status(name, "FIRM") {
+        // `--snap` is the reference's `placeMacro`, which LOCKs (DEF `+ FIXED` as well).
+        if let Err(e) = db.inst_set_placement_status(name, if snap { "LOCKED" } else { "FIRM" }) {
             diag!("vyges-mpl place-macro: {name}: cannot set placement status: {e}");
             return ExitCode::from(1);
         }
@@ -346,6 +368,56 @@ fn place_macro_main(args: &[String]) -> ExitCode {
         "odb_written": dest,
     }));
     ExitCode::SUCCESS
+}
+
+/// `MacroPlacer::placeMacro`'s MPL-34: the box the macro will occupy, at its new orientation, must
+/// lie inside the core.
+fn check_in_core(db: &vyges_opendb::Db, name: &str, x: i32, y: i32, dbu: i32) -> Result<(), String> {
+    let b = db.inst_bbox(name).map_err(|e| format!("{name}: {e}"))?;
+    let [bx0, by0, bx1, by1] = b[..] else { return Err(format!("{name}: no bounding box")) };
+    let (x2, y2) = (x + (bx1 - bx0), y + (by1 - by0));
+    let core = (db.block_get_core_area_x_min(), db.block_get_core_area_y_min(),
+                db.block_get_core_area_x_max(), db.block_get_core_area_y_max());
+    if x >= core.0 && y >= core.1 && x2 <= core.2 && y2 <= core.3 {
+        return Ok(());
+    }
+    let um = |v: i32| v as f64 / dbu as f64;
+    Err(format!("MPL-0034 Cannot place {name} at ({}, {}) ({}, {}), outside of the core ({}, {}) ({}, {}).",
+                um(x), um(y), um(x2), um(y2), um(core.0), um(core.1), um(core.2), um(core.3)))
+}
+
+/// `MacroPlacer::placeMacro`, after `setLocation`: a right-angle rotation cannot be snapped (MPL-36,
+/// a warning); otherwise, unless `-exact`, `Snapper(inst).snapMacro()` moves the macro so its pins
+/// sit on their layers' tracks.
+fn snap_as_place_macro(
+    db: &mut vyges_opendb::Db,
+    grids: &std::collections::HashMap<usize, (Vec<i32>, Vec<i32>)>,
+    name: &str,
+    orient: &str,
+    at: (i32, i32),
+    exact: bool,
+) -> Result<(), String> {
+    use vyges_mpl::placement::DbOrient;
+    let o = DbOrient::from_db(orient).ok_or_else(|| format!("{name}: orientation {orient} is not a database orientation"))?;
+    if matches!(o, DbOrient::R90 | DbOrient::R270 | DbOrient::MXR90 | DbOrient::MYR90) {
+        vyges_events::emit(&vyges_events::Event::new(
+            "vyges-mpl",
+            vyges_events::Severity::Warn,
+            format!("MPL-0036 Orientation {orient} specified for macro {name} is a right angle rotation. Snapping is not possible."),
+        ).with_code("MPL-SNAP-ROTATED"));
+        return Ok(());
+    }
+    if exact {
+        return Ok(());
+    }
+    let sm = vyges_mpl::read::read_snap_macro(db, grids, name);
+    let mfg = db.manufacturing_grid().unwrap_or(None).unwrap_or(0);
+    let ll = vyges_mpl::placement::snap_placed_macro(&sm, grids, mfg, o, at)
+        .map_err(|e| format!("MPL-0039 {name}: no track grid for layer {}", e.0))?;
+    if ll != at {
+        db.set_inst_location(name, ll.0, ll.1).map_err(|e| format!("{name}: cannot set snapped location: {e}"))?;
+    }
+    Ok(())
 }
 
 fn usage_err(msg: &str) -> ExitCode {

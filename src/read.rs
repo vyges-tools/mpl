@@ -498,7 +498,28 @@ pub fn read_snap_macros(
         if !inst.is_block {
             continue;
         }
-        let master = db.inst_get_master(&inst.name);
+        out[i] = Some(snap_macro_of(db, &layers, grids, &inst.name));
+    }
+    out
+}
+
+/// One macro's snapping inputs, by instance name, without reading the whole design: what
+/// `place-macro --snap` needs for the few macros it is given.
+pub fn read_snap_macro(
+    db: &Db,
+    grids: &std::collections::HashMap<usize, (Vec<i32>, Vec<i32>)>,
+    inst: &str,
+) -> SnapMacro {
+    snap_macro_of(db, &layer_table(db), grids, inst)
+}
+
+fn snap_macro_of(
+    db: &Db,
+    layers: &HashMap<i64, (i64, crate::halo::LayerDir)>,
+    grids: &std::collections::HashMap<usize, (Vec<i32>, Vec<i32>)>,
+    inst: &str,
+) -> SnapMacro {
+        let master = db.inst_get_master(inst);
         let mut pins = Vec::new();
         for (t, term) in db.master_get_m_terms(&master).into_iter().enumerate() {
             let is_signal = db.mterm_get_sig_type(&master, &term) == "SIGNAL";
@@ -533,12 +554,10 @@ pub fn read_snap_macros(
                 });
             }
         }
-        out[i] = Some(SnapMacro {
+        SnapMacro {
             pins,
             master: (db.master_get_width(&master) as i32, db.master_get_height(&master) as i32),
-        });
-    }
-    out
+        }
 }
 
 #[cfg(test)]

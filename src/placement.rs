@@ -6121,3 +6121,54 @@ pub fn snap_macro(input: &SnapInput, origin: (i32, i32)) -> Result<(i32, i32), M
     let y = snap_axis(input, (x, origin.1), SnapAxis::Horizontal)?;
     Ok((x, y))
 }
+
+/// `Snapper(inst).snapMacro()` on a macro whose bounding box sits at `at`: the snapped bounding-box
+/// lower-left, the corner `dbInst::getLocation` and the DEF record. Shared by `run`'s commit and
+/// `place-macro --snap` (`MacroPlacer::placeMacro`).
+pub fn snap_placed_macro(
+    sm: &crate::read::SnapMacro,
+    grids: &std::collections::HashMap<usize, (Vec<i32>, Vec<i32>)>,
+    manufacturing_grid: i32,
+    orient: DbOrient,
+    at: (i32, i32),
+) -> Result<(i32, i32), MissingTrackGrid> {
+    let candidates: Vec<SnapCandidateGeometry> = sm
+        .pins
+        .iter()
+        .map(|q| SnapCandidateGeometry {
+            iterm: q.iterm,
+            is_signal: q.is_signal,
+            layer: q.layer,
+            layer_number: q.layer_number,
+            layer_is_vertical: q.layer_is_vertical,
+            has_track_grid: q.has_track_grid,
+            mterm_box: q.mterm_box,
+            term_boxes: q.term_boxes.clone(),
+        })
+        .collect();
+    let positions = |layer: usize| -> Vec<i32> {
+        match grids.get(&layer) {
+            // ⚠️ A VERTICAL layer's tracks are the X list; a horizontal layer's the Y.
+            Some((x, y)) => {
+                if sm.pins.iter().any(|q| q.layer == layer && q.layer_is_vertical) {
+                    x.clone()
+                } else {
+                    y.clone()
+                }
+            }
+            None => Vec::new(),
+        }
+    };
+    let input = SnapInput {
+        candidates: &candidates,
+        master: sm.master,
+        orient,
+        manufacturing_grid,
+        positions: &positions,
+    };
+    let origin = instance_offset(at, sm.master, orient);
+    let o = snap_macro(&input, origin)?;
+    // Back to the bounding-box corner the DEF records.
+    let t = transform_rect((0, 0, sm.master.0, sm.master.1), orient, o);
+    Ok((t.0, t.1))
+}

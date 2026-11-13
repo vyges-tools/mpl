@@ -93,6 +93,9 @@ jobs:
               shaping|read_design|placement_wirelength|tree)
                 echo "::notice::skipping $t — needs tests/fixtures/counter.odb, which is not tracked"
                 continue ;;
+              place_macro_snap)
+                echo "::notice::skipping $t — needs tests/fixtures/place_macro_snap.odb, which is not tracked"
+                continue ;;
             esac
             cargo test --release --verbose --test "$t"
           done

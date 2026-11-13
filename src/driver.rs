@@ -1491,47 +1491,8 @@ fn print_boundary_push(
         let at = commit.location;
         let mut placed = at;
         if let Some(sm) = snap.macros.get(inst).and_then(|m| m.as_ref()) {
-            let candidates: Vec<p::SnapCandidateGeometry> = sm
-                .pins
-                .iter()
-                .map(|q| p::SnapCandidateGeometry {
-                    iterm: q.iterm,
-                    is_signal: q.is_signal,
-                    layer: q.layer,
-                    layer_number: q.layer_number,
-                    layer_is_vertical: q.layer_is_vertical,
-                    has_track_grid: q.has_track_grid,
-                    mterm_box: q.mterm_box,
-                    term_boxes: q.term_boxes.clone(),
-                })
-                .collect();
-            let positions = |layer: usize| -> Vec<i32> {
-                match snap.grids.get(&layer) {
-                    // ⚠️ A VERTICAL layer's tracks are the X list; a horizontal layer's the Y.
-                    Some((x, y)) => {
-                        if sm.pins.iter().any(|q| q.layer == layer && q.layer_is_vertical) {
-                            x.clone()
-                        } else {
-                            y.clone()
-                        }
-                    }
-                    None => Vec::new(),
-                }
-            };
-            let input = p::SnapInput {
-                candidates: &candidates,
-                master: sm.master,
-                orient: orient[k],
-                manufacturing_grid: snap.manufacturing_grid,
-                positions: &positions,
-            };
-            let origin = p::instance_offset(at, sm.master, orient[k]);
-            match p::snap_macro(&input, origin) {
-                Ok(o) => {
-                    // Back to the bounding-box corner the DEF records.
-                    let t = p::transform_rect((0, 0, sm.master.0, sm.master.1), orient[k], o);
-                    placed = (t.0, t.1);
-                }
+            match p::snap_placed_macro(sm, snap.grids, snap.manufacturing_grid, orient[k], at) {
+                Ok(ll) => placed = ll,
                 Err(e) => {
                     // ⚠️ Upstream errors MPL-39 here rather than snapping; say so and keep the
                     // unsnapped position, so the gate attributes it rather than reading a pass.
