@@ -3,6 +3,12 @@
 //! so the two can be diffed. The driver is [`vyges_mpl::driver`]; `vyges-mpl run` drives the same
 //! stages and applies the commit this prints.
 
+/// The binary allocates through mimalloc, as the reference allocates through the tcmalloc its
+/// Bazel build links (`malloc = @tcmalloc`); see Cargo.toml for the pin.
+#[cfg(feature = "mimalloc")]
+#[global_allocator]
+static GLOBAL: mimalloc::MiMalloc = mimalloc::MiMalloc;
+
 fn main() {
     let args: Vec<String> = std::env::args().skip(1).collect();
     let mut out = std::io::stdout().lock();

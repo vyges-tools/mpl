@@ -21,11 +21,29 @@ serde_json = "1"
 # the pinned solver bundle (Linux x86_64). Without the `par` feature such a cluster is refused.
 vyges-par = { git = "https://github.com/vyges-tools/par", branch = "main", optional = true }
 
+# The binary's global allocator. The reference build links tcmalloc for all of its code
+# (BUILD.bazel `malloc = @tcmalloc`), not the system allocator; mimalloc measured fastest and
+# smallest of tcmalloc / jemalloc / mimalloc on a like-for-like trial. Pinned exactly:
+# libmimalloc-sys 0.1.44 bundles mimalloc v2 by default (0.1.45 on default to v3).
+mimalloc = { version = "=0.1.48", default-features = false, optional = true }
+libmimalloc-sys = { version = "=0.1.44", default-features = false, optional = true }
+
+# On Linux the allocator also REPLACES malloc/free process-wide (`override`), so C++ code linked
+# into the binary allocates through it too, as the reference's statically linked tcmalloc does for
+# all of its code. Not on macOS, where the system zone allocator is left alone.
+[target.'cfg(target_os = "linux")'.dependencies]
+libmimalloc-sys = { version = "=0.1.44", default-features = false, features = ["override"], optional = true }
+
 [features]
+default = ["mimalloc"]
 # The command-line entry built into the library too (`cli_main`), for the suite binaries
 # that link every engine and run the one they are invoked as.
 suite = []
 par = ["dep:vyges-par", "vyges-par/ilp"]
+
+# The binary's allocator (see [dependencies]). On by default for the binary; the suite, the only
+# library consumer, links it too.
+mimalloc = ["dep:mimalloc", "dep:libmimalloc-sys"]
 
 # Local development against the sibling checkouts. Patches are only honored from the root
 # manifest, so this is a no-op for downstream consumers pulling us by git.
@@ -54,3 +72,9 @@ path = "src/main.rs"
 [lib]
 name = "vyges_mpl"
 path = "src/lib.rs"
+
+# The reference is built -O3 with link-time optimisation (Bazel --config=release). LTO and one
+# codegen unit let calls inline across crates; by language rule neither changes a result.
+[profile.release]
+lto = "fat"
+codegen-units = 1

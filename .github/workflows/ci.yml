@@ -85,6 +85,11 @@ jobs:
         # ⚠️ The exclusion list is derived at run time, not hardcoded: a new test file must be
         # picked up automatically, and a hand-maintained list rots into a silently shrinking
         # suite — the same failure mode the mutation table has had twice.
+        # Tests only: LTO and codegen units cannot change a result (language rule), so a test
+        # binary built without them tests the same code; release builds keep [profile.release].
+        env:
+          CARGO_PROFILE_RELEASE_LTO: "false"
+          CARGO_PROFILE_RELEASE_CODEGEN_UNITS: "16"
         run: |
           cargo test --release --verbose --lib
           for f in tests/*.rs; do
@@ -199,6 +204,11 @@ jobs:
         run: cargo build --release --verbose --features par
 
       - name: Test (library and binary)
+        # Tests only: LTO and codegen units cannot change a result (language rule), so a test
+        # binary built without them tests the same code; release builds keep [profile.release].
+        env:
+          CARGO_PROFILE_RELEASE_LTO: "false"
+          CARGO_PROFILE_RELEASE_CODEGEN_UNITS: "16"
         run: cargo test --release --verbose --features par --lib --bins
 
       # ⛔ The descriptor must say which build this is: a linked partitioner here.
