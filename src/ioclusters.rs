@@ -81,12 +81,17 @@ pub fn bundle_offset(pin: &Rect, die: &Rect, spans: BundleSpans) -> Option<i32> 
     }
 }
 
-/// `std::floor(a / b)` on integers, guarding a zero span.
+/// `std::floor(a / b)` with `int a` and `int b`, guarding a zero span.
+///
+/// ⛔ **The integer division happens FIRST, so it truncates toward zero and `floor` then sees a
+/// whole number.** It is not a true floor: the two differ for a negative dividend off a multiple
+/// of the span, a fixed pin touching the left edge with its centre below the die (`-100 / 20000`
+/// is bundle 0 in the reference, `floor(-0.005)` would be -1, which is no bundle at all).
 fn div_floor(a: i64, b: i64) -> i32 {
     if b == 0 {
         return 0;
     }
-    (a as f64 / b as f64).floor() as i32
+    (a / b) as i32
 }
 
 /// The rectangle a bundle occupies.
@@ -319,5 +324,28 @@ pub fn create_io_pad_clusters(
         assignment: Vec::new(),
         has_io_clusters: true,
         next_id,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Upstream `findAssociatedBundledIOId`: `id += std::floor(dy / io_bundle_spans_.y)` with
+    /// `int dy` and an `int` span, so `dy / span` truncates toward zero before `floor` is reached.
+    /// A fixed pin touching the left edge with its centre 100 below a 100000-high die is in L_0
+    /// (offset 0): `-100 / 20000` is 0. A true floor gives -1, an id that is no bundle.
+    #[test]
+    fn a_left_pin_centred_below_the_die_is_in_the_first_bundle_as_the_int_division_truncates() {
+        let die = Rect { x_min: 0, y_min: 0, x_max: 100_000, y_max: 100_000 };
+        let spans = bundle_spans(&die);
+        assert_eq!(spans.y, 20_000);
+        let pin = Rect { x_min: -100, y_min: -300, x_max: 100, y_max: 100 };
+        assert_eq!(bundle_offset(&pin, &die, spans), Some(0));
+        // the same rule on whole multiples and inside the die, where truncation and floor agree
+        assert_eq!(div_floor(-40_000, 20_000), -2);
+        assert_eq!(div_floor(-20_001, 20_000), -1);
+        assert_eq!(div_floor(39_999, 20_000), 1);
+        assert_eq!(div_floor(5, 0), 0, "a zero span is UB upstream; 0 here");
     }
 }
