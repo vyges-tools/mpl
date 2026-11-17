@@ -156,7 +156,7 @@ fn the_bucket_division_is_not_a_multiply_shift() {
          (1_731_553_077, 65535, 26421, 26420),
          (83_360_520, 65537, 1272, 1271)]
     {
-        assert_eq!(((u as u64) * n as u64 >> 32) as u32, multiply_shift, "the wrong formula");
+        assert_eq!((((u as u64) * n as u64) >> 32) as u32, multiply_shift, "the wrong formula");
         // The bucket division, spelled out, is what the implementation does.
         let range = (n - 1) as u64;
         let mut bucket = u32::MAX as u64 / (range + 1);

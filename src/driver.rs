@@ -139,9 +139,11 @@ pub fn run_with(
     let by_name: HashMap<&str, usize> =
         design.instances.iter().enumerate().map(|(i, x)| (x.name.as_str(), i)).collect();
     let dbu = db.dbu_per_micron();
-    let mut opts = crate::engine::ClusterOptions::default();
-    opts.pin_aware_channels = pin_aware_channels;
-    opts.thresholds = sup;
+    let mut opts = crate::engine::ClusterOptions {
+        pin_aware_channels,
+        thresholds: sup,
+        ..Default::default()
+    };
     if let Some([w, h]) = min_channel {
         let d = |v: f64| (v * dbu as f64).round() as i64;
         opts.min_channel = crate::options::Channel { width: d(w), height: d(h) };
@@ -269,6 +271,7 @@ pub fn run_with(
 pub struct FlipInputs<'a> {
     pub pins: &'a [crate::ioclusters::Pin],
     /// Per master TERMINAL geometry, untransformed — see `read::read_term_boxes`.
+    #[allow(clippy::type_complexity)]
     pub term_boxes: &'a std::collections::HashMap<(String, String), Vec<(i32, i32, i32, i32)>>,
     /// The master name per INSTANCE; `Instance` carries only an interned id.
     pub master_of: &'a [String],
@@ -290,6 +293,7 @@ pub struct SnapInputs<'a> {
     pub halo_kind: &'a [crate::placement::HaloKind],
 }
 
+#[allow(clippy::too_many_arguments, clippy::type_complexity)]
 fn print_coarse_shaping_trace(
     args: &[String],
     out: &mut dyn std::io::Write,
@@ -527,7 +531,7 @@ fn report_placement(
 /// ⛔ **Only a placed parent produces a table.** A macro cluster gets a `Macro Placement Summary`
 /// from a different core, and a leaf gets nothing — so a harness must attribute a missing block,
 /// never treat it as a match.
-#[allow(clippy::too_many_arguments)]
+#[allow(clippy::too_many_arguments, clippy::type_complexity)]
 fn print_placement_summaries(
     args: &[String],
     out: &mut dyn std::io::Write,
@@ -1017,6 +1021,7 @@ fn print_placement_summaries(
 /// ⚠️ **The IO blockages are the ABSOLUTE ones**, as `createPinAccessBlockages` left them. The
 /// outline-relative copies the placement problems carry would put every blockage a corner away
 /// from the macros being tested against it.
+#[allow(clippy::too_many_arguments)]
 fn print_boundary_push(
     args: &[String],
     out: &mut dyn std::io::Write,
@@ -1735,7 +1740,7 @@ type Located = (usize, (i32, i32));
 ///
 /// ⛔ **The outline is the box CLUSTER placement gave this cluster**, not its shaping box — which
 /// is why the caller must have written back before descending.
-#[allow(clippy::too_many_arguments)]
+#[allow(clippy::too_many_arguments, clippy::type_complexity)]
 /// Runs `placeMacros` on one macro cluster.
 ///
 /// 🔑 **Returns each macro's ABSOLUTE haloed corner** — `placeMacros`' closing loop shifts every
@@ -1842,7 +1847,6 @@ fn emit_macro_summary(
     for k in 0..n {
         macro_of.insert(first_temp_id + k as i32, k);
     }
-    let mut macros = macros;
     for id in &terminal_ids {
         // ⛔ **An IO cluster is NOT in the placed map** — `updateChildrenShapesAndLocations` skips
         // it on purpose, because its position is already absolute and must not be overwritten. So

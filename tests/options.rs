@@ -45,6 +45,7 @@ fn no_arguments_leaves_every_default_intact() {
 fn every_key_actually_arrives() {
     // 🔑 THE lesson from tap and ppl: an option that fails to arrive does not error, it
     // silently does nothing. This walks every key and checks the value landed.
+    #[allow(clippy::type_complexity)]
     let cases: Vec<(&str, &str, fn(&PlacerOptions) -> String)> = vec![
         ("-max_num_macro", "7", |o| o.max_num_macro.to_string()),
         ("-min_num_macro", "3", |o| o.min_num_macro.to_string()),

@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: Apache-2.0
 //! Coarse shaping. Rules from upstream `HierRTLMP`.
+#![allow(non_snake_case)] // test names capitalise the word the rule turns on
 use vyges_mpl::design::Rect;
 use vyges_mpl::shaping::{
     compute_width_intervals, generate_tilings_for_macro_cluster, macro_tilings, root_shape,

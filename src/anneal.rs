@@ -131,8 +131,7 @@ pub fn pack_floorplan(macros: &mut [SoftMacro], sp: &SequencePair) -> (i32, i32)
         accumulated[i] = 0;
     }
 
-    for i in 0..n {
-        let id = reversed[i];
+    for &id in &reversed {
         let neg_pos = sp_pos[id].1;
         macros[id].set_y(accumulated[neg_pos]);
         let current = macros[id].y + macros[id].height;

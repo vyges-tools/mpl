@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: Apache-2.0
 //! Where unconstrained IO pins may go. Rules from upstream `HierRTLMP`.
+#![allow(non_snake_case)] // test names capitalise the word the rule turns on
 use vyges_mpl::design::Rect;
 use vyges_mpl::halo::Boundary;
 use vyges_mpl::regions::{available_regions, boundary_of, boundary_rect, subtract_overlap};

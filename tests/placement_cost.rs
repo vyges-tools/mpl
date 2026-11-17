@@ -86,8 +86,7 @@ fn a_search_with_no_placement_context_scores_only_the_shaping_terms() {
 fn each_placement_term_lands_in_its_own_field() {
     // A macro cluster in the middle of the die: the boundary term is the one with something to say.
     let mut s = search(vec![macro_cluster(450, 450, 100, 100)], (1000, 1000));
-    let mut only_boundary = SoftWeights::default();
-    only_boundary.boundary = 50.0;
+    let only_boundary = SoftWeights { boundary: 50.0, ..Default::default() };
     s.placement = Some(Box::new(inputs(1, only_boundary)));
     s.cal_penalty();
     assert!(s.penalties.boundary > 0.0, "the boundary term fired");
@@ -96,8 +95,7 @@ fn each_placement_term_lands_in_its_own_field() {
 
     // A soft blockage under the same macro: now only that term fires.
     let mut s = search(vec![macro_cluster(450, 450, 100, 100)], (1000, 1000));
-    let mut only_blockage = SoftWeights::default();
-    only_blockage.soft_blockage = 10.0;
+    let only_blockage = SoftWeights { soft_blockage: 10.0, ..Default::default() };
     let mut ins = inputs(1, only_blockage);
     ins.soft_blockages = vec![(400, 400, 600, 600)];
     s.placement = Some(Box::new(ins));
@@ -107,8 +105,7 @@ fn each_placement_term_lands_in_its_own_field() {
 
     // A guide the macro sits far outside of.
     let mut s = search(vec![macro_cluster(900, 900, 100, 100)], (1000, 1000));
-    let mut only_guidance = SoftWeights::default();
-    only_guidance.guidance = 10.0;
+    let only_guidance = SoftWeights { guidance: 10.0, ..Default::default() };
     let mut ins = inputs(1, only_guidance);
     ins.guides = vec![(0, (0, 0, 100, 100))];
     s.placement = Some(Box::new(ins));
@@ -118,8 +115,7 @@ fn each_placement_term_lands_in_its_own_field() {
 
     // A fence the macro sits far outside of.
     let mut s = search(vec![macro_cluster(900, 900, 100, 100)], (1000, 1000));
-    let mut only_fence = SoftWeights::default();
-    only_fence.fence = 10.0;
+    let only_fence = SoftWeights { fence: 10.0, ..Default::default() };
     let mut ins = inputs(1, only_fence);
     ins.fences = vec![(0, (0, 0, 400, 400))];
     s.placement = Some(Box::new(ins));
@@ -133,8 +129,7 @@ fn each_placement_term_lands_in_its_own_field() {
 fn the_notch_term_is_scored_through_the_wiring() {
     let macros = vec![macro_cluster(0, 0, 1000, 400), macro_cluster(0, 450, 1000, 550)];
     let mut s = search(macros, (1000, 1000));
-    let mut only_notch = SoftWeights::default();
-    only_notch.notch = 50.0;
+    let only_notch = SoftWeights { notch: 50.0, ..Default::default() };
     s.placement = Some(Box::new(inputs(2, only_notch)));
     s.cal_penalty();
     assert!(s.penalties.notch > 0.0, "the 50-unit gap between them");
@@ -150,8 +145,7 @@ fn the_notch_term_sees_a_stale_fixed_macro_penalty() {
     let mut s = search(macros, (1000, 1000));
     // A fixed macro that the lower cluster overlaps, so the fixed-macro penalty will be positive.
     s.fixed_bboxes = vec![(0, 0, 100, 100)];
-    let mut only_notch = SoftWeights::default();
-    only_notch.notch = 50.0;
+    let only_notch = SoftWeights { notch: 50.0, ..Default::default() };
     s.placement = Some(Box::new(inputs(2, only_notch)));
 
     assert_eq!(s.penalties.fixed_macros, 0.0, "nothing has been scored yet");
@@ -174,8 +168,7 @@ fn the_notch_term_sees_a_stale_fixed_macro_penalty() {
 fn a_macro_with_no_cluster_obstructs_nothing() {
     let macros = vec![macro_cluster(0, 0, 1000, 400), macro_cluster(0, 450, 1000, 550)];
     let mut s = search(macros, (1000, 1000));
-    let mut only_notch = SoftWeights::default();
-    only_notch.notch = 50.0;
+    let only_notch = SoftWeights { notch: 50.0, ..Default::default() };
     let mut ins = inputs(2, only_notch);
     for a in &mut ins.attributes {
         a.kind = None;
@@ -190,8 +183,7 @@ fn a_macro_with_no_cluster_obstructs_nothing() {
 #[test]
 fn the_placement_context_survives_being_scored() {
     let mut s = search(vec![macro_cluster(450, 450, 100, 100)], (1000, 1000));
-    let mut only_boundary = SoftWeights::default();
-    only_boundary.boundary = 50.0;
+    let only_boundary = SoftWeights { boundary: 50.0, ..Default::default() };
     s.placement = Some(Box::new(inputs(1, only_boundary)));
     s.cal_penalty();
     let first = s.penalties.boundary;

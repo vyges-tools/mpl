@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: Apache-2.0
 //! Merging small clusters. Rules from upstream `mergeChildrenBelowThresholds` and its helpers.
+#![allow(non_snake_case)] // test names capitalise the word the rule turns on
 use vyges_mpl::cluster::{Cluster, ClusterType, Metrics};
 use vyges_mpl::merge::{
     all_connections_weight, find_neighbors, find_single_well_formed_connected_cluster, is_dust,

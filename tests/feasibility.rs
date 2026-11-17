@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: Apache-2.0
 //! The feasibility checks `init` runs before clustering. Rules from upstream `ClusteringEngine`.
+#![allow(non_snake_case)] // test names capitalise the word the rule turns on
 use vyges_mpl::design::{Design, Instance, MasterKind, Module, Rect};
 use vyges_mpl::feasibility::{
     instance_area_with_halos_fits, macro_fits_in_core, movable_cells_fit, union_area,

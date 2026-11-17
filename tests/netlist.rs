@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: Apache-2.0
 //! Net connectivity. Rules from upstream `isValidNet` / `buildNet` / `connectClusters`.
+#![allow(non_snake_case)] // test names capitalise the word the rule turns on
 use vyges_mpl::design::{Design, Instance, MasterKind, Module, Rect};
 use vyges_mpl::netlist::{
     build_connections, build_net, connections_for, is_valid_net, Connections, DbNet, InstTerm,

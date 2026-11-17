@@ -348,6 +348,7 @@ pub fn read_macro_geometry(db: &Db, design: &Design) -> Vec<Option<MacroGeometry
 /// ⚠️ Boxes are in MASTER coordinates, untransformed. The caller applies the instance's placement.
 /// ℹ️ Returns the per-INSTANCE master name alongside the geometry, because the caller needs to get
 /// from an instance to its terminals and `Instance` carries only an interned `master_id`.
+#[allow(clippy::type_complexity)] // the reference's tuple shapes, kept literal
 pub fn read_term_boxes(
     db: &vyges_opendb::Db,
     design: &crate::design::Design,
@@ -541,7 +542,7 @@ fn snap_macro_of(
                 let Some(&(first, ..)) = boxes.first() else { continue };
                 let layer = first as usize;
                 let is_vertical =
-                    matches!(layers.get(&(first as i64)), Some((_, crate::halo::LayerDir::Vertical)));
+                    matches!(layers.get(&first), Some((_, crate::halo::LayerDir::Vertical)));
                 pins.push(SnapPin {
                     iterm: t,
                     is_signal,

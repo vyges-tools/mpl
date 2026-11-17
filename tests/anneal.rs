@@ -468,6 +468,7 @@ fn each_term_divides_by_its_own_normalisation_factor() {
         notch: 9.0,
     };
     // One term alive at a time, each with a distinctive factor.
+    #[allow(clippy::type_complexity)]
     let cases: [(fn(&mut Penalties), fn(&mut Normalization), f32); 8] = [
         (|p| p.outline = 1.0, |n| n.outline = 4.0, 2.0 / 4.0),
         (|p| p.wirelength = 1.0, |n| n.wirelength = 4.0, 3.0 / 4.0),
@@ -959,7 +960,8 @@ fn widening_with_no_neighbour_reaches_the_outline() {
     let (curve, ..) = shape_curve_from_intervals(&intervals, 40_000).expect("shapeable");
     let mut macro_ = mixed(100, 400, 40_000);
     // The widen branch computes `outline_width - lx` and hands it to set_width.
-    set_width(&mut macro_, &curve, 100_000 - 0);
+    let lx = 0;
+    set_width(&mut macro_, &curve, 100_000 - lx);
     assert_eq!(macro_.width, 400, "clamped to the curve's widest, not the outline");
 }
 
@@ -1540,8 +1542,7 @@ fn the_three_perturbation_rules_disagree_on_the_same_cluster() {
 /// applied the shaping floor here would run 50 sweeps for a caller that asked for 2.
 #[test]
 fn initialize_runs_exactly_the_perturbation_count_it_is_given() {
-    let mut sa = SaParameters::default();
-    sa.num_perturb_per_step = 2;
+    let sa = SaParameters { num_perturb_per_step: 2, ..Default::default() };
 
     // Hand replay of exactly two perturbations, from the same seed.
     let mut replay = search_with(3);

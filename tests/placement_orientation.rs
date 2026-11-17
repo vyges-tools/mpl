@@ -80,7 +80,6 @@ fn a_macro_one_unit_off_forms_its_own_group() {
 
 // ---------------------------------------------------------------- flipping, and what it costs
 
-use vyges_mpl::halo::Orient;
 use vyges_mpl::placement::{net_terminal_bbox, real_macro_wirelength, NetTerminal};
 
 // ---------------------------------------------------------------- the real wirelength
@@ -142,7 +141,7 @@ fn the_wirelength_is_the_summed_half_perimeter() {
 #[test]
 fn a_net_reached_by_two_pins_is_counted_twice() {
     let net = vec![NetTerminal::Instance(Some((0, 0))), NetTerminal::FixedPin((100, 100))];
-    let once = real_macro_wirelength(&[net.clone()]);
+    let once = real_macro_wirelength(std::slice::from_ref(&net));
     let twice = real_macro_wirelength(&[net.clone(), net]);
     assert_eq!(once, 200.0);
     assert_eq!(twice, 400.0, "the same net, counted for each pin that reaches it");

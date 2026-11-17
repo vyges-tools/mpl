@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: Apache-2.0
 //! Building the physical hierarchy. Rules from upstream `ClusteringEngine`.
+#![allow(non_snake_case)] // test names capitalise the word the rule turns on
 use vyges_mpl::cluster::ClusterType;
 use vyges_mpl::design::{Design, Instance, MasterKind, Module, ModuleMetrics, Rect};
 use vyges_mpl::tree::TreeBuilder;

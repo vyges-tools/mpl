@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: Apache-2.0
 //! Reading and classifying the design. Rules from upstream `ClusteringEngine`.
+#![allow(non_snake_case)] // test names capitalise the word the rule turns on
 use vyges_mpl::design::{
     compute_module_metrics, floorplan_shape, is_ignored_inst, unfixed_macros, Design, Instance,
     MasterKind, Module, ModuleMetrics, Rect,

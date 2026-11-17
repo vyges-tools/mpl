@@ -65,6 +65,8 @@ jobs:
           sudo apt-get install -y cmake g++ git bison libboost-dev libboost-iostreams-dev libbz2-dev zlib1g-dev
 
       - uses: dtolnay/rust-toolchain@1.100.0
+        with:
+          components: clippy
 
       # No --locked: Cargo.lock is gitignored here, and the [patch] resolves the sibling crates to
       # the freshly-checked-out checkouts — let Cargo resolve.
@@ -104,6 +106,9 @@ jobs:
             esac
             cargo test --release --verbose --test "$t"
           done
+
+      - name: Clippy
+        run: cargo clippy --all-targets -- -D warnings
 
       # 🔑 The descriptor is the contract this engine publishes, and it is assembled by hand rather
       # than serialised — a stray comma makes it unparseable to the consumer it exists for. The

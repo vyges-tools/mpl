@@ -160,7 +160,7 @@ fn the_out_of_outline_charge_is_quantised_by_f32() {
     let mut io = macro_at(0, 0, 0, 0);
     io.is_cluster_of_unplaced_io_pins = true;
     io.is_unconstrained_io_cluster = true;
-    let macros = vec![macro_at(5_000_000, 0, 100, 100), io];
+    let macros = [macro_at(5_000_000, 0, 100, 100), io];
     let nets = vec![BundledNet { source: 0, target: 1, weight: 1.0 }];
     let regions = [Region { x0: 0, y0: 0, x1: 0, y1: 1000, boundary: Boundary::L }];
 

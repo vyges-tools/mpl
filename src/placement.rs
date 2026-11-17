@@ -390,6 +390,7 @@ pub fn soft_blockage_penalty(
 /// miss has a positive area.
 ///
 /// ⚠️ Converted to microns per guide, then averaged over the number of guides.
+#[allow(clippy::type_complexity)] // the reference's tuple shapes, kept literal
 pub fn guidance_penalty(
     guides: &[(usize, (i32, i32, i32, i32))],
     macros: &[WirelengthMacro],
@@ -444,6 +445,7 @@ pub fn guidance_penalty(
 ///
 /// ⚠️ The ratios are formed against the OUTLINE's extents, so the term is dimensionless and
 /// comparable across outlines — and it is the ratio that is squared, not the distance.
+#[allow(clippy::type_complexity)] // the reference's tuple shapes, kept literal
 pub fn fence_penalty(
     fences: &[(usize, (i32, i32, i32, i32))],
     macros: &[WirelengthMacro],
@@ -734,6 +736,7 @@ impl NotchVicinity {
 ///
 /// ⚠️ **A side is cleared by the FIRST empty neighbour** — it asks whether the region is walled
 /// in, not how much of the wall exists.
+#[allow(clippy::needless_range_loop)] // index loops, as the reference walks the grid
 pub fn check_notch_vicinity(
     grid: &[Vec<bool>],
     start_row: usize,
@@ -819,6 +822,7 @@ pub fn single_notch_penalty(width: i32, height: i32, outline_area: i64) -> f32 {
 /// how the term stays meaningful during the early, sprawling part of the search.
 ///
 /// ⚠️ A zero weight returns without measuring — which is why coarse shaping never sees this.
+#[allow(clippy::needless_range_loop)] // index loops, as the reference walks the grid
 pub fn notch_penalty(
     macros: &[NotchMacro],
     outline: (i32, i32),
@@ -1462,6 +1466,10 @@ pub fn dead_space_grid(macros: &[DeadSpaceMacro], outline: (i32, i32)) -> (Vec<i
 ///
 /// ⚠️ The final shape is assigned with the forcing setters, so it ignores the cluster's shape
 /// curve entirely: a cluster can end up a shape its own curve does not offer.
+#[allow(clippy::needless_range_loop)] // index loops, as the reference walks the grid
+// ⚠️ The widened start/end bounds are written inside loops whose ranges were taken before the
+// write; that is the reference's `for (int j = y_end; j < num_y; j++)`, whose start is copied once.
+#[allow(clippy::mut_range_bound)]
 pub fn fill_dead_space(macros: &mut [DeadSpaceMacro], outline: (i32, i32)) {
     let (x_grid, y_grid) = dead_space_grid(macros, outline);
     let (num_x, num_y) = (x_grid.len() - 1, y_grid.len() - 1);
@@ -1925,7 +1933,7 @@ impl PlacementInputs {
         }
         let view = self.wirelength_view(macros);
         let constraint_of = |id: usize| {
-            self.constraint_regions.iter().find(|(i, _)| *i == id).map(|(_, r)| r.clone())
+            self.constraint_regions.iter().find(|(i, _)| *i == id).map(|(_, r)| *r)
         };
         compute_nets_wire_length(
             &self.nets,
@@ -2152,7 +2160,7 @@ pub fn no_valid_solution_error(
     } else {
         crate::options::MplError::new(
             8,
-            &format!(
+            format!(
                 "Annealing engine failed to find a valid solution. Please, report this internal \
                  error.\nFailed at cluster ({cluster_id}): {cluster_name}"
             ),
@@ -2612,6 +2620,7 @@ pub fn clip_region_to_outline(
 ///
 /// ⚠️ **Fences are looked up by macro NAME and guides by database instance** — two different keys
 /// for the two maps, which is why they are separate arguments here.
+#[allow(clippy::type_complexity)] // the reference's tuple shapes, kept literal
 pub fn macro_fences_and_guides(
     fence_of: &dyn Fn(usize) -> Option<(i32, i32, i32, i32)>,
     guide_of: &dyn Fn(usize) -> Option<(i32, i32, i32, i32)>,
@@ -3154,6 +3163,7 @@ pub enum PushObstacle {
 /// ⚠️ **The flat macro list carries positions that EARLIER pushes have already moved**, so the
 /// result depends on the order the clusters were pushed in. That is upstream's own sequencing, not
 /// an artefact of gathering them into one list.
+#[allow(clippy::type_complexity)] // the reference's tuple shapes, kept literal
 pub fn push_obstacle(
     cluster_box: (i32, i32, i32, i32),
     cluster_id: i32,
@@ -3360,6 +3370,8 @@ pub fn orientation_strategy(pin_aware_channels: bool) -> OrientationStrategy {
 /// ⚠️ **`>`, strictly — so a TIE KEEPS THE FLIP.** The flip is performed first and undone only when
 /// it made things strictly worse, which means equal wirelength leaves the macro in its new
 /// orientation rather than its original one.
+// ⛔ `!(a > b)`, not `a <= b`: the two differ on NaN, and this is the reference's comparison.
+#[allow(clippy::neg_cmp_op_on_partial_ord)]
 pub fn keep_flip(original_wirelength: f32, new_wirelength: f32) -> bool {
     !(new_wirelength > original_wirelength)
 }
@@ -3678,6 +3690,7 @@ const FLIP_DEBUG: &str = "[DEBUG MPL-flipping] ";
 ///
 /// The caller supplies the wirelength of a group in its current orientation; returning the same
 /// value twice means the flip is kept, since [`keep_flip`] treats a tie as an improvement.
+#[allow(clippy::type_complexity)] // the reference's tuple shapes, kept literal
 pub fn run_orientation_by_cluster(
     clusters: &[FlipCluster],
     macros: &[FlipMacro],
@@ -4305,7 +4318,7 @@ pub struct FlipPort {
 ///
 /// ⚠️ **A terminal with no geometry contributes NOTHING** rather than contributing the origin —
 /// `getAvgXY` returns false and the merge is skipped.
-#[allow(clippy::too_many_arguments)]
+#[allow(clippy::too_many_arguments, clippy::type_complexity)]
 pub fn flip_macro_wirelength(
     macro_pins: &[(String, usize)],
     net_terms: &dyn Fn(usize) -> Vec<FlipNetTerm>,
@@ -5213,6 +5226,7 @@ pub fn anneal_one_run(
 ///
 /// ⚠️ **Every row ends in a trailing SPACE**, and the header is preceded by a blank line. Both are
 /// in the format string.
+#[allow(clippy::too_many_arguments)]
 pub fn cluster_placement_summary(
     cluster_id: i32,
     outline: (i32, i32, i32, i32),
@@ -5680,6 +5694,7 @@ fn parent_nets(
 /// world through.
 ///
 /// ℹ️ Returns the visits in order, which is the record the per-term oracle is scored against.
+#[allow(clippy::too_many_arguments)]
 pub fn run_hierarchical_macro_placement(
     root: &crate::cluster::Cluster,
     utilizations: &[f32],
@@ -5780,6 +5795,7 @@ fn find_cluster(root: &crate::cluster::Cluster, id: i32) -> Option<&crate::clust
 ///
 /// ⚠️ The Area row's divisor is the literal `1.0`, as in the cluster summary — `norm_area_penalty_`
 /// is measured but never used in the report.
+#[allow(clippy::too_many_arguments)]
 pub fn macro_placement_summary(
     cluster_id: i32,
     outline: (i32, i32, i32, i32),

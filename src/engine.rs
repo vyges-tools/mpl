@@ -581,7 +581,7 @@ fn resolve_halos(
         ) {
             return Err(MplError::new(
                 6,
-                &format!("Found macro that does not fit in the core.\nName: {}", inst.name),
+                format!("Found macro that does not fit in the core.\nName: {}", inst.name),
             ));
         }
         halos[i] = halo;

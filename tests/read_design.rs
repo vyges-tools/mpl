@@ -49,7 +49,7 @@ fn no_instance_belongs_to_two_modules() {
     let dupes: Vec<&str> =
         seen.iter().enumerate().filter(|(_, &c)| c > 1).map(|(i, _)| d.instances[i].name.as_str()).collect();
     assert!(dupes.is_empty(), "instances in several modules: {dupes:?}");
-    assert!(seen.iter().any(|&c| c == 0), "and some belong to none -- the physical cells");
+    assert!(seen.contains(&0), "and some belong to none -- the physical cells");
 }
 
 #[test]

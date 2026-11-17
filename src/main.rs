@@ -203,6 +203,7 @@ fn describe() -> String {
 ///     unplaced macros ... This is just a bug"*, closed as a duplicate of the open #11278. So do
 ///     not transcribe it, and do not pin it as a test asserting upstream's behaviour — it is
 ///     expected to change. We are unaffected: this command performs no overlap check at all.
+///
 /// ⟹ Macros must arrive UNPLACED. That is what a real flow hands this step, and it is why this
 /// command does not attempt to relocate a locked instance.
 ///
@@ -454,6 +455,7 @@ mod micron_conversion_tests {
     /// ⛔ The value that separates the two. Doing this in `f64` yields 2168228.
     #[test]
     fn the_coordinate_is_a_float_before_it_becomes_dbu() {
+        #[allow(clippy::excessive_precision)] // the value as written in the probe, not its f32 rounding
         let v: f32 = 2168.228474947361_f32;
         assert_eq!(microns_to_dbu(v, 1000), 2168229, "f64 would give 2168228");
     }

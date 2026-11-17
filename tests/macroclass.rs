@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: Apache-2.0
 //! Macro classification. Rules from upstream's three `classifyMacrosBy*` passes and the grouping.
+#![allow(non_snake_case)] // test names capitalise the word the rule turns on
 use vyges_mpl::macroclass::{
     classify_by_conn_signature, classify_by_interconn, classify_by_master,
     group_single_macro_clusters, single_macro_grouping, GroupMerge,

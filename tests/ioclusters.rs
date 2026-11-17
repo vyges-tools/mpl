@@ -3,6 +3,7 @@
 //!
 //! ⚠️ The die here is 1000 x 1000, so each span is 200 — chosen so a bundle boundary lands on a
 //! round number and an off-by-one in the ring direction is unmistakable rather than plausible.
+#![allow(non_snake_case)] // test names capitalise the word the rule turns on
 use vyges_mpl::design::Rect;
 use vyges_mpl::halo::Boundary;
 use vyges_mpl::ioclusters::{
