@@ -22,9 +22,9 @@ USAGE:
                          [--macro-guide NAME=LX,LY,UX,UY ...]
                          [--boundary-weight W] [--notch-weight W] [--guidance-weight W]
                          [--target-util U] [--max-num-inst N] [--min-num-inst N]
-                         [--max-num-macro N] [--min-num-macro N]
+                         [--max-num-macro N] [--min-num-macro N] [--snap-to-site-grid]
   vyges physical mpl place-macro <design.odb> --macro NAME=X,Y[,ORIENT] [--macro ...]
-                                 [--dbu] [--snap [--exact]] [--out-odb FILE]
+                                 [--dbu] [--snap [--exact | --snap-to-site-grid]] [--out-odb FILE]
   vyges physical mpl --describe
   vyges physical mpl --help
 
@@ -43,7 +43,8 @@ PLACE-MACRO:
   Each macro is left FIXED, which is the status LibreLane's step produces.
   --snap is the reference's own `place_macro` instead (what OpenROAD-flow-scripts runs): the box is
   checked against the core, the macro is snapped so its pins sit on their layers' tracks (not for
-  a right-angle rotation; not with --exact), and it is left LOCKED.
+  a right-angle rotation; not with --exact), and it is left LOCKED. --snap-to-site-grid also puts
+  it on the core rows' site grid, off other placed macros and hard blockages (`-snap_to_site_grid`).
 
 STATUS:
   0 applied   macros placed and committed
@@ -118,7 +119,8 @@ fn describe() -> String {
                 {"arg": "max_num_inst", "flag": "--max-num-inst"},
                 {"arg": "min_num_inst", "flag": "--min-num-inst"},
                 {"arg": "max_num_macro", "flag": "--max-num-macro"},
-                {"arg": "min_num_macro", "flag": "--min-num-macro"}
+                {"arg": "min_num_macro", "flag": "--min-num-macro"},
+                {"arg": "snap_to_site_grid", "flag": "--snap-to-site-grid"}
             ],
             "emits_json": true
         },
@@ -139,7 +141,8 @@ fn describe() -> String {
                 "max_num_inst": {"type": "integer"},
                 "min_num_inst": {"type": "integer"},
                 "max_num_macro": {"type": "integer"},
-                "min_num_macro": {"type": "integer"}
+                "min_num_macro": {"type": "integer"},
+                "snap_to_site_grid": {"type": "boolean", "description": "also snap each macro to the core rows' site grid"}
             }
         },
         // ⛔ **`odb`, not an engine list.** This previously read `["ifp", "pad", "ppl"]`, which
@@ -215,6 +218,7 @@ fn place_macro_main(args: &[String]) -> ExitCode {
     let mut in_dbu = false;
     let mut snap = false;
     let mut exact = false;
+    let mut site_grid = false;
     let mut specs: Vec<(String, f32, f32, String)> = Vec::new();
 
     let mut i = 0;
@@ -223,6 +227,7 @@ fn place_macro_main(args: &[String]) -> ExitCode {
             "--dbu" => in_dbu = true,
             "--snap" => snap = true,
             "--exact" => exact = true,
+            "--snap-to-site-grid" => site_grid = true,
             "--out-odb" => {
                 i += 1;
                 match args.get(i) {
@@ -260,6 +265,14 @@ fn place_macro_main(args: &[String]) -> ExitCode {
     }
 
     let Some(path) = path else { return usage_err("place-macro needs <design.odb>") };
+    // `place_macro` (Tcl, f11b4276 pin): the two flags together are MPL-81, before anything runs.
+    if exact && site_grid {
+        diag!("vyges-mpl place-macro: MPL-0081 -exact and -snap_to_site_grid cannot be used together.");
+        return ExitCode::from(1);
+    }
+    if site_grid && !snap {
+        return usage_err("--snap-to-site-grid is a mode of --snap (the reference place_macro)");
+    }
 
     // ⛔ **No macros named is VACUOUS, not success.** A pass word must never come from a run that
     // did nothing -- the convention every engine in this suite reserves status 3 for.
@@ -316,7 +329,7 @@ fn place_macro_main(args: &[String]) -> ExitCode {
             return ExitCode::from(1);
         }
         if snap {
-            if let Err(msg) = snap_as_place_macro(&mut db, &grids, name, orient, (xd, yd), exact) {
+            if let Err(msg) = snap_as_place_macro(&mut db, &grids, name, orient, (xd, yd), exact, site_grid) {
                 diag!("vyges-mpl place-macro: {msg}");
                 return ExitCode::from(1);
             }
@@ -397,6 +410,7 @@ fn snap_as_place_macro(
     orient: &str,
     at: (i32, i32),
     exact: bool,
+    site_grid: bool,
 ) -> Result<(), String> {
     use vyges_mpl::placement::DbOrient;
     let o = DbOrient::from_db(orient).ok_or_else(|| format!("{name}: orientation {orient} is not a database orientation"))?;
@@ -413,8 +427,45 @@ fn snap_as_place_macro(
     }
     let sm = vyges_mpl::read::read_snap_macro(db, grids, name);
     let mfg = db.manufacturing_grid().unwrap_or(None).unwrap_or(0);
-    let ll = vyges_mpl::placement::snap_placed_macro(&sm, grids, mfg, o, at)
-        .map_err(|e| format!("MPL-0039 {name}: no track grid for layer {}", e.0))?;
+    let ll = if site_grid {
+        // `findObstacles`: the other PLACED macros, then the hard blockages — read now, so a
+        // macro this command placed earlier is one.
+        let mut obstacles: Vec<(i32, i32, i32, i32)> = db
+            .inst_names()
+            .into_iter()
+            .filter(|i| i != name && db.inst_is_block(i) && vyges_mpl::read::inst_is_placed(db, i))
+            .filter_map(|i| db.inst_bbox(&i).ok().filter(|b| b.len() == 4).map(|b| (b[0], b[1], b[2], b[3])))
+            .collect();
+        obstacles.extend(vyges_mpl::read::read_hard_blockages(db));
+        let (grid, multi_height) = vyges_mpl::read::read_core_rows(db);
+        let steps_by_layer = vyges_mpl::read::read_track_steps(db);
+        let steps = |layer: usize, axis: vyges_mpl::placement::SnapAxis| -> Vec<i32> {
+            match (steps_by_layer.get(&layer), axis) {
+                (Some((x, _)), vyges_mpl::placement::SnapAxis::Vertical) => x.clone(),
+                (Some((_, y)), _) => y.clone(),
+                (None, _) => Vec::new(),
+            }
+        };
+        let core = (db.block_get_core_area_x_min(), db.block_get_core_area_y_min(),
+                    db.block_get_core_area_x_max(), db.block_get_core_area_y_max());
+        let site = vyges_mpl::placement::SiteSnap {
+            grid,
+            multi_height,
+            steps: &steps,
+            core,
+            obstacles: &obstacles,
+            name,
+        };
+        let mut msgs = Vec::new();
+        let r = vyges_mpl::placement::snap_placed_macro_with(&sm, grids, mfg, o, at, Some(&site), &mut msgs);
+        for m in &msgs {
+            vyges_mpl::messages::emit(m);
+        }
+        r?.map_err(|e| format!("MPL-0039 {name}: no track grid for layer {}", e.0))?
+    } else {
+        vyges_mpl::placement::snap_placed_macro(&sm, grids, mfg, o, at)
+            .map_err(|e| format!("MPL-0039 {name}: no track grid for layer {}", e.0))?
+    };
     if ll != at {
         db.set_inst_location(name, ll.0, ll.1).map_err(|e| format!("{name}: cannot set snapped location: {e}"))?;
     }

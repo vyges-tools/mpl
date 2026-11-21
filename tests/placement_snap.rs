@@ -421,3 +421,110 @@ fn nothing_matching_gives_an_empty_list() {
     let got: Vec<SnapLayerData> = snap_layer_data(&[], SnapAxis::Vertical).unwrap();
     assert!(got.is_empty());
 }
+
+// ---------------------------------------------------------------- -snap_to_site_grid (#12286)
+
+use vyges_mpl::messages::Message;
+use vyges_mpl::placement::{
+    legal_site_position, nearest_site_position, site_search_window, snap_macro_to_sites, DbOrient,
+    SiteGrid, SiteSnap, SnapCandidateGeometry, SnapInput,
+};
+
+/// 🔑 Upstream `nearestSitePosition`: `std::lround` of the quotient in sites — half rounds AWAY
+/// from zero, on both sides of the grid origin.
+#[test]
+fn the_nearest_site_rounds_half_away_from_zero() {
+    assert_eq!(nearest_site_position(150, 0, 100), 200);
+    assert_eq!(nearest_site_position(149, 0, 100), 100);
+    assert_eq!(nearest_site_position(-150, 0, 100), -200);
+    assert_eq!(nearest_site_position(1150, 1000, 100), 1200);
+}
+
+/// 🔑 Upstream `computeSiteSearchWindow`: one period each side plus the start, the period being
+/// LCM(site pitch, track step) in sites, the SMALLEST over the lowest pin layer's patterns; one
+/// site when the axis has no pin layer; and `2 * INT_MAX + 1` wrapping to `-1` (no attempts)
+/// when that layer has no pattern in the axis.
+#[test]
+fn the_site_window_is_one_lcm_period_each_side() {
+    assert_eq!(site_search_window(190, None), 3);
+    // Nangate45-like: site 190 x 1400, metal2 step 190 → 1 site; step 140 → lcm 2660 = 14 sites.
+    assert_eq!(site_search_window(190, Some(&[190])), 3);
+    assert_eq!(site_search_window(190, Some(&[140])), 29);
+    assert_eq!(site_search_window(190, Some(&[140, 190])), 3, "the smallest period wins");
+    assert_eq!(site_search_window(190, Some(&[])), -1);
+}
+
+/// ⚠️ Upstream `isLegalPosition`: inside the core with edges allowed to touch, and `Rect::overlaps`
+/// is STRICT — a macro abutting an obstacle is legal.
+#[test]
+fn a_legal_site_may_touch_the_core_edge_and_abut_an_obstacle() {
+    let core = (0, 0, 100, 100);
+    assert!(legal_site_position((0, 0, 100, 100), core, &[]));
+    assert!(!legal_site_position((-1, 0, 99, 100), core, &[]));
+    assert!(legal_site_position((0, 0, 50, 50), core, &[(50, 0, 60, 10)]));
+    assert!(!legal_site_position((0, 0, 50, 50), core, &[(49, 0, 60, 10)]));
+}
+
+fn no_positions(_: usize) -> Vec<i32> {
+    Vec::new()
+}
+fn no_steps(_: usize, _: SnapAxis) -> Vec<i32> {
+    Vec::new()
+}
+
+fn pinless<'a>(cands: &'a [SnapCandidateGeometry]) -> SnapInput<'a> {
+    SnapInput { candidates: cands, master: (300, 200), orient: DbOrient::R0, manufacturing_grid: 1, positions: &no_positions }
+}
+
+/// 🔑 **A macro without pins takes the FIRST legal site of the spiral** (zero of zero pins is "all
+/// aligned"), and an obstacle on the nearest site pushes it to the next one, POSITIVE first.
+#[test]
+fn a_pinless_macro_takes_the_first_legal_site() {
+    let input = pinless(&[]);
+    let grid = Some(SiteGrid { origin: (0, 0), width: 100, height: 50 });
+    let site = |obstacles: &'static [(i32, i32, i32, i32)]| SiteSnap {
+        grid,
+        multi_height: false,
+        steps: &no_steps,
+        core: (0, 0, 2000, 2000),
+        obstacles,
+        name: "M",
+    };
+    let mut msgs = Vec::new();
+    // Nearest site to (430, 260) is (400, 250).
+    assert_eq!(snap_macro_to_sites(&input, &site(&[]), (430, 260), &mut msgs), Ok(Ok((400, 250))));
+    assert!(msgs.is_empty());
+    // An obstacle at x 0..410 makes x=400 illegal: +1 site → 500.
+    assert_eq!(snap_macro_to_sites(&input, &site(&[(0, 0, 410, 2000)]), (430, 260), &mut msgs), Ok(Ok((500, 250))));
+}
+
+/// ⚠️ **No legal site in the window → MPL-82 and the TRACK snap for that axis alone**; multi-height
+/// rows → MPL-84 and the track snap for both; no core rows → MPL-83, an error.
+#[test]
+fn no_legal_site_falls_back_to_the_track_snap() {
+    let input = pinless(&[]);
+    let blocked = [(0, 0, 2000, 2000)];
+    let mut site = SiteSnap {
+        grid: Some(SiteGrid { origin: (0, 0), width: 100, height: 50 }),
+        multi_height: false,
+        steps: &no_steps,
+        core: (0, 0, 2000, 2000),
+        obstacles: &blocked,
+        name: "M",
+    };
+    let mut msgs = Vec::new();
+    // Pinless track snap = the manufacturing grid alone, so the origin stays put.
+    assert_eq!(snap_macro_to_sites(&input, &site, (430, 260), &mut msgs), Ok(Ok((430, 260))));
+    let codes: Vec<u16> = msgs.iter().map(|m| if let Message::Warn(c, _) = m { *c } else { 0 }).collect();
+    assert_eq!(codes, [82, 82]);
+
+    site.obstacles = &[];
+    site.multi_height = true;
+    msgs.clear();
+    assert_eq!(snap_macro_to_sites(&input, &site, (430, 260), &mut msgs), Ok(Ok((430, 260))));
+    assert!(matches!(msgs.as_slice(), [Message::Warn(84, _)]));
+
+    site.multi_height = false;
+    site.grid = None;
+    assert!(snap_macro_to_sites(&input, &site, (430, 260), &mut msgs).is_err());
+}

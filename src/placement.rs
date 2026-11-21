@@ -6173,6 +6173,223 @@ pub fn snap_macro(input: &SnapInput, origin: (i32, i32)) -> Result<(i32, i32), M
     Ok((x, y))
 }
 
+// ---------------------------------------------------------------- site-grid snapping (#12286)
+
+/// The site grid of the core rows: the FIRST core row's origin and its site's size.
+///
+/// 🔑 Upstream `Snapper::findSiteGrid` (f11b4276 pin): the first HORIZONTAL row whose site class
+/// is CORE, in `getRows()` order. Taking the first is sound only because multi-height rows are
+/// ruled out beforehand ([`SiteSnap::multi_height`]).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct SiteGrid {
+    pub origin: (i32, i32),
+    pub width: i32,
+    pub height: i32,
+}
+
+/// What `-snap_to_site_grid` needs beyond the track snap.
+pub struct SiteSnap<'a> {
+    /// `None` when the block has no core rows: upstream errors MPL-83.
+    pub grid: Option<SiteGrid>,
+    /// More than one core-row site height: MPL-84 and the track snap instead.
+    pub multi_height: bool,
+    /// A layer's track-pattern STEPS in an axis (the X patterns for `Vertical`), pattern order.
+    pub steps: &'a dyn Fn(usize, SnapAxis) -> Vec<i32>,
+    pub core: (i32, i32, i32, i32),
+    /// `findObstacles`: every OTHER placed block instance's box, then every hard blockage.
+    pub obstacles: &'a [(i32, i32, i32, i32)],
+    /// The instance name, for the warnings.
+    pub name: &'a str,
+}
+
+/// Upstream `nearestSitePosition`: `grid_origin + lround((origin - grid_origin) / pitch) * pitch`,
+/// the quotient in `double` and rounded half AWAY from zero (`std::lround`).
+pub fn nearest_site_position(origin: i32, grid_origin: i32, pitch: i32) -> i32 {
+    let sites = (origin - grid_origin) as f64 / pitch as f64;
+    grid_origin + (sites.round() as i32) * pitch
+}
+
+fn gcd(a: i64, b: i64) -> i64 {
+    if b == 0 { a.abs() } else { gcd(b, a % b) }
+}
+
+/// `std::lcm`: zero when either argument is zero.
+fn lcm(a: i32, b: i32) -> i64 {
+    if a == 0 || b == 0 {
+        return 0;
+    }
+    (a as i64 / gcd(a as i64, b as i64) * b as i64).abs()
+}
+
+/// Upstream `computeSiteSearchWindow`: `2 * sites_per_period + 1` sites, one period each side.
+///
+/// 🔑 **The period is LCM(site pitch, track step) in sites, the SMALLEST over the lowest pin
+/// layer's patterns** (`steps`; `None` when the axis has no pin layer, which is one site).
+///
+/// ⚠️ A pin layer with NO patterns in the axis leaves the period at `INT_MAX`, and `2 * INT_MAX +
+/// 1` wraps to `-1` in `int`: the search then runs zero attempts and the axis falls back to the
+/// track snap (MPL-82). Reproduced with wrapping arithmetic rather than "fixed".
+pub fn site_search_window(pitch: i32, steps: Option<&[i32]>) -> i32 {
+    let sites_per_period = match steps {
+        None => 1,
+        Some(steps) => steps.iter().fold(i32::MAX, |m, &s| m.min((lcm(pitch, s) / pitch as i64) as i32)),
+    };
+    2i32.wrapping_mul(sites_per_period).wrapping_add(1)
+}
+
+/// Upstream `isLegalPosition`: the macro's box inside the core (edges may touch) and overlapping
+/// no obstacle (`Rect::overlaps` is STRICT — an abutting macro is legal).
+pub fn legal_site_position(bbox: (i32, i32, i32, i32), core: (i32, i32, i32, i32), obstacles: &[(i32, i32, i32, i32)]) -> bool {
+    let inside = core.0 <= bbox.0 && core.1 <= bbox.1 && core.2 >= bbox.2 && core.3 >= bbox.3;
+    inside && !obstacles.iter().any(|o| o.2 > bbox.0 && o.0 < bbox.2 && o.3 > bbox.1 && o.1 < bbox.3)
+}
+
+/// Upstream `Snapper::snapToSites(direction)`: jump site to site around the nearest site, in the
+/// `0, +1, -1, …` spiral, over [`site_search_window`] sites.
+///
+/// - an ILLEGAL position ([`legal_site_position`]) is skipped;
+/// - a position is taken when it aligns MORE pins, **or ALL of them** — so a macro without pins
+///   (zero of zero) takes the first legal site; all aligned ends the search;
+/// - a result: MPL-2 when not every pin aligned;
+/// - none: MPL-82, the origin goes back to where this axis started, and the TRACK snap runs for
+///   this axis alone.
+pub fn snap_axis_to_sites(
+    input: &SnapInput,
+    site: &SiteSnap,
+    grid: SiteGrid,
+    origin: (i32, i32),
+    axis: SnapAxis,
+    msgs: &mut Vec<crate::messages::Message>,
+) -> Result<i32, MissingTrackGrid> {
+    use crate::messages::Message;
+    let vertical = axis == SnapAxis::Vertical;
+    let current = if vertical { origin.0 } else { origin.1 };
+    let at_axis = |p: i32| if vertical { (p, origin.1) } else { (origin.0, p) };
+
+    let center_at = |g: &SnapCandidateGeometry, at: (i32, i32)| -> i32 {
+        let offset = instance_offset(at, input.master, input.orient);
+        match iterm_bbox(&g.term_boxes, input.orient, offset) {
+            Some(b) if vertical => (b.0 + b.2) / 2,
+            Some(b) => (b.1 + b.3) / 2,
+            None => 0,
+        }
+    };
+    let candidates: Vec<SnapPinCandidate> = input
+        .candidates
+        .iter()
+        .map(|g| SnapPinCandidate {
+            iterm: g.iterm,
+            aligns: g.aligns,
+            layer: g.layer,
+            layer_number: g.layer_number,
+            layer_is_vertical: g.layer_is_vertical,
+            has_track_grid: g.has_track_grid,
+            center: center_at(g, origin),
+        })
+        .collect();
+    let layers = snap_layer_data(&candidates, axis)?;
+    let total_pins: usize = layers.iter().map(|l| l.pins.len()).sum();
+
+    let (pitch, grid_origin) = if vertical { (grid.width, grid.origin.0) } else { (grid.height, grid.origin.1) };
+    let start = nearest_site_position(current, grid_origin, pitch);
+    let lowest_steps = layers.first().map(|l| (site.steps)(l.layer, axis));
+    let window = site_search_window(pitch, lowest_steps.as_deref());
+
+    let aligned_at = |at: (i32, i32)| -> usize {
+        layers
+            .iter()
+            .map(|l| {
+                let centers: Vec<i32> = l
+                    .pins
+                    .iter()
+                    .filter_map(|&t| input.candidates.iter().find(|g| g.iterm == t))
+                    .map(|g| center_at(g, at))
+                    .collect();
+                aligned_pins_on_layer(&centers, &(input.positions)(l.layer))
+            })
+            .sum()
+    };
+
+    let mut best: Option<i32> = None;
+    let mut best_aligned = 0usize;
+    let mut attempt = 0i32;
+    while attempt < window {
+        let position = start + spiral_step(attempt) * pitch;
+        attempt += 1;
+        let at = at_axis(position);
+        let bbox = transform_rect((0, 0, input.master.0, input.master.1), input.orient, at);
+        if !legal_site_position(bbox, site.core, site.obstacles) {
+            continue;
+        }
+        let aligned = aligned_at(at);
+        if aligned > best_aligned || aligned == total_pins {
+            best_aligned = aligned;
+            best = Some(position);
+            if best_aligned == total_pins {
+                break;
+            }
+        }
+    }
+
+    match best {
+        Some(position) => {
+            if best_aligned != total_pins {
+                msgs.push(Message::Warn(
+                    2,
+                    format!(
+                        "Could not align all pins of the macro {} to the track-grid. {best_aligned} out of {total_pins} pins were aligned.",
+                        site.name
+                    ),
+                ));
+            }
+            Ok(position)
+        }
+        None => {
+            msgs.push(Message::Warn(
+                82,
+                format!(
+                    "Could not snap {} to the site grid in {}. No site position around it keeps it inside the core, off other macros and blockages, and with pins on the track-grid. Snapping it to the track-grid only.",
+                    site.name,
+                    if vertical { "x" } else { "y" }
+                ),
+            ));
+            snap_axis(input, origin, axis)
+        }
+    }
+}
+
+/// Upstream `Snapper::snapMacro` with `-snap_to_site_grid` (OpenROAD #12286, in the f11b4276 pin):
+///
+/// 1. multi-height core rows: MPL-84, then the ordinary track snap (both axes);
+/// 2. no core rows: MPL-83 (an error upstream) — `Err` here;
+/// 3. otherwise the site snap, x then y, each falling back to the track snap on its own.
+pub fn snap_macro_to_sites(
+    input: &SnapInput,
+    site: &SiteSnap,
+    origin: (i32, i32),
+    msgs: &mut Vec<crate::messages::Message>,
+) -> Result<Result<(i32, i32), MissingTrackGrid>, String> {
+    use crate::messages::Message;
+    if site.multi_height {
+        msgs.push(Message::Warn(
+            84,
+            format!(
+                "Could not snap {} to the site grid. Multi-height rows are not supported. Snapping it to the track-grid only.",
+                site.name
+            ),
+        ));
+        return Ok(snap_macro(input, origin));
+    }
+    let Some(grid) = site.grid else {
+        return Err(format!("MPL-0083 Could not snap {} to the site grid. The block has no core rows.", site.name));
+    };
+    let x = match snap_axis_to_sites(input, site, grid, origin, SnapAxis::Vertical, msgs) {
+        Ok(x) => x,
+        Err(e) => return Ok(Err(e)),
+    };
+    Ok(snap_axis_to_sites(input, site, grid, (x, origin.1), SnapAxis::Horizontal, msgs).map(|y| (x, y)))
+}
+
 /// `Snapper(inst).snapMacro()` on a macro whose bounding box sits at `at`: the snapped bounding-box
 /// lower-left, the corner `dbInst::getLocation` and the DEF record. Shared by `run`'s commit and
 /// `place-macro --snap` (`MacroPlacer::placeMacro`).
@@ -6183,6 +6400,23 @@ pub fn snap_placed_macro(
     orient: DbOrient,
     at: (i32, i32),
 ) -> Result<(i32, i32), MissingTrackGrid> {
+    match snap_placed_macro_with(sm, grids, manufacturing_grid, orient, at, None, &mut Vec::new()) {
+        Ok(r) => r,
+        Err(_) => unreachable!("only the site snap refuses"),
+    }
+}
+
+/// [`snap_placed_macro`], optionally with `-snap_to_site_grid` ([`snap_macro_to_sites`]). The
+/// outer `Err` is the site snap's MPL-83 (no core rows); the inner one MPL-39.
+pub fn snap_placed_macro_with(
+    sm: &crate::read::SnapMacro,
+    grids: &std::collections::HashMap<usize, (Vec<i32>, Vec<i32>)>,
+    manufacturing_grid: i32,
+    orient: DbOrient,
+    at: (i32, i32),
+    site: Option<&SiteSnap>,
+    msgs: &mut Vec<crate::messages::Message>,
+) -> Result<Result<(i32, i32), MissingTrackGrid>, String> {
     let candidates: Vec<SnapCandidateGeometry> = sm
         .pins
         .iter()
@@ -6218,8 +6452,17 @@ pub fn snap_placed_macro(
         positions: &positions,
     };
     let origin = instance_offset(at, sm.master, orient);
-    let o = snap_macro(&input, origin)?;
+    let o = match site {
+        Some(s) => match snap_macro_to_sites(&input, s, origin, msgs)? {
+            Ok(o) => o,
+            Err(e) => return Ok(Err(e)),
+        },
+        None => match snap_macro(&input, origin) {
+            Ok(o) => o,
+            Err(e) => return Ok(Err(e)),
+        },
+    };
     // Back to the bounding-box corner the DEF records.
     let t = transform_rect((0, 0, sm.master.0, sm.master.1), orient, o);
-    Ok((t.0, t.1))
+    Ok(Ok((t.0, t.1)))
 }

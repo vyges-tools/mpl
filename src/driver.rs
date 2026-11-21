@@ -42,6 +42,7 @@ pub fn run_with(
     let mut w_guidance: Option<f32> = None;
     // Upstream's `-target_util` default.
     let mut target_util: f32 = 0.25;
+    let mut snap_to_site_grid = false;
     // ⚠️ Zero means "not supplied" — the same sentinel `setBaseThresholds` reads.
     let mut sup = crate::thresholds::Thresholds {
         max_macro: 0,
@@ -64,6 +65,7 @@ pub fn run_with(
             "--nets" => {}
             "--cost" => {}
             "--pin-aware-channels" => pin_aware_channels = true,
+            "--snap-to-site-grid" => snap_to_site_grid = true,
             "--partition-calls" => {
                 let Some(f) = it.next() else { return Err(usage("--partition-calls needs a FILE")) };
                 partition_calls = Some(f.clone());
@@ -238,6 +240,21 @@ pub fn run_with(
             grids: &grids,
             manufacturing_grid: db.manufacturing_grid().unwrap_or(None).unwrap_or(0),
             halo_kind: &halo_kind,
+            site: snap_to_site_grid.then(|| {
+                let (grid, multi_height) = crate::read::read_core_rows(&db);
+                SiteInputs {
+                    grid,
+                    multi_height,
+                    steps: crate::read::read_track_steps(&db),
+                    core: (
+                        design.core_area.x_min as i32,
+                        design.core_area.y_min as i32,
+                        design.core_area.x_max as i32,
+                        design.core_area.y_max as i32,
+                    ),
+                    hard_blockages: crate::read::read_hard_blockages(&db),
+                }
+            }),
         };
         let flip = FlipInputs {
             pins: &pins,
@@ -291,6 +308,18 @@ pub struct SnapInputs<'a> {
     pub manufacturing_grid: i32,
     /// Each instance's halo KIND — what decides whether the final commit casts a blockage.
     pub halo_kind: &'a [crate::placement::HaloKind],
+    /// `-snap_to_site_grid` (OpenROAD #12286, in the f11b4276 pin); `None` is the track snap.
+    pub site: Option<SiteInputs>,
+}
+
+/// What `-snap_to_site_grid` reads from the database once, before the commit.
+pub struct SiteInputs {
+    pub grid: Option<crate::placement::SiteGrid>,
+    pub multi_height: bool,
+    /// Track-pattern steps per layer, `(x, y)`.
+    pub steps: std::collections::HashMap<usize, (Vec<i32>, Vec<i32>)>,
+    pub core: (i32, i32, i32, i32),
+    pub hard_blockages: Vec<(i32, i32, i32, i32)>,
 }
 
 #[allow(clippy::too_many_arguments, clippy::type_complexity)]
@@ -1474,7 +1503,34 @@ fn print_boundary_push(
     // ℹ️ Emitted sorted by name so the diff is stable; upstream's own order is `inst_to_hard`'s,
     // which is pointer order and unreproducible. Position is what this scores, not sequence.
     let mut rows: Vec<String> = Vec::new();
-    for (&inst, &k) in &index_of {
+    // ⛔ **`inst_to_hard` order — by instance id — with `-snap_to_site_grid`.** Each snap sees the
+    // macros committed before it at their SNAPPED boxes and the rest where `updateMacrosOnDb` left
+    // them (every macro is placed by then), so the order is a value there. Fixed macros keep their
+    // database box.
+    let mut order: Vec<(usize, usize)> = index_of.iter().map(|(&i, &k)| (i, k)).collect();
+    order.sort_unstable();
+    let mut current_box: Vec<Option<(i32, i32, i32, i32)>> = design
+        .instances
+        .iter()
+        .map(|i| {
+            i.is_block.then_some((i.bbox.x_min as i32, i.bbox.y_min as i32, i.bbox.x_max as i32, i.bbox.y_max as i32))
+        })
+        .collect();
+    let oriented_box = |inst: usize, k: usize, at: (i32, i32)| -> Option<(i32, i32, i32, i32)> {
+        let sm = snap.macros.get(inst).and_then(|m| m.as_ref())?;
+        let origin = p::instance_offset(at, sm.master, orient[k]);
+        Some(p::transform_rect((0, 0, sm.master.0, sm.master.1), orient[k], origin))
+    };
+    for &(inst, k) in &order {
+        if design.instances[inst].is_fixed {
+            continue;
+        }
+        let at = p::real_origin(flip_macros[k].location, halo_of[k], orient[k]);
+        if let Some(b) = oriented_box(inst, k, at) {
+            current_box[inst] = Some(b);
+        }
+    }
+    for &(inst, k) in &order {
         let Some(commit) =
             p::commit_macro(design.instances[inst].is_fixed, p::real_origin(
                 flip_macros[k].location,
@@ -1496,8 +1552,50 @@ fn print_boundary_push(
         let at = commit.location;
         let mut placed = at;
         if let Some(sm) = snap.macros.get(inst).and_then(|m| m.as_ref()) {
-            match p::snap_placed_macro(sm, snap.grids, snap.manufacturing_grid, orient[k], at) {
-                Ok(ll) => placed = ll,
+            let snapped = match &snap.site {
+                None => Ok(p::snap_placed_macro(sm, snap.grids, snap.manufacturing_grid, orient[k], at)),
+                Some(s) => {
+                    let mut obstacles: Vec<(i32, i32, i32, i32)> = current_box
+                        .iter()
+                        .enumerate()
+                        .filter(|&(j, _)| j != inst)
+                        .filter_map(|(_, b)| *b)
+                        .collect();
+                    obstacles.extend(s.hard_blockages.iter().copied());
+                    let steps = |layer: usize, axis: p::SnapAxis| -> Vec<i32> {
+                        match (s.steps.get(&layer), axis) {
+                            (Some((x, _)), p::SnapAxis::Vertical) => x.clone(),
+                            (Some((_, y)), _) => y.clone(),
+                            (None, _) => Vec::new(),
+                        }
+                    };
+                    let site = p::SiteSnap {
+                        grid: s.grid,
+                        multi_height: s.multi_height,
+                        steps: &steps,
+                        core: s.core,
+                        obstacles: &obstacles,
+                        name: &design.instances[inst].name,
+                    };
+                    let mut msgs = Vec::new();
+                    let r = p::snap_placed_macro_with(sm, snap.grids, snap.manufacturing_grid, orient[k], at, Some(&site), &mut msgs);
+                    for m in &msgs {
+                        crate::messages::emit(m);
+                    }
+                    r
+                }
+            };
+            let snapped = match snapped {
+                Ok(r) => r,
+                Err(msg) => return Err(Exit::new(1, msg)),
+            };
+            match snapped {
+                Ok(ll) => {
+                    placed = ll;
+                    if let Some(b) = oriented_box(inst, k, ll) {
+                        current_box[inst] = Some(b);
+                    }
+                }
                 Err(e) => {
                     // ⚠️ Upstream errors MPL-39 here rather than snapping; say so and keep the
                     // unsnapped position, so the gate attributes it rather than reading a pass.

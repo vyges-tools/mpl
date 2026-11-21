@@ -38,7 +38,7 @@ pub const RUN_VALUED: [&str; 11] = [
 
 /// Whether `run` takes `flag` — what the descriptor may advertise.
 pub fn run_main_accepts(flag: &str) -> bool {
-    matches!(flag, "--out-odb" | "--out-def" | "--pin-aware-channels") || RUN_VALUED.contains(&flag)
+    matches!(flag, "--out-odb" | "--out-def" | "--pin-aware-channels" | "--snap-to-site-grid") || RUN_VALUED.contains(&flag)
 }
 
 /// `run`: the automatic placement — the driver's commit stage, written to the database.
@@ -63,7 +63,7 @@ pub fn run_main(args: &[String], partitioner: Option<&mut dyn crate::flatpart::F
                 let Some(v) = args.get(i) else { return run_usage_err(&format!("{a} needs a FILE")) };
                 if a == "--out-odb" { out_odb = Some(v.clone()) } else { out_def = Some(v.clone()) }
             }
-            "--pin-aware-channels" => pass.push(a.to_string()),
+            "--pin-aware-channels" | "--snap-to-site-grid" => pass.push(a.to_string()),
             // the report is always JSON; accepted because `vyges mcp` appends it (emits_json)
             "--json" => {}
             "--keep-clustering-data" => {

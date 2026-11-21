@@ -484,6 +484,57 @@ pub fn read_track_grids(db: &Db) -> std::collections::HashMap<usize, (Vec<i32>, 
     out
 }
 
+/// The core rows' facts `-snap_to_site_grid` needs (OpenROAD #12286, in the f11b4276 pin):
+/// whether they have more than one site height (`hasMultiHeightRows`), and the site grid of the
+/// FIRST core row (`findSiteGrid`). A core row is HORIZONTAL with a site of class CORE.
+///
+/// ⚠️ odb's row order, by index (`nth_row`): row names are not unique.
+pub fn read_core_rows(db: &Db) -> (Option<crate::placement::SiteGrid>, bool) {
+    let mut heights = std::collections::BTreeSet::new();
+    let mut first = None;
+    for i in 0..db.num_rows().unwrap_or(0) {
+        let Ok(Some((bbox, site, _))) = db.nth_row(i) else { continue };
+        if db.nth_row_direction(i).unwrap_or_default() != "HORIZONTAL" || db.site_get_class(&site).unwrap_or_default() != "CORE" {
+            continue;
+        }
+        let (w, h) = (db.site_get_width(&site), db.site_get_height(&site));
+        heights.insert(h);
+        // `dbRow::getBBox` starts at the row origin for a horizontal row.
+        first.get_or_insert(crate::placement::SiteGrid { origin: (bbox[0], bbox[1]), width: w, height: h });
+    }
+    (first, heights.len() > 1)
+}
+
+/// Each layer's track-pattern STEPS, `(x patterns, y patterns)`, keyed like [`read_track_grids`].
+pub fn read_track_steps(db: &Db) -> std::collections::HashMap<usize, (Vec<i32>, Vec<i32>)> {
+    let mut out = std::collections::HashMap::new();
+    for (name, _) in db.layers_with_direction().unwrap_or_default() {
+        if let Ok((x, y)) = db.track_patterns(&name) {
+            if !x.is_empty() || !y.is_empty() {
+                let steps = |v: Vec<(i32, i32, i32)>| v.into_iter().map(|(_, _, step)| step).collect();
+                out.insert(db.layer_get_number(&name) as usize, (steps(x), steps(y)));
+            }
+        }
+    }
+    out
+}
+
+/// The HARD placement blockages (`!isSoft()`), in the block's order — `findObstacles`' second half.
+pub fn read_hard_blockages(db: &Db) -> Vec<(i32, i32, i32, i32)> {
+    db.blockage_boxes()
+        .unwrap_or_default()
+        .into_iter()
+        .enumerate()
+        .filter(|(i, _)| !db.blockage_is_soft(*i))
+        .map(|(_, b)| b)
+        .collect()
+}
+
+/// Whether an instance is placed — `dbPlacementStatus::isPlaced`: anything but NONE / UNPLACED.
+pub fn inst_is_placed(db: &Db, inst: &str) -> bool {
+    !matches!(db.inst_get_placement_status(inst).as_str(), "NONE" | "UNPLACED" | "")
+}
+
 /// Read every macro's snapping inputs.
 ///
 /// ⚠️ **The layer of a pin is its FIRST geometry box's**, matching `getPinLayer`'s
