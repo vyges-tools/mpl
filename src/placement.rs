@@ -2074,6 +2074,37 @@ pub struct SelectedRun {
     /// "Couldn't find a solution for the specified utilization. The utilization was adjusted."
     /// It is a warning, not an error — the run still counts.
     pub utilization_was_adjusted: bool,
+    /// The FIRST utilization was skipped as invalid for the outline, at any level (#12258 at the
+    /// f11b4276 pin records skips below the root too). Picks the adjusted-utilization warning.
+    pub first_utilization_skipped: bool,
+}
+
+impl SelectedRun {
+    /// The warning `placeChildren` logs for an adjusted run (f11b4276 pin, #12258): MPL-38 when the
+    /// specified utilization was skipped as not fitting the outline, else MPL-55. None for run 0.
+    pub fn adjusted_warning(&self, utilizations: &[f32]) -> Option<crate::messages::Message> {
+        use crate::messages::Message;
+        if !self.utilization_was_adjusted {
+            return None;
+        }
+        Some(if self.first_utilization_skipped {
+            Message::Warn(
+                38,
+                format!(
+                    "The specified utilization {} does not fit the outline. The utilization was adjusted to {}.",
+                    utilizations[0], self.utilization
+                ),
+            )
+        } else {
+            Message::Warn(
+                55,
+                format!(
+                    "Couldn't find a solution for the specified utilization. The utilization was adjusted to {}.",
+                    self.utilization
+                ),
+            )
+        })
+    }
 }
 
 /// Nobody produced a valid solution. Upstream raises MPL-40 at the root and MPL-8 below it.
@@ -2107,6 +2138,7 @@ pub fn select_run(
 ) -> Result<SelectedRun, NoValidSolution> {
     let mut remaining_runs = utilizations.len();
     let mut run_id = 0usize;
+    let mut first_utilization_skipped = false;
 
     while remaining_runs > 0 {
         let number_of_attempts = remaining_runs.min(num_threads.max(1));
@@ -2117,6 +2149,7 @@ pub fn select_run(
             run_id += 1;
             // ⛔ The slot is spent either way; see above.
             if !valid_utilization(utilizations[index]) {
+                first_utilization_skipped |= index == 0;
                 continue;
             }
             batch.push(index);
@@ -2133,6 +2166,7 @@ pub fn select_run(
                     index,
                     utilization: utilizations[index],
                     utilization_was_adjusted: index != 0,
+                    first_utilization_skipped,
                 });
             }
         }

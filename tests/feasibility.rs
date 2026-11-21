@@ -181,3 +181,90 @@ fn the_core_test_uses_both_dimensions_independently() {
     let core = r(0, 0, 100, 10);
     assert!(!macro_fits_in_core(10, 100, &core));
 }
+
+// ---------------------------------------------------------------- FeasibilityChecker (#12258)
+
+use vyges_mpl::feasibility::{FeasibilityChecker, HardMacroView};
+use vyges_mpl::messages::Message;
+
+fn view(inst: usize, is_fixed: bool, bbox: Rect) -> HardMacroView {
+    HardMacroView {
+        inst,
+        is_fixed,
+        is_ignorable: false,
+        width: bbox.x_max - bbox.x_min,
+        height: bbox.y_max - bbox.y_min,
+        bbox,
+    }
+}
+
+fn check(d: &Design, macros: &[HardMacroView], target: f32) -> vyges_mpl::feasibility::Feasibility {
+    FeasibilityChecker {
+        design: d,
+        hard_macros: macros,
+        floorplan_shape: d.core_area,
+        blockages: &[],
+        target_utilization: target,
+        dbu_per_micron: 1,
+    }
+    .run()
+}
+
+fn codes(f: &vyges_mpl::feasibility::Feasibility) -> Vec<u16> {
+    f.messages.iter().map(|m| match m { Message::Warn(c, _) | Message::Info(c, _) => *c, Message::Report(_) => 0 }).collect()
+}
+
+/// 🔑 Upstream `FeasibilityChecker::run` (f11b4276 pin): **every check WARNS first** and the run
+/// fails once at the end (MPL-48) — a macro too big for the core (MPL-6) no longer stops the
+/// movable-cell test (MPL-65) from being reported too. Order: 6, 65, then the utilization.
+#[test]
+fn every_failed_check_warns_before_the_run_fails() {
+    // Core 100x100; one unfixed macro 150 wide fails MPL-6, and its area overflows MPL-65 / MPL-7.
+    let d = design(vec![inst("M", true, false, r(0, 0, 150, 90))]);
+    let f = check(&d, &[view(0, false, r(0, 0, 150, 90))], 0.5);
+    assert!(f.found_macros_to_place && !f.feasible);
+    assert_eq!(codes(&f), [6, 65, 7]);
+}
+
+/// ⚠️ **No unfixed hard macro returns before any check**: an infeasible all-fixed design is
+/// skipped (MPL-13 by the caller), never judged.
+#[test]
+fn all_fixed_macros_skip_every_check() {
+    let d = design(vec![inst("M", true, true, r(0, 0, 150, 90))]);
+    let f = check(&d, &[view(0, true, r(0, 0, 150, 90))], 0.5);
+    assert!(!f.found_macros_to_place && f.feasible && f.messages.is_empty());
+}
+
+/// 🔑 **The virtual utilization**: std cells inflated by 1/target + unfixed macros with halo +
+/// fixed macros clipped + blockages, against the floorplan. At or over it is MPL-7 (infeasible);
+/// above 0.9 with some std cell area is only the MPL-9 warning.
+#[test]
+fn virtual_utilization_over_one_fails_over_point_nine_warns() {
+    // Core 100x100 = 10000. Macro 50x50 = 2500. Std cells 1000 at target 0.25 = 4000 → 0.65.
+    let mk = |std_w: i64| {
+        design(vec![inst("M", true, false, r(0, 0, 50, 50)), inst("s", false, false, r(0, 60, std_w, 70))])
+    };
+    let m = [view(0, false, r(0, 0, 50, 50))];
+    let ok = check(&mk(100), &m, 0.25);
+    assert!(ok.feasible && ok.messages.is_empty(), "{:?}", ok.messages);
+    // 1700 std at 0.25 = 6800 + 2500 = 9300 → 0.93: MPL-9 only.
+    let near = design(vec![inst("M", true, false, r(0, 0, 50, 50)), inst("s", false, false, r(0, 60, 100, 77))]);
+    let w = check(&near, &m, 0.25);
+    assert!(w.feasible);
+    assert_eq!(codes(&w), [9]);
+    // 1900 std at 0.25 = 7600 + 2500 = 10100 → over: MPL-7 and infeasible.
+    let over = design(vec![inst("M", true, false, r(0, 0, 50, 50)), inst("s", false, false, r(0, 60, 100, 79))]);
+    let e = check(&over, &m, 0.25);
+    assert!(!e.feasible);
+    assert_eq!(codes(&e), [7]);
+}
+
+/// ⚠️ A target utilization outside (0, 1] warns MPL-14 and is infeasible; the virtual check is
+/// not run (it would divide by it).
+#[test]
+fn a_target_outside_zero_one_warns_14() {
+    let d = design(vec![inst("M", true, false, r(0, 0, 10, 10))]);
+    let f = check(&d, &[view(0, false, r(0, 0, 10, 10))], 1.5);
+    assert!(!f.feasible);
+    assert_eq!(codes(&f), [14]);
+}

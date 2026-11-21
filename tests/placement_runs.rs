@@ -269,3 +269,21 @@ fn a_large_coordinate_loses_precision_in_the_round_trip() {
     to_real_locations(&mut small, (0, 0));
     assert_eq!(small[0].0, 16_777_215);
 }
+
+/// 🔑 **Which warning an adjusted run raises** (OpenROAD #12258, in the f11b4276 pin):
+/// `placeChildren` logs MPL-38 ("does not fit the outline") when the specified utilization was
+/// SKIPPED as invalid, and MPL-55 ("Couldn't find a solution") when it annealed and failed. The
+/// skip is recorded at every level now, not only at the root.
+#[test]
+fn a_skipped_first_utilization_warns_38_a_failed_one_55() {
+    use vyges_mpl::messages::Message;
+    let list = utilization_list(0.25, 10);
+    let skipped = select_run(&list, 10, &mut |u| u != list[0], &mut |_, _| true).expect("run 1");
+    assert!(skipped.first_utilization_skipped);
+    assert!(matches!(skipped.adjusted_warning(&list), Some(Message::Warn(38, _))));
+    let failed = select_run(&list, 10, &mut |_| true, &mut |i, _| i >= 1).expect("run 1");
+    assert!(!failed.first_utilization_skipped);
+    assert!(matches!(failed.adjusted_warning(&list), Some(Message::Warn(55, _))));
+    let first = select_run(&list, 10, &mut |_| true, &mut |_, _| true).expect("run 0");
+    assert_eq!(first.adjusted_warning(&list), None);
+}

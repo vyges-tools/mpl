@@ -142,6 +142,7 @@ pub fn run_with(
     let mut opts = crate::engine::ClusterOptions {
         pin_aware_channels,
         thresholds: sup,
+        target_util,
         ..Default::default()
     };
     if let Some([w, h]) = min_channel {
@@ -202,8 +203,7 @@ pub fn run_with(
     // `root (0) Type: Mixed Leaf` — a line that reads like a result and would be DIFFED against
     // upstream as though the engine had clustered something. Vacuous gets its own exit code.
     if r.status == crate::status::Status::Vacuous {
-        // `run`: no unfixed macros sets `skip_macro_placement_`.
-        crate::messages::emit(&crate::messages::Message::Info(13, "Skipping macro placement.".into()));
+        // `MacroPlacer::run` logs MPL-13 itself now (#12258), in the engine's messages.
         return Err(Exit::new(3, "vacuous: nothing to place".to_string()));
     }
     if want_report {

@@ -23,9 +23,10 @@ fn inst(name: &str, is_block: bool, is_fixed: bool, bbox: Rect) -> Instance {
 }
 
 /// ⛔ **All macros fixed, plus a fixed standard cell inside the core: SKIPPED, not refused.**
-/// The reference returns on "No unfixed macros" (MPL-17) before `computeModuleMetrics` can raise
-/// MPL-50 on the cell — `no_unfixed_macros_and_fixed_cells` in its suite. With the check after the
-/// metrics, as it used to be, this design is refused.
+/// The reference skips with "No unfixed macros found." (MPL-13, `MacroPlacer::run` at the
+/// f11b4276 pin, #12258; MPL-17 before it) before `computeModuleMetrics` can raise MPL-50 on the
+/// cell — `no_unfixed_macros_and_fixed_cells` in its suite. With the check after the metrics, as
+/// it used to be, this design is refused.
 #[test]
 fn a_fixed_cell_does_not_refuse_a_design_with_nothing_to_place() {
     let d = Design {
@@ -60,8 +61,15 @@ fn a_fixed_cell_does_not_refuse_a_design_with_nothing_to_place() {
     let c = run_clustering(&input, &ClusterOptions::default());
     assert_eq!(c.status, Status::Vacuous, "refusal: {:?}", c.refusal);
     assert!(c.refusal.is_none());
-    // Rule (createHardMacros, init): each fixed block is reported as found, then MPL-17.
-    assert_eq!(c.messages, [Message::Info(62, "Found fixed macro U1.".into()), Message::Info(17, "No unfixed macros.".into())]);
+    // Rule (HardMacroFactory::create, then MacroPlacer::run): each fixed block is reported as
+    // found, then MPL-13 once the feasibility checker finds no unfixed macro.
+    assert_eq!(
+        c.messages,
+        [
+            Message::Info(62, "Found fixed macro U1.".into()),
+            Message::Info(13, "No unfixed macros found. Skipping macro placement.".into())
+        ]
+    );
 }
 
 /// ⛔ **The shaping handoff counts EVERY block instance**, because the tiny-cluster threshold is

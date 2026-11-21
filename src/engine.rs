@@ -169,6 +169,8 @@ pub struct ClusterOptions {
     /// `-pin_aware_channels`: a macro WITHOUT a DEF halo keeps the channel only on the sides its
     /// signal pins face.
     pub pin_aware_channels: bool,
+    /// `-target_util`: the feasibility checker's virtual utilization inflates the std cells by it.
+    pub target_util: f32,
 }
 
 impl Default for ClusterOptions {
@@ -189,6 +191,7 @@ impl Default for ClusterOptions {
             // so the default here is the command's own default: no channel.
             min_channel: crate::options::Channel::default(),
             pin_aware_channels: d.pin_aware_channels,
+            target_util: d.target_util as f32,
         }
     }
 }
@@ -242,30 +245,6 @@ fn cluster(
         Err(e) => return refuse(Refusal::Mpl(e)),
     };
 
-    // ---- getUnfixedMacros: no unfixed macros means the run does nothing (MPL-17). That is
-    // `vacuous`, never `applied`.
-    //
-    // ⛔ **Right after `createHardMacros`, BEFORE every check below.** The reference moved it here
-    // (between the `da9f29f` and `27288f5` pins): the checks guard a placement, and a design whose
-    // macros are all fixed may legitimately hold a FIXED standard cell in the core — which the
-    // module metrics would otherwise refuse (MPL-50). `no_unfixed_macros_and_fixed_cells` is the
-    // case; it skips where we used to refuse.
-    let unfixed = crate::design::unfixed_macros(design);
-    if unfixed.is_empty() {
-        msgs.push(Message::Info(17, "No unfixed macros.".into()));
-        return Clustering {
-            messages: Vec::new(),
-            pad_assoc: Vec::new(),
-            pin_cluster: Vec::new(),
-            partition_calls: Vec::new(),
-            root: Cluster::new(0, "root"),
-            status: Status::Vacuous,
-            refusal: None,
-            report: None,
-            shaping: None,
-        };
-    }
-
     // ---- movableCellsFitInMacroPlacementArea (MPL-65)
     //
     // 🔑 This runs BEFORE the module metrics, so a design that fails it never produces a tree.
@@ -305,17 +284,53 @@ fn cluster(
         })
         .collect();
 
-    if !crate::feasibility::movable_cells_fit(
+    // ---- FeasibilityChecker::run (OpenROAD #12258, in the f11b4276 pin), between the hard
+    // macro factory and the placer — see `feasibility::FeasibilityChecker` for its sequence.
+    // Every block is a hard macro now, an ignorable one (fixed, outside the area) with no halo.
+    let hard_macros: Vec<crate::feasibility::HardMacroView> = (0..design.instances.len())
+        .filter(|&i| design.instances[i].is_block && input.geometry[i].is_some())
+        .map(|i| {
+            let inst = &design.instances[i];
+            let (width, height) = macro_dims[i];
+            crate::feasibility::HardMacroView {
+                inst: i,
+                is_fixed: inst.is_fixed,
+                is_ignorable: inst.is_fixed && !overlaps(&inst.bbox, &placement_area),
+                width,
+                height,
+                bbox: macro_bboxes[i],
+            }
+        })
+        .collect();
+    let feasibility = crate::feasibility::FeasibilityChecker {
         design,
-        &placement_area,
-        &macro_area,
-        input.blockages,
-    ) {
-        return refuse(Refusal::Mpl(MplError::new(
-            65,
-            "The movable cells do not fit in the macro placement area.",
-        )));
+        hard_macros: &hard_macros,
+        floorplan_shape: placement_area,
+        blockages: input.blockages,
+        target_utilization: opts.target_util,
+        dbu_per_micron: input.dbu_per_micron,
     }
+    .run();
+    msgs.extend(feasibility.messages);
+    if feasibility.feasible && !feasibility.found_macros_to_place {
+        // `MacroPlacer::run`: nothing to place is `vacuous`, never `applied`.
+        msgs.push(Message::Info(13, "No unfixed macros found. Skipping macro placement.".into()));
+        return Clustering {
+            messages: Vec::new(),
+            pad_assoc: Vec::new(),
+            pin_cluster: Vec::new(),
+            partition_calls: Vec::new(),
+            root: Cluster::new(0, "root"),
+            status: Status::Vacuous,
+            refusal: None,
+            report: None,
+            shaping: None,
+        };
+    }
+    if !feasibility.feasible {
+        return refuse(Refusal::Mpl(MplError::new(48, "The macro placement problem is infeasible.")));
+    }
+    let unfixed = crate::design::unfixed_macros(design);
 
     let mut errors = Vec::new();
     let design_metrics = compute_module_metrics(design, design.top, &placement_area, &mut errors);
@@ -326,18 +341,9 @@ fn cluster(
         )));
     }
 
-    // ---- the halo-area test (MPL-16), which upstream runs only once it knows there is work
+    // ⚠️ The halo-area test (MPL-16) is gone at the f11b4276 pin (#12258): the feasibility
+    // checker's virtual utilization stands in for it. The area is still what the report shows.
     let macro_with_halo_area: i64 = unfixed.iter().map(|&i| macro_area(i)).sum();
-    if !crate::feasibility::instance_area_with_halos_fits(
-        macro_with_halo_area,
-        design_metrics.std_cell_area,
-        placement_area.area(),
-    ) {
-        return refuse(Refusal::Mpl(MplError::new(
-            16,
-            "The instance area considering the macros' halos exceeds the floorplan area.",
-        )));
-    }
 
     // ---- reportDesignData, which upstream emits at the END of init — after the checks and only
     // when there is work. It is the ONLY place a resolved halo is observable before commit.
@@ -535,7 +541,8 @@ fn is_ignorable_marker() -> fn(&crate::design::Instance) -> bool {
     is_ignored_inst
 }
 
-/// Upstream `createHardMacros`: one resolved halo per macro, and MPL-6 for any that cannot fit.
+/// Upstream `HardMacroFactory::create` (`createHardMacros` before #12140): one resolved halo per
+/// macro. MPL-6 is now the feasibility checker's warning, not raised here.
 ///
 /// ⚠️ **The MPL-6 comparison is against the CORE area, not the floorplan shape** a global fence
 /// may have narrowed — and it uses the macro's size *with halo*.
@@ -574,16 +581,7 @@ fn resolve_halos(
             inst.is_fixed,
             g.orient,
         );
-        if !crate::feasibility::macro_fits_in_core(
-            g.master_width + halo.left + halo.right,
-            g.master_height + halo.bottom + halo.top,
-            &design.core_area,
-        ) {
-            return Err(MplError::new(
-                6,
-                format!("Found macro that does not fit in the core.\nName: {}", inst.name),
-            ));
-        }
+        // ⚠️ No MPL-6 here any more: the feasibility checker warns it per macro (#12258).
         halos[i] = halo;
     }
     Ok(halos)
