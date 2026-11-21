@@ -304,7 +304,7 @@ use vyges_mpl::placement::{snap_layer_data, MissingTrackGrid, SnapLayerData, Sna
 fn candidate(iterm: usize, layer: usize, layer_number: i32, vertical: bool, center: i32) -> SnapPinCandidate {
     SnapPinCandidate {
         iterm,
-        is_signal: true,
+        aligns: true,
         layer,
         layer_number,
         layer_is_vertical: vertical,
@@ -369,7 +369,7 @@ fn a_pass_sees_only_layers_running_its_way() {
 #[test]
 fn power_and_ground_pins_are_skipped() {
     let mut power = candidate(0, 3, 3, true, 100);
-    power.is_signal = false;
+    power.aligns = false;
     let cands = [power, candidate(1, 3, 3, true, 200)];
     let got = snap_layer_data(&cands, SnapAxis::Vertical).unwrap();
     assert_eq!(got[0].pins, vec![1]);

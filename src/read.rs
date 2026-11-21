@@ -455,7 +455,7 @@ pub struct SnapMacro {
 pub struct SnapPin {
     /// Index into [`SnapMacro::terminals`]-parallel data; upstream's `dbITerm*`.
     pub iterm: usize,
-    pub is_signal: bool,
+    pub aligns: bool,
     pub layer: usize,
     pub layer_number: i32,
     pub layer_is_vertical: bool,
@@ -514,6 +514,14 @@ pub fn read_snap_macro(
     snap_macro_of(db, &layer_table(db), grids, inst)
 }
 
+/// Upstream rule (`Snapper::computeLayerDataList`, OpenROAD #12162, in the f11b4276 pin): a
+/// macro is aligned by every terminal but a supply one (`getSigType().isSupply()`: POWER, GROUND).
+/// Before the pin only SIGNAL terminals counted, so a macro whose only pin on a layer was its
+/// clock was never aligned on that layer's direction.
+pub fn snap_aligns_sig_type(sig: &str) -> bool {
+    !matches!(sig, "POWER" | "GROUND")
+}
+
 fn snap_macro_of(
     db: &Db,
     layers: &HashMap<i64, (i64, crate::halo::LayerDir)>,
@@ -523,7 +531,7 @@ fn snap_macro_of(
         let master = db.inst_get_master(inst);
         let mut pins = Vec::new();
         for (t, term) in db.master_get_m_terms(&master).into_iter().enumerate() {
-            let is_signal = db.mterm_get_sig_type(&master, &term) == "SIGNAL";
+            let aligns = snap_aligns_sig_type(&db.mterm_get_sig_type(&master, &term));
             // The terminal's own box and every box it owns, in MASTER coordinates.
             let mut term_boxes: Vec<(i32, i32, i32, i32)> = Vec::new();
             for p in 0..db.num_mterm_get_m_pins(&master, &term) {
@@ -545,7 +553,7 @@ fn snap_macro_of(
                     matches!(layers.get(&first), Some((_, crate::halo::LayerDir::Vertical)));
                 pins.push(SnapPin {
                     iterm: t,
-                    is_signal,
+                    aligns,
                     layer,
                     layer_number: first as i32,
                     layer_is_vertical: is_vertical,
@@ -564,6 +572,19 @@ fn snap_macro_of(
 #[cfg(test)]
 mod tests {
     use super::pin_widens_halo;
+
+    /// Upstream rule (`Snapper::computeLayerDataList`, OpenROAD #12162, in the f11b4276 pin; its
+    /// test `TestSnapper.ClockPin`): a clock pin aligns the macro like a signal pin, and only a
+    /// supply pin (`isSupply`: POWER, GROUND) is left out.
+    #[test]
+    fn every_pin_but_supply_aligns_a_snapped_macro() {
+        for sig in ["SIGNAL", "CLOCK", "ANALOG", "RESET", "SCAN", "TIEOFF"] {
+            assert!(super::snap_aligns_sig_type(sig), "{sig}");
+        }
+        for sig in ["POWER", "GROUND"] {
+            assert!(!super::snap_aligns_sig_type(sig), "{sig}");
+        }
+    }
 
     /// Upstream `buildPinAwareHalo` (ddf3679fd15): every master pin but supply widens the halo
     /// side it faces; `HardMacro`'s pin offset still reads SIGNAL pins only.

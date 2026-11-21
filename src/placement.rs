@@ -4102,8 +4102,9 @@ pub fn search_extra_patterns(
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct SnapPinCandidate {
     pub iterm: usize,
-    /// ⚠️ Only `SIGNAL` terminals are considered — power and ground are skipped.
-    pub is_signal: bool,
+    /// Whether the terminal takes part: every terminal but a supply one — see
+    /// [`crate::read::snap_aligns_sig_type`].
+    pub aligns: bool,
     /// ⚠️ The layer of the pin's FIRST geometry. A master pin with geometry on several layers is
     /// judged by whichever the iterator yields first, not by the lowest or the widest.
     pub layer: usize,
@@ -4155,7 +4156,7 @@ pub fn snap_layer_data(
         std::collections::BTreeMap::new();
 
     for c in candidates {
-        if !c.is_signal {
+        if !c.aligns {
             continue;
         }
         if c.layer_is_vertical != want_vertical {
@@ -5997,7 +5998,7 @@ pub struct SnapInput<'a> {
 #[derive(Debug, Clone)]
 pub struct SnapCandidateGeometry {
     pub iterm: usize,
-    pub is_signal: bool,
+    pub aligns: bool,
     pub layer: usize,
     pub layer_number: i32,
     pub layer_is_vertical: bool,
@@ -6059,7 +6060,7 @@ pub fn snap_axis(input: &SnapInput, origin: (i32, i32), axis: SnapAxis) -> Resul
         .iter()
         .map(|g| SnapPinCandidate {
             iterm: g.iterm,
-            is_signal: g.is_signal,
+            aligns: g.aligns,
             layer: g.layer,
             layer_number: g.layer_number,
             layer_is_vertical: g.layer_is_vertical,
@@ -6153,7 +6154,7 @@ pub fn snap_placed_macro(
         .iter()
         .map(|q| SnapCandidateGeometry {
             iterm: q.iterm,
-            is_signal: q.is_signal,
+            aligns: q.aligns,
             layer: q.layer,
             layer_number: q.layer_number,
             layer_is_vertical: q.layer_is_vertical,
