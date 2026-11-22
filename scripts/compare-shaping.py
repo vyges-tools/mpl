@@ -56,6 +56,12 @@ def halo_args(case):
         m = re.search(re.escape(tcl_opt) + r"\s+(\d+)", text)
         if m:
             out += [flag, m.group(1)]
+    # The target utilization too: the feasibility checker (OpenROAD #12258) refuses a value
+    # outside (0, 1] or a design it cannot fit before shaping runs, so without it a case the
+    # reference refuses is shaped at the default 0.25.
+    m = re.search(r"-target_util\s+([0-9.eE+-]+)", text)
+    if m:
+        out += ["--target-util", m.group(1)]
     return out
 
 
@@ -118,7 +124,7 @@ for case in cases:
     # Both sides stop before shaping, for the same logged reason: agreement, in its own bucket.
     if not want and both_skip(p.returncode, log_text):
         stopped += 1
-        print(f"  {case:24s} both skip — no unfixed macros (MPL-17)")
+        print(f"  {case:24s} both skip — no unfixed macros (MPL-13/17)")
         continue
     code = same_error(p.stderr, log_text) if p.returncode != 0 else None
     if code is not None and not want:

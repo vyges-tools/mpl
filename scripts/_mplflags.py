@@ -37,6 +37,10 @@ def case_flags(tcl_dir, case):
     # golden carry a GROUPS section.
     if "-keep_clustering_data" in text:
         out += ["--keep-clustering-data"]
+    # `-snap_to_site_grid` (OpenROAD #12286): the commit snaps each macro to the rows' site grid
+    # and builds its blockage from that snapped box, so without it the blockage sits on the track snap.
+    if "-snap_to_site_grid" in text:
+        out += ["--snap-to-site-grid"]
     for name, vals in GUIDE.findall(text):
         out += ["--macro-guide", f"{name}={','.join(vals.split())}"]
     for tcl_opt, flag in THRESH.items():

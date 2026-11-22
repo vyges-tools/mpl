@@ -6,7 +6,9 @@
 - `same_error`: our refusal carries `MplError { code: N }` AND the reference log has
   `[ERROR MPL-000N]` — both sides refuse the design for the same reason
   (`unfixed_cells_dont_fit_in_core`, MPL-65);
-- `both_skip`: we exit vacuous (3) AND the reference log has `[INFO MPL-0017] No unfixed macros`.
+- `both_skip`: we exit vacuous (3) AND the reference log has its "No unfixed macros" line: MPL-0017
+  up to the 4155ac31 pin, MPL-0013 from the f11b4276 pin (the feasibility checker, OpenROAD #12258,
+  emits it before the solver runs).
 
 A refusal with a different code, or none on the reference side, stays "other" and fails the gate.
 Each scorer counts these in a bucket of its own, so a run that did nothing is never a match.
@@ -26,4 +28,4 @@ def same_error(stderr, log_text):
 
 
 def both_skip(returncode, log_text):
-    return returncode == 3 and "[INFO MPL-0017]" in log_text
+    return returncode == 3 and any(f"[INFO MPL-{c:04d}] No unfixed macros" in log_text for c in (13, 17))
