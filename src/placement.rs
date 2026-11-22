@@ -5560,16 +5560,21 @@ pub fn build_parent_problem(
         tiny_threshold: ctx.tiny_threshold,
         min_ar: ctx.min_ar,
         force_centralization: single_array,
-        names: {
-            let mut names = vec![String::new(); assembly.macros.len()];
-            for (name, id) in &assembly.id_of {
-                if let Some(slot) = names.get_mut(*id) {
-                    slot.clone_from(name);
-                }
-            }
-            names
-        },
+        names: soft_macro_names(blockage_macros.len(), &assembly.id_of, assembly.macros.len()),
     }
+}
+
+/// Each soft macro's name, by id: the blockages first, named as `createSoftMacrosForBlockages`
+/// names them (`blockage_<i>`, i in the order after `eliminateOverlaps`), then the clusters the
+/// assembly placed. `writeFloorplanFile` writes every one of them, blockages included.
+pub fn soft_macro_names(blockages: usize, id_of: &[(String, usize)], len: usize) -> Vec<String> {
+    let mut names: Vec<String> = (0..len).map(|i| if i < blockages { format!("blockage_{i}") } else { String::new() }).collect();
+    for (name, id) in id_of {
+        if let Some(slot) = names.get_mut(*id) {
+            slot.clone_from(name);
+        }
+    }
+    names
 }
 
 /// The soft macro one child contributes to its parent's annealer.
@@ -6465,4 +6470,21 @@ pub fn snap_placed_macro_with(
     // Back to the bounding-box corner the DEF records.
     let t = transform_rect((0, 0, sm.master.0, sm.master.1), orient, o);
     Ok(Ok((t.0, t.1)))
+}
+
+#[cfg(test)]
+mod soft_macro_names_tests {
+    use super::soft_macro_names;
+
+    /// Rule (`HierRTLMP::createSoftMacrosForBlockages`, f11b4276): the placement blockages are the
+    /// first soft macros, named `blockage_<i>`; `writeFloorplanFile` lists them with the clusters
+    /// (the reference's `root.fp.txt` of placement_blockages1 starts `blockage_0`). Unnamed, the
+    /// floorplan dump wrote a row with no name.
+    #[test]
+    fn blockages_are_named_like_the_reference_and_come_first() {
+        let id_of = vec![("(root)_glue_logic".to_string(), 2), ("MACRO_1".to_string(), 3)];
+        let names = soft_macro_names(2, &id_of, 4);
+        assert_eq!(names, vec!["blockage_0", "blockage_1", "(root)_glue_logic", "MACRO_1"]);
+        assert_eq!(soft_macro_names(0, &id_of[..1], 3), vec!["", "", "(root)_glue_logic"]);
+    }
 }
